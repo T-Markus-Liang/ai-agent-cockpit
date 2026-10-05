@@ -10,6 +10,10 @@
     <string>--port</string><string>4321</string><string>--no-open</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/markus/ai-agent-cockpit</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/Users/markus/.opencode/bin:/Users/markus/.local/bin:/usr/bin:/bin</string>
+    <key>HOME</key><string>/Users/markus</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>5</integer>
