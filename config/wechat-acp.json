@@ -14,14 +14,18 @@
     "codex-official": {
       "label": "Codex CLI (official ACP)",
       "description": "Official Agent Client Protocol adapter for Codex",
-      "command": "npx",
-      "args": ["@agentclientprotocol/codex-acp"]
+      "command": "/usr/local/bin/node",
+      "args": ["/Users/markus/.npm/_npx/4877722a062902ce/node_modules/@agentclientprotocol/codex-acp/dist/index.js"],
+      "env": {
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+        "HOME": "/Users/markus"
+      }
     }
   },
   "session": {
     "resume": "auto",
     "idleTimeoutMs": 86400000,
     "maxConcurrentUsers": 1,
-    "turnEndMessage": "✅ 本轮任务已结束"
+    "turnEndMessage": ""
   }
 }

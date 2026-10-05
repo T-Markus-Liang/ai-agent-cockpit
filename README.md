@@ -16,6 +16,8 @@
 - Cezar 服务端和 Web cockpit 已构建
 - 微信二维码登录已完成，当前账号已连接
 - 微信桥使用官方 `@agentclientprotocol/codex-acp`，避免旧版适配器与本机 Codex 配置不兼容
+- 微信桥、Cezar 和二维码控制服务已安装为 macOS launchd 常驻服务，息屏后不会依赖当前终端会话
+- 微信回复采用朋友型中文助理人格，参考长期主义和价值投资思维，不冒充任何真人
 - Cezar 前端已增加中英文切换按钮
 - 全局设置中已增加 WeChat 连接页面
 
