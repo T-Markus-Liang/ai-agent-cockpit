@@ -396,6 +396,9 @@ async function main(): Promise<void> {
     Object.assign(config.wechat, fileConfig.wechat ?? {});
     Object.assign(config.agent, fileConfig.agent ?? {});
     Object.assign(config.agents, fileConfig.agents ?? {});
+    if (fileConfig.fallbackAgents) {
+      config.fallbackAgents = fileConfig.fallbackAgents;
+    }
     Object.assign(config.session, fileConfig.session ?? {});
     Object.assign(config.daemon, fileConfig.daemon ?? {});
     if (Object.prototype.hasOwnProperty.call(fileConfig, "commandAliases")) {
