@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.markus.ai-agent-cockpit.keepawake</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/caffeinate</string><string>-i</string><string>-m</string>
+  </array>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/markus/ai-agent-cockpit/logs/keepawake.log</string>
+  <key>StandardErrorPath</key><string>/Users/markus/ai-agent-cockpit/logs/keepawake.err.log</string>
+</dict></plist>
