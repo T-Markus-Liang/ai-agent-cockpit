@@ -31,6 +31,7 @@ import { SkillsSection } from './skills-section'
 import { WorktreesSection } from './worktrees-section'
 import { TrackerSection } from './tracker-section'
 import { WeChatSection } from './wechat-section'
+import { LocalAgentsSection } from './local-agents-section'
 
 /**
  * The Settings section registry (R6 Step 1.3, spec §"Settings"): the ONE place a section is
@@ -63,6 +64,7 @@ export type SettingsSectionId =
   | 'skills'
   | 'tracker'
   | 'wechat'
+  | 'local-agents'
 
 /** Which settings area a section belongs to — and therefore which store it writes. */
 export type SettingsScope = 'project' | 'global'
@@ -160,6 +162,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'Connect the local WeChat bridge and scan a login QR code.',
     icon: MessageCircleIcon,
     component: WeChatSection,
+    scope: 'global',
+  },
+  {
+    id: 'local-agents',
+    title: 'Local agents',
+    description: 'Local CLI, ACP and GUI channels available on this Mac.',
+    icon: BotIcon,
+    component: LocalAgentsSection,
     scope: 'global',
   },
   {

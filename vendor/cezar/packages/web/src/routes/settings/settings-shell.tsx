@@ -3,6 +3,7 @@ import { Link as RouterLink, NavLink as RouterNavLink } from 'react-router'
 import type { Capabilities } from '@open-mercato/cezar-api-client'
 import { Link as ScopedLink, NavLink as ScopedNavLink } from '@/lib/project-router'
 import { cn } from '@/lib/utils'
+import { useLocale } from '@/components/locale-provider'
 import { ProjectGeneral } from './project-general'
 import { ProjectLocationNav } from './project-location'
 import { visibleSettingsSections, type SettingsScope, type SettingsSection } from './registry'
@@ -60,6 +61,7 @@ function SectionNav({
   activeId: SettingsSection['id'] | null
   capabilities?: Partial<Pick<Capabilities, 'singleProject'>>
 }) {
+  const { t } = useLocale()
   const { NavLink } = navComponents(scope)
   return (
     <nav
@@ -81,7 +83,7 @@ function SectionNav({
         )}
       >
         <SlidersHorizontalIcon aria-hidden="true" className="size-4 shrink-0" />
-        General
+        {t('General')}
       </NavLink>
       {visibleSettingsSections(scope, capabilities).map((section) => (
         <NavLink
@@ -97,14 +99,14 @@ function SectionNav({
           )}
         >
           <section.icon aria-hidden="true" className="size-4 shrink-0" />
-          {section.title}
+          {t(section.title)}
         </NavLink>
       ))}
       {/* The nav footer answers "what am I editing?" — and each area answers it differently.
           Global: settings are per USER, not per repo, said once where the choice to write there
           is being made. Project: WHICH repo, by its absolute path on disk. */}
       {scope === 'global' ? (
-        <p className="mt-auto px-2.5 pt-3 text-[11px] text-soft-foreground">Stored in ~/.cezar</p>
+        <p className="mt-auto px-2.5 pt-3 text-[11px] text-soft-foreground">{t('Stored in ~/.cezar')}</p>
       ) : (
         <ProjectLocationNav />
       )}
@@ -122,6 +124,7 @@ function SectionPills({
   activeId: SettingsSection['id']
   capabilities?: Partial<Pick<Capabilities, 'singleProject'>>
 }) {
+  const { t } = useLocale()
   const { NavLink } = navComponents(scope)
   return (
     <nav
@@ -137,7 +140,7 @@ function SectionPills({
         data-slot="settings-nav-index"
         className="rounded-full border border-border bg-card px-3 py-1.5 text-[13px] font-medium whitespace-nowrap text-muted-foreground transition-colors"
       >
-        General
+        {t('General')}
       </NavLink>
       {visibleSettingsSections(scope, capabilities).map((section) => (
         <NavLink
@@ -152,7 +155,7 @@ function SectionPills({
               : 'border-border bg-card text-muted-foreground',
           )}
         >
-          {section.title}
+          {t(section.title)}
         </NavLink>
       ))}
     </nav>
@@ -169,6 +172,7 @@ export function SettingsSectionRoute({
   scope: SettingsScope
   capabilities?: Partial<Pick<Capabilities, 'singleProject'>>
 }) {
+  const { t } = useLocale()
   const Body = section.component
   return (
     <div
@@ -178,11 +182,11 @@ export function SettingsSectionRoute({
       {/* Desktop header — below `md` the shell's top bar already says "Settings". The
           breadcrumb is what tells the two areas apart at a glance (mockup: "Global settings"). */}
       <header className="sticky top-0 z-10 hidden h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-5 md:flex">
-        <h1 className="text-base font-semibold">{section.title}</h1>
-        <p className="text-[13px] text-soft-foreground">{section.description}</p>
+        <h1 className="text-base font-semibold">{t(section.title)}</h1>
+        <p className="text-[13px] text-soft-foreground">{t(section.description)}</p>
         {scope === 'global' ? (
           <span data-slot="settings-scope-chip" className="ml-auto text-[11px] text-soft-foreground">
-            Global settings
+            {t('Global settings')}
           </span>
         ) : null}
       </header>
@@ -203,16 +207,17 @@ export function SettingsIndexRoute({ scope, capabilities }: {
   scope: SettingsScope
   capabilities?: Partial<Pick<Capabilities, 'singleProject'>>
 }) {
+  const { t } = useLocale()
   const { Link } = navComponents(scope)
   const global = scope === 'global'
   return (
     <div data-route={global ? 'settings-global' : 'settings'} className="flex min-h-full flex-col">
       <header className="sticky top-0 z-10 hidden h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-5 md:flex">
-        <h1 className="text-base font-semibold">{global ? 'Global settings' : 'Settings'}</h1>
+        <h1 className="text-base font-semibold">{global ? t('Global settings') : t('Settings')}</h1>
         <p className="text-[13px] text-soft-foreground">
           {global
-            ? 'Preferences for you and this machine, shared by every project.'
-            : 'Configure this project and its agents.'}
+            ? t('Preferences for you and this machine, shared by every project.')
+            : t('Configure this project and its agents.')}
         </p>
       </header>
       <div className="flex flex-1 flex-col md:flex-row">
@@ -246,8 +251,8 @@ export function SettingsIndexRoute({ scope, capabilities }: {
                     <section.icon aria-hidden="true" className="size-4" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium text-foreground">{section.title}</span>
-                    <span className="block text-xs text-soft-foreground">{section.description}</span>
+                  <span className="block text-sm font-medium text-foreground">{t(section.title)}</span>
+                  <span className="block text-xs text-soft-foreground">{t(section.description)}</span>
                   </span>
                   <ChevronRightIcon aria-hidden="true" className="size-4 shrink-0 text-soft-foreground" />
                 </Link>
@@ -258,7 +263,7 @@ export function SettingsIndexRoute({ scope, capabilities }: {
               each half says where the other one is. */}
           <p className="mx-auto mt-4 w-full max-w-2xl text-[12px] text-soft-foreground">
             {global ? (
-              <>Agents, worktrees, bookmarklets and prompt templates are per project.</>
+              <>{t('Agents, worktrees, bookmarklets and prompt templates are per project.')}</>
             ) : (
               <>
                 Appearance, notifications, host resources and the project registry live in{' '}
@@ -267,7 +272,7 @@ export function SettingsIndexRoute({ scope, capabilities }: {
                   data-slot="settings-global-link"
                   className="underline underline-offset-2 hover:text-foreground"
                 >
-                  Global settings
+                  {t('Global settings')}
                 </RouterLink>
                 .
               </>

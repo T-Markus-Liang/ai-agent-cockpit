@@ -68,6 +68,7 @@ import {
   type UsageCell,
 } from '@/lib/tasks-table'
 import { usageMetricVisibility } from '@/lib/token-metrics'
+import { useLocale } from '@/components/locale-provider'
 import { useTaskTableColumns } from '@/lib/use-task-table-columns'
 import { useNow } from '@/lib/use-now'
 import { cn } from '@/lib/utils'
@@ -125,6 +126,7 @@ export function TasksOverview({
   /** Prevent a shallow write before the authoritative workspace state can preserve siblings. */
   columnsPending?: boolean
 }) {
+  const { t } = useLocale()
   const [query, setQuery] = React.useState('')
   // The subtask accordion (#1110): ids of the parents whose dispatched rows are unfolded.
   // Empty on arrival — collapsed is the default, and the chip on the parent row is the handle.
@@ -168,13 +170,13 @@ export function TasksOverview({
       {/* Desktop header. Below `md` the shell's top bar already says "Tasks", and the drawer
           carries the shared Active/Archived tabs — repeating them here would be a third copy. */}
       <header className="sticky top-0 z-10 hidden h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-5 md:flex">
-        <h1 className="text-base font-semibold">Tasks</h1>
+        <h1 className="text-base font-semibold">{t('Tasks')}</h1>
         <div className="inline-flex gap-0.5 rounded-md bg-muted p-[3px]">
           <OverviewTab view="active" current={view} onSelect={onViewChange} count={counts.active}>
-            Active
+            {t('Active')}
           </OverviewTab>
           <OverviewTab view="archived" current={view} onSelect={onViewChange} count={counts.archived}>
-            Archived
+            {t('Archived')}
           </OverviewTab>
         </div>
         <div className="flex-1" />
