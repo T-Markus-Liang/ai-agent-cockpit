@@ -9,6 +9,7 @@ import { SegmentedControl } from '@/components/facet-filter'
 import { shortAge } from '@/lib/format'
 import { TaskRow, Coverage } from './rows'
 import { DashboardEntryContext, readPanel, savePanel, useStagedRows } from './state'
+import { useLocale } from '@/components/locale-provider'
 function sourceLabel(key: string) {
   if (!key.startsWith('github:')) return key === 'tasks' ? 'Task results' : key
   const parts = key.slice(7).split(':')
@@ -31,6 +32,7 @@ export function Feed({
   count: number
   more: () => void
 }) {
+  const { t } = useLocale()
   const query = useDashboardFeed(filter, true)
   const staged = useStagedRows(
     query.data?.rows, feedKey, `feed:${filter}`, 0,
@@ -75,18 +77,18 @@ export function Feed({
       <div className="space-y-2 border-b px-4 pt-2.5 pb-2">
         <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
           <h2 ref={heading} tabIndex={-1} className={widgetHeading}>
-            {tasksOnly ? 'Recent results' : 'Recent results & GitHub'}
+            {tasksOnly ? t('Recent results') : t('Recent results & GitHub')}
           </h2>
-          <span className="font-mono text-[11px] text-soft-foreground">Last 7 days</span>
+          <span className="font-mono text-[11px] text-soft-foreground">{t('Last 7 days')}</span>
         </div>
         {!tasksOnly && (
           <SegmentedControl
             slot="dashboard-feed"
-            label="Results source"
+            label={t('Results source')}
             value={filter}
             options={[
-              { value: 'all', label: 'All' },
-              { value: 'tasks', label: 'Tasks' },
+              { value: 'all', label: t('All') },
+              { value: 'tasks', label: t('Tasks') },
               { value: 'github', label: 'GitHub' },
             ]}
             onChange={setFilter}
@@ -94,7 +96,7 @@ export function Feed({
         )}
         {tasksOnly && (
           <p className="text-xs text-muted-foreground">
-            Task results · No GitHub repositories configured
+            {t('Task results')} · {t('No GitHub repositories configured')}
           </p>
         )}
         {filter !== 'tasks' && !tasksOnly && (
@@ -105,14 +107,14 @@ export function Feed({
             <summary className={`${disclosureSummary} py-1.5`}>
               <DisclosureChevron />
               {errors.length || githubFailed
-                ? 'GitHub needs attention'
+                ? t('GitHub needs attention')
                 : loading
                   ? 'Checking GitHub…'
                   : noGithub
-                    ? 'GitHub not configured'
+                    ? t('GitHub not configured')
                     : fetched
                       ? `GitHub checked ${shortAge(fetched)} ago`
-                      : 'GitHub source'}
+                  : t('GitHub source')}
             </summary>
             <div className="flex flex-wrap items-center justify-between gap-x-3">
               <p>

@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/card'
 import { useDashboardPage, useDisplacedRows } from './pages'
 import { TaskRow, taskKey } from './rows'
 import { useStagedRows } from './state'
+import { useLocale } from '@/components/locale-provider'
 export function Queue({
   snapshot,
   questions,
@@ -21,15 +22,16 @@ export function Queue({
   reviews: number
   more: (group: 'questions' | 'reviews', count: number) => void
 }) {
+  const { t } = useLocale()
   const live = useDashboardLive()
   return (
     <Card className="min-w-0 gap-0 overflow-hidden py-0">
       <div className={widgetHeader}>
         <h2 id="dashboard-needs-you" tabIndex={-1} className={widgetHeading}>
-          Needs you · {snapshot.counts.questions + snapshot.counts.reviews}
+          {t('Needs you')} · {snapshot.counts.questions + snapshot.counts.reviews}
         </h2>
         <p className="font-mono text-[11px] text-soft-foreground">
-          {snapshot.counts.questions} questions · {snapshot.counts.reviews} reviews
+          {snapshot.counts.questions} {t('questions')} · {snapshot.counts.reviews} {t('reviews')}
         </p>
       </div>
       {healthy &&
@@ -38,7 +40,7 @@ export function Queue({
       snapshot.coverage.projects.every((p) => p.state === 'complete') ? (
         <p className="flex items-center gap-2.5 px-4 py-8 text-sm text-muted-foreground">
           <StatusDot tone="success" />
-          All caught up — no tasks need your input
+          {t('All caught up — no tasks need your input')}
         </p>
       ) : null}
       <QueueSection snapshot={snapshot} group="questions" count={questions} more={more} />
@@ -57,6 +59,7 @@ function QueueSection({
   count: number
   more: (group: 'questions' | 'reviews', count: number) => void
 }) {
+  const { t } = useLocale()
   const initial = snapshot[group]
   const wanted = Math.max(count, initial.rows.length)
   const query = useDashboardPage(snapshot, group, wanted, wanted > initial.rows.length)
@@ -77,7 +80,7 @@ function QueueSection({
         tabIndex={-1}
         className="border-b bg-card-2 px-4 py-2 font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
       >
-        {group === 'questions' ? 'Questions' : 'Reviews'} · {initial.total}
+        {group === 'questions' ? t('Questions') : t('Reviews')} · {initial.total}
       </h3>
       {staged.updates > 0 && (
         <Button

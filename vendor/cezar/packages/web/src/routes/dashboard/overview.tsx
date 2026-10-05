@@ -4,6 +4,7 @@ import { DisclosureChevron, disclosureSummary, FilterSelect, filterLabel, Metric
 import { formatHours as hours } from './format'
 import { CircleHelp, Activity, CheckCheck, CircleAlert, ChevronRight } from 'lucide-react'
 import { useDashboardLive } from '@/api/dashboard-live'
+import { useLocale } from '@/components/locale-provider'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import type { DashboardOverview, DashboardOverviewGroup } from '@open-mercato/cezar-api-client'
@@ -60,6 +61,7 @@ export function Overview({
   onCurrent?: (group: 'running' | 'needs-you', target: HTMLElement) => void
   children: (modules: { overview?: ReactNode; portfolio?: ReactNode }) => ReactNode
 }) {
+  const { t } = useLocale()
   const [period, setPeriod] = useDashboardFilter('period', ['7d', '30d'] as const, '7d')
   const trigger = useSheetTrigger('outcome', '[data-outcome-trigger]')
   const projects = useProjects().data?.projects
@@ -83,9 +85,9 @@ export function Overview({
   const overview = (
     <Card className="gap-0 py-0">
       <div className={widgetHeader}>
-        <h2 className={widgetHeading}>Workspace overview</h2>
+        <h2 className={widgetHeading}>{t('Workspace overview')}</h2>
         <label className={filterLabel}>
-          Outcomes period
+          {t('Outcomes period')}
           <FilterSelect
             value={period}
             onChange={(e) => {
@@ -93,22 +95,22 @@ export function Overview({
               setSelection(null)
             }}
           >
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
+            <option value="7d">{t('Last 7 days')}</option>
+            <option value="30d">{t('Last 30 days')}</option>
           </FilterSelect>
         </label>
       </div>
       <div className="space-y-4 p-4">
         {query.isPending && (
           <p role="status" className="text-sm text-muted-foreground">
-            Loading overview…
+            {t('Loading overview…')}
           </p>
         )}
         {query.isError && (
           <p role="alert">
-            {data ? 'Showing previous results. ' : ''}Could not refresh overview.{' '}
+            {data ? `${t('Showing previous results.')} ` : ''}{t('Could not refresh overview.')}{' '}
             <Button variant="outline" onClick={() => void query.refetch()}>
-              Retry overview
+              {t('Retry overview')}
             </Button>
           </p>
         )}
@@ -118,10 +120,10 @@ export function Overview({
               {data.metrics.needsYou
                 ? `${data.metrics.needsYou} tasks require your input or review.`
                 : complete && live.connected && !query.isError
-                  ? 'No tasks currently require your input or review.'
-                  : 'No waiting tasks found in the available data.'}{' '}
-              {data.metrics.failed} failed {data.metrics.failed === 1 ? 'outcome' : 'outcomes'}{' '}
-              in this period. Includes subtasks; completed does not mean accepted or deployed.
+                  ? t('No tasks currently require your input or review.')
+                  : t('No waiting tasks found in the available data.')}{' '}
+              {data.metrics.failed} {t('failed outcomes')}{' '}
+              {t('in this period. Includes subtasks; completed does not mean accepted or deployed.')}
             </p>
             <Coverage coverage={data.coverage} retry={() => void query.refetch()} />
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -140,22 +142,22 @@ export function Overview({
                         onCurrent(group, event.currentTarget)
                       else open(group)
                     }}
-                    aria-label={`${labels[group]}: ${value}`}
+                    aria-label={`${t(labels[group])}: ${value}`}
                   >
                     <MetricContent
-                      label={labels[group]}
+                      label={t(labels[group])}
                       value={value}
                       icon={<Icon className="size-4" />}
                     >
                       {group === 'running' || group === 'needs-you'
-                        ? 'Current state'
-                        : `Last ${period === '7d' ? 7 : 30} calendar days`}
+                        ? t('Current state')
+                        : `${t('Last')} ${period === '7d' ? 7 : 30} ${t('calendar days')}`}
                     </MetricContent>
                     <span
                       data-export-exclude
                       className="mt-4 flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors group-hover/metric:text-foreground"
                     >
-                      View tasks{' '}
+                      {t('View tasks')}{' '}
                       <ChevronRight
                         className="size-3 transition-transform group-hover/metric:translate-x-0.5 motion-reduce:transition-none"
                         aria-hidden="true"
@@ -168,23 +170,22 @@ export function Overview({
             <OutcomeInsights period={period} active={active} />
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t pt-3">
               <p className="text-sm text-muted-foreground">
-                Median cycle time{' '}
+                {t('Median cycle time')}{' '}
                 <strong className="font-mono font-semibold text-foreground">
                   {hours(data.metrics.medianCycleHours)}
                 </strong>{' '}
-                · {data.metrics.timedTasks}/{data.metrics.completed} completed tasks have valid
-                timings.{' '}
+                · {data.metrics.timedTasks}/{data.metrics.completed} {t('completed tasks have valid timings.')}{' '}
                 <Button
                   variant="ghost"
                   className="h-auto px-1.5 py-1 text-sm text-foreground underline-offset-4 hover:underline"
                   onClick={() => open('completed')}
                 >
-                  Inspect completed tasks
+                  {t('Inspect completed tasks')}
                 </Button>
               </p>
               <p className="font-mono text-[11px] text-soft-foreground">
                 <time dateTime={data.asOf} title={new Date(data.asOf).toLocaleString()}>
-                  Updated {shortAge(data.asOf)} ago
+                  {t('Updated')} {shortAge(data.asOf)} {t('ago')}
                 </time>
               </p>
             </div>
@@ -194,7 +195,7 @@ export function Overview({
                 className={`${disclosureSummary} py-1`}
               >
                 <DisclosureChevron />
-                How these metrics work
+                {t('How these metrics work')}
               </summary>
               <p className="mt-1 max-w-prose pl-5 leading-relaxed">
                 Outcomes use finish dates, including archived tasks. Scheduled retries are

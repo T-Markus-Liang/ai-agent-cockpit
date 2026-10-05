@@ -43,6 +43,7 @@ import {
   useStagedRows,
 } from './state'
 import { useDashboardPage, useDisplacedRows } from './pages'
+import { useLocale } from '@/components/locale-provider'
 
 const views = [
   ['overview', 'Overview'],
@@ -58,6 +59,7 @@ export function DashboardRoute() {
 }
 
 function DashboardView({ entryKey }: { entryKey: string }) {
+  const { t } = useLocale()
   const location = useLocation()
   const [search, setSearch] = useSearchParams()
   const restored = useRef(readEntry(entryKey)).current
@@ -75,7 +77,7 @@ function DashboardView({ entryKey }: { entryKey: string }) {
       : search.get('view') === 'automations'
         ? 'automations'
         : 'overview'
-  const viewLabel = views.find(([id]) => id === view)![1]
+  const viewLabel = t(views.find(([id]) => id === view)![1])
   const viewTiles =
     view === 'costs'
       ? (['usage', 'trends'] as const)
@@ -224,15 +226,15 @@ function DashboardView({ entryKey }: { entryKey: string }) {
         >
           <header className="flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+              <h1 className="text-2xl font-semibold tracking-tight">{t('Dashboard')}</h1>
               <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-                Across your workspace · Includes subtasks
+                {t('Across your workspace · Includes subtasks')}
                 <span
                   data-export-exclude
                   className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[10.5px] uppercase tracking-[0.1em]"
                 >
                   <StatusDot tone={live.connected ? 'success' : 'neutral'} pulse={live.connected} />
-                  {live.connected ? 'Live' : 'Offline'}
+                  {live.connected ? t('Live') : t('Offline')}
                 </span>
               </p>
             </div>
@@ -242,14 +244,14 @@ function DashboardView({ entryKey }: { entryKey: string }) {
                 <PopoverTrigger asChild>
                   <Button variant="outline" className="min-h-11">
                     <SlidersHorizontalIcon className="size-4" />
-                    Customize
+                    {t('Customize')}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent
                   align="end"
                   className="max-h-[min(32rem,80dvh)] max-w-[calc(100vw-2rem)] overflow-y-auto"
                 >
-                  <p className="mb-3 text-sm font-medium">Optional modules in this view</p>
+                  <p className="mb-3 text-sm font-medium">{t('Optional modules in this view')}</p>
                   {viewTiles.map((key) => (
                     <label key={key} className="flex min-h-11 items-center gap-3 text-sm">
                       <input
@@ -262,19 +264,18 @@ function DashboardView({ entryKey }: { entryKey: string }) {
                       />
                       {
                         {
-                          automations: 'Automations',
-                          fleet: 'Queue & scheduling',
-                          needsYou: 'Needs you',
-                          recent: 'Recent results & GitHub',
-                          usage: 'Usage & cost',
-                          trends: 'Trends',
+                          automations: t('Automations'),
+                          fleet: t('Queue & scheduling'),
+                          needsYou: t('Needs you'),
+                          recent: t('Recent results & GitHub'),
+                          usage: t('Usage & cost'),
+                          trends: t('Trends'),
                         }[key]
                       }
                     </label>
                   ))}
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    Drag a module by its handle. With keyboard: Space, arrow keys, Space. Escape
-                    cancels.
+                    <p className="mt-3 text-xs text-muted-foreground">
+                    {t('Drag a module by its handle. With keyboard: Space, arrow keys, Space. Escape cancels.')}
                   </p>
                   {preferences.order.some((id, index) => id !== resetOrder[index]) && (
                     <Button
@@ -282,7 +283,7 @@ function DashboardView({ entryKey }: { entryKey: string }) {
                       className="min-h-11"
                       onClick={() => preferences.setOrder(resetOrder)}
                     >
-                      Reset {viewLabel} order
+                      {t('Reset')} {viewLabel} {t('order')}
                     </Button>
                   )}
                   <p className="my-3 text-xs text-muted-foreground">
@@ -298,14 +299,14 @@ function DashboardView({ entryKey }: { entryKey: string }) {
                         setCustomizeOpen(false)
                       }}
                     >
-                      Show all in {viewLabel}
+                      {t('Show all in')} {viewLabel}
                     </Button>
                   )}
                 </PopoverContent>
               </Popover>
             </div>
           </header>
-          <nav aria-label="Dashboard views" className="-mt-2 flex flex-wrap gap-5 border-b">
+          <nav aria-label={t('Dashboard views')} className="-mt-2 flex flex-wrap gap-5 border-b">
             {views.map(([id, label]) => {
               const next = new URLSearchParams(search)
               next.set('view', id)
@@ -323,7 +324,7 @@ function DashboardView({ entryKey }: { entryKey: string }) {
                     replace={view === id}
                     state={{ ...location.state, dashboardEntry: view === id ? entryKey : undefined }}
                   >
-                    {label}
+                  {t(label)}
                   </Link>
                 </Button>
               )
@@ -339,7 +340,7 @@ function DashboardView({ entryKey }: { entryKey: string }) {
           )}
           {needsSnapshot && !live.connected && query.data && (
             <p role="status" className="text-xs text-muted-foreground">
-              Tasks disconnected · Last updated {shortAge(query.data.asOf)} ago
+              {t('Tasks disconnected')} · {t('Last updated')} {shortAge(query.data.asOf)} {t('ago')}
             </p>
           )}
           {needsSnapshot && query.isError && (
@@ -363,7 +364,7 @@ function DashboardView({ entryKey }: { entryKey: string }) {
               <LayoutDashboardIcon className="size-4" aria-hidden="true" />
               Optional modules in this view are hidden.
               <Button variant="outline" className="min-h-11" onClick={() => showViewTiles()}>
-                Show all in {viewLabel}
+                {t('Show all in')} {viewLabel}
               </Button>
             </p>
           ) : null}
@@ -404,17 +405,17 @@ function DashboardView({ entryKey }: { entryKey: string }) {
                             }))}
                           />
                           <div className={widgetHeader}>
-                            <h2 className={widgetHeading}>Queue & scheduling</h2>
+                            <h2 className={widgetHeading}>{t('Queue & scheduling')}</h2>
                             <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                               <StatusDot tone={live.connected ? 'success' : 'neutral'} />
-                              {live.connected ? 'Tasks connected' : 'Tasks disconnected'}
+                              {live.connected ? t('Tasks connected') : t('Tasks disconnected')}
                             </span>
                           </div>
                           <div className="grid grid-cols-2 divide-x">
                             {(
                               [
-                                ['queued', 'Queued', query.data.counts.queued],
-                                ['scheduled', 'Scheduled', query.data.counts.scheduled],
+                                ['queued', t('Queued'), query.data.counts.queued],
+                                ['scheduled', t('Scheduled'), query.data.counts.scheduled],
                               ] as const
                             ).map(([group, label, total]) => (
                               <button
@@ -440,7 +441,7 @@ function DashboardView({ entryKey }: { entryKey: string }) {
                           >
                             <summary className={`${disclosureSummary} py-2`}>
                               <DisclosureChevron />
-                              Technical details
+                              {t('Technical details')}
                             </summary>
                             <div className="flex flex-wrap gap-x-5 gap-y-2">
                               <span>
