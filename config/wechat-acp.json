@@ -1,0 +1,27 @@
+{
+  "commandAliases": {
+    "/acp-cancel": ["/取消", "取消"],
+    "/acp-config": ["/设置", "设置"],
+    "/acp-new": ["/新会话", "新会话"]
+  },
+  "agent": {
+    "preset": "codex-official",
+    "cwd": "/Users/markus/ai-agent-cockpit",
+    "showThoughts": false,
+    "showDiffs": true
+  },
+  "agents": {
+    "codex-official": {
+      "label": "Codex CLI (official ACP)",
+      "description": "Official Agent Client Protocol adapter for Codex",
+      "command": "npx",
+      "args": ["@agentclientprotocol/codex-acp"]
+    }
+  },
+  "session": {
+    "resume": "auto",
+    "idleTimeoutMs": 86400000,
+    "maxConcurrentUsers": 1,
+    "turnEndMessage": "✅ 本轮任务已结束"
+  }
+}

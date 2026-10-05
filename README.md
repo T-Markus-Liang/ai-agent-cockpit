@@ -6,6 +6,7 @@
 
 - `vendor/cezar`：Cezar 本地 Agent cockpit（手机浏览器访问）
 - `vendor/wechat-acp`：微信 iLink → ACP Agent 桥接器
+- `gateway/wechat-control.mjs`：回环地址上的二维码生成、扫码状态轮询和登录状态 API
 
 ## 当前状态
 
@@ -13,13 +14,16 @@
 - 两个项目依赖已安装
 - 微信桥已完成 TypeScript 构建
 - Cezar 服务端和 Web cockpit 已构建
-- 微信二维码登录尚未执行，需要人工扫码
+- 微信二维码登录已完成，当前账号已连接
+- 微信桥使用官方 `@agentclientprotocol/codex-acp`，避免旧版适配器与本机 Codex 配置不兼容
+- Cezar 前端已增加中英文切换按钮
+- 全局设置中已增加 WeChat 连接页面
 
 ## 重要边界
 
-`wechat-acp` 原生连接的是一个 ACP Agent。Cezar 自身是 HTTP/Web cockpit，
-不是 ACP Agent，因此两者之间还需要一个小型适配层才能做到“微信 → Cezar 任务队列”。
-在适配层完成前，不要把微信桥配置成自动允许任意命令执行。
+`wechat-acp` 原生连接的是一个 ACP Agent。当前 bootstrap 配置将微信消息送到本机 Codex，
+Cezar cockpit 独立管理任务和工作树；后续可以把 `gateway/` 扩展成“微信 → Cezar HTTP
+任务队列”的适配层。微信控制服务只绑定 `127.0.0.1`，不会对局域网开放。
 
 ## 运行目录
 
@@ -27,3 +31,12 @@
 - Cezar 用户状态默认写入 `~/.cezar/`
 - 微信桥登录状态默认写入 `~/.wechat-acp/`
 
+## 启动
+
+```bash
+cd /Users/markus/ai-agent-cockpit
+node vendor/cezar/packages/cezar/dist/index.js --repo "$PWD" --port 4321 --no-open
+node gateway/wechat-control.mjs
+```
+
+打开 `http://127.0.0.1:4321/settings/global/wechat` 可以查看微信状态；未连接时点击按钮生成二维码。

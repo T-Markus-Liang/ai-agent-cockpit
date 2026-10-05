@@ -7,6 +7,7 @@ vendor/*/packages/*/node_modules/
 vendor/*/dist/
 vendor/*/web/dist/
 vendor/*/packages/cezar/web/dist/
+vendor/*/.ai/
 .wechat-acp/
 .ai/cezar/
 .DS_Store
