@@ -196,6 +196,7 @@ export class WeChatAcpBridge {
         agentCwd: this.config.agent.cwd,
         agentEnv: this.config.agent.env,
         agentPreset: this.config.agent.preset ?? "raw",
+        fallbackAgents: this.config.fallbackAgents,
         idleTimeoutMs: this.config.session.idleTimeoutMs,
         maxConcurrentUsers: this.config.session.maxConcurrentUsers,
         promptTimeoutMs: this.config.session.promptTimeoutMs,

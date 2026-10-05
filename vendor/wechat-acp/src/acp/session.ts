@@ -20,7 +20,7 @@ import {
   AgentProcessCleanupError,
   type AgentProcessInfo,
 } from "./agent-manager.js";
-import type { SessionResumePolicy } from "../config.js";
+import type { AgentCommandConfig, SessionResumePolicy } from "../config.js";
 import { trackEvent, trackException, hashUserId } from "../telemetry/index.js";
 
 /**
@@ -105,6 +105,7 @@ export interface SessionManagerOpts {
   agentCwd: string;
   agentEnv?: Record<string, string>;
   agentPreset?: string;
+  fallbackAgents?: AgentCommandConfig[];
   idleTimeoutMs: number;
   maxConcurrentUsers: number;
   /** Hard cap for one prompt turn; prevents a hung provider blocking later messages forever. */
@@ -229,6 +230,8 @@ export class SessionManager {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private opts: SessionManagerOpts;
   private aborted = false;
+  /** Users switched to a fallback after a primary provider failure. */
+  private fallbackUsers = new Set<string>();
 
   constructor(opts: SessionManagerOpts) {
     this.opts = opts;
@@ -980,18 +983,48 @@ export class SessionManager {
         resumePolicy === "off"
           ? undefined
           : await this.opts.getPersistedSessionId?.(userId);
-      agentInfo = await spawnAgent({
-        command: this.opts.agentCommand,
-        args: this.opts.agentArgs,
-        cwd: this.opts.agentCwd,
-        env: this.opts.agentEnv,
-        client,
-        mcpServers: mcpLease ? [mcpLease.mcpServer] : [],
-        resumePolicy,
-        persistedSessionId,
-        signal,
-        log: (msg) => this.opts.log(`[${userId}] ${msg}`),
-      });
+      const candidates: AgentCommandConfig[] = this.fallbackUsers.has(userId)
+        ? [...(this.opts.fallbackAgents ?? [])]
+        : [
+            { command: this.opts.agentCommand, args: this.opts.agentArgs, env: this.opts.agentEnv },
+            ...(this.opts.fallbackAgents ?? []),
+          ];
+      if (candidates.length === 0) {
+        throw new Error("No ACP agent candidates configured");
+      }
+      let lastError: unknown;
+      for (const [index, candidate] of candidates.entries()) {
+        const isFallback = this.fallbackUsers.has(userId) || index > 0;
+        if (isFallback) {
+          // A fallback harness has a different provider/session namespace; never resume a
+          // persisted Codex session inside OpenCode or another fallback harness.
+          await this.opts.removePersistedSessionId?.(userId).catch(() => {});
+        }
+        try {
+          agentInfo = await spawnAgent({
+            command: candidate.command,
+            args: candidate.args,
+            cwd: this.opts.agentCwd,
+            env: candidate.env,
+            client,
+            mcpServers: mcpLease ? [mcpLease.mcpServer] : [],
+            resumePolicy: isFallback ? "off" : resumePolicy,
+            persistedSessionId: isFallback ? undefined : persistedSessionId,
+            signal,
+            log: (msg) => this.opts.log(`[${userId}] ${msg}`),
+          });
+          if (isFallback) {
+            this.fallbackUsers.add(userId);
+            this.opts.log(`[${userId}] Primary ACP unavailable; fallback agent ${candidate.command} selected`);
+          }
+          break;
+        } catch (err) {
+          lastError = err;
+          this.opts.log(`[${userId}] ACP candidate ${candidate.command} failed: ${String(err)}`);
+          if (index === candidates.length - 1) throw err;
+        }
+      }
+      if (!agentInfo!) throw lastError ?? new Error("No ACP agent candidates configured");
     } catch (err) {
       try {
         await mcpLease?.close();
@@ -1301,6 +1334,19 @@ export class SessionManager {
                 `[${session.userId}] Timed-out ACP cleanup deferred: ${String(cleanupErr)}`,
               );
             });
+            if (!session.client.hasProducedMessage && !this.fallbackUsers.has(session.userId) && (this.opts.fallbackAgents?.length ?? 0) > 0) {
+              // Retry the same user prompt once through the first configured fallback agent.
+              // The primary session has been fully torn down above, so this cannot overlap
+              // provider processes or reuse the stale persisted ACP session.
+              this.fallbackUsers.add(session.userId);
+              void this.enqueue(session.userId, {
+                ...pending,
+                completion: undefined,
+              }).catch((retryErr) => {
+                this.opts.log(`[${session.userId}] Fallback retry failed: ${String(retryErr)}`);
+              });
+              return;
+            }
             try {
               await this.opts.onReply(
                 session.userId,

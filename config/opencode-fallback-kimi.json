@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "local-kimi/kimi-k3",
+  "provider": {
+    "local-kimi": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local Kimi fallback",
+      "options": { "baseURL": "http://127.0.0.1:15724/v1", "apiKey": "PROXY_MANAGED" },
+      "models": { "kimi-k3": { "name": "Kimi K3" } }
+    }
+  }
+}

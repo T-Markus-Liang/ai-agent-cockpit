@@ -18,6 +18,7 @@
 - 微信桥使用官方 `@agentclientprotocol/codex-acp`，避免旧版适配器与本机 Codex 配置不兼容
 - 微信桥、Cezar 和二维码控制服务已安装为 macOS launchd 常驻服务，息屏后不会依赖当前终端会话
 - 微信回复采用朋友型中文助理人格，参考长期主义和价值投资思维，不冒充任何真人
+- 微信 ACP 在主 Codex 初始化/单轮超时且尚未产生回复时，按 DeepSeek → Kimi → GLM → Antigravity Gemini 顺序尝试本机 fallback；provider URL、认证由本机已有配置/反代提供，不写入 Git
 - Cezar 前端已增加中英文切换按钮
 - 全局设置中已增加 WeChat 连接页面
 

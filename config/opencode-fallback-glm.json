@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "local-glm/glm-5-3-flash-260828",
+  "provider": {
+    "local-glm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local GLM fallback",
+      "options": { "baseURL": "http://127.0.0.1:15732/v1", "apiKey": "local" },
+      "models": { "glm-5-3-flash-260828": { "name": "GLM 5.3 Flash" } }
+    }
+  }
+}

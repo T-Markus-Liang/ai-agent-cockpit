@@ -163,6 +163,8 @@ export interface WeChatAcpConfig {
      */
     resourceInlineLimit?: number;
   };
+  /** Optional ACP agents tried in order when the primary agent cannot initialize. */
+  fallbackAgents?: AgentCommandConfig[];
   agents: Record<string, AgentPreset>;
   session: {
     idleTimeoutMs: number;

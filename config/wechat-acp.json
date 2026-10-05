@@ -22,6 +22,12 @@
       }
     }
   },
+  "fallbackAgents": [
+    { "command": "/Users/markus/.opencode/bin/opencode", "args": ["acp"], "env": { "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-deepseek.json", "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
+    { "command": "/Users/markus/.opencode/bin/opencode", "args": ["acp"], "env": { "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-kimi.json", "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
+    { "command": "/Users/markus/.opencode/bin/opencode", "args": ["acp"], "env": { "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-glm.json", "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
+    { "command": "/Users/markus/.opencode/bin/opencode", "args": ["acp"], "env": { "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-antigravity.json", "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } }
+  ],
   "session": {
     "resume": "auto",
     "idleTimeoutMs": 86400000,
