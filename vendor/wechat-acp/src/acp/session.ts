@@ -107,6 +107,8 @@ export interface SessionManagerOpts {
   agentPreset?: string;
   idleTimeoutMs: number;
   maxConcurrentUsers: number;
+  /** Hard cap for one prompt turn; prevents a hung provider blocking later messages forever. */
+  promptTimeoutMs?: number;
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -178,6 +180,16 @@ class SessionResetError extends Error {
   constructor() {
     super("ACP session reset before the message was processed");
     this.name = "SessionResetError";
+  }
+}
+
+class PromptTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(operationName: string, timeoutMs: number) {
+    super(`${operationName} timed out after ${timeoutMs}ms`);
+    this.name = "PromptTimeoutError";
+    this.timeoutMs = timeoutMs;
   }
 }
 
@@ -1175,6 +1187,7 @@ export class SessionManager {
               prompt: pending.prompt,
             }),
             "prompt response",
+            this.opts.promptTimeoutMs,
           );
           if (!this.isCurrentSession(session)) {
             completionError = session.closedError ?? new SessionResetError();
@@ -1262,6 +1275,45 @@ export class SessionManager {
             return;
           }
           this.opts.log(`[${session.userId}] Agent prompt error: ${String(err)}`);
+
+          if (err instanceof PromptTimeoutError) {
+            this.opts.log(
+              `[${session.userId}] Prompt timed out after ${err.timeoutMs}ms; resetting the ACP session`,
+            );
+            try {
+              await session.agentInfo.connection.cancel({
+                sessionId: session.agentInfo.sessionId,
+              });
+            } catch {
+              // The process is cleaned up below even when ACP cancellation cannot be delivered.
+            }
+            session.closedError = err;
+            this.rejectQueuedCompletions(session, err);
+            session.queue.splice(0);
+            this.sessions.delete(session.userId);
+            session.cleanupRegistered = true;
+            this.registerSessionCleanup(session, true);
+            if (this.opts.removePersistedSessionId) {
+              this.getOrCreateCleanupState(session.userId).removePersistedSessionId = true;
+            }
+            await this.retryCleanupState(session.userId).catch((cleanupErr) => {
+              this.opts.log(
+                `[${session.userId}] Timed-out ACP cleanup deferred: ${String(cleanupErr)}`,
+              );
+            });
+            try {
+              await this.opts.onReply(
+                session.userId,
+                pending.contextToken,
+                "⚠️ 这轮响应超过 5 分钟没有完成，我已重启连接。请再发一次刚才的消息。",
+                pending.replyGeneration,
+                isSessionCurrent,
+              );
+            } catch {
+              // Best effort: the provider timeout must not leave the queue blocked.
+            }
+            return;
+          }
 
           trackException(err, "prompt", hashUserId(session.userId));
           trackEvent(
@@ -1417,6 +1469,7 @@ export class SessionManager {
     session: UserSession,
     operation: Promise<T>,
     operationName: string,
+    timeoutMs?: number,
   ): Promise<T> {
     const process = session.agentInfo.process;
     let onExit: (() => void) | undefined;
@@ -1428,6 +1481,15 @@ export class SessionManager {
             process.once("exit", onExit);
           });
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let operationTimeout: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = timeoutMs && timeoutMs > 0
+      ? new Promise<never>((_resolve, reject) => {
+          operationTimeout = setTimeout(
+            () => reject(new PromptTimeoutError(operationName, timeoutMs)),
+            timeoutMs,
+          );
+        })
+      : undefined;
     const exitTimeout = processExited.then(
       () =>
         new Promise<never>((_resolve, reject) => {
@@ -1452,10 +1514,12 @@ export class SessionManager {
         operation,
         session.connectionClosedError,
         exitTimeout,
+        ...(timeoutPromise ? [timeoutPromise] : []),
       ]);
     } finally {
       if (onExit) process.off("exit", onExit);
       if (timeout) clearTimeout(timeout);
+      if (operationTimeout) clearTimeout(operationTimeout);
     }
   }
 

@@ -198,6 +198,7 @@ export class WeChatAcpBridge {
         agentPreset: this.config.agent.preset ?? "raw",
         idleTimeoutMs: this.config.session.idleTimeoutMs,
         maxConcurrentUsers: this.config.session.maxConcurrentUsers,
+        promptTimeoutMs: this.config.session.promptTimeoutMs,
         resumePolicy,
         getPersistedSessionId:
           resumePolicy !== "off" && stateFile

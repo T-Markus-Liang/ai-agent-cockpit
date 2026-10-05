@@ -26,6 +26,7 @@
     "resume": "auto",
     "idleTimeoutMs": 86400000,
     "maxConcurrentUsers": 1,
+    "promptTimeoutMs": 300000,
     "turnEndMessage": ""
   }
 }
