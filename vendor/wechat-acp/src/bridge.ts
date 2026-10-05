@@ -200,6 +200,7 @@ export class WeChatAcpBridge {
         idleTimeoutMs: this.config.session.idleTimeoutMs,
         maxConcurrentUsers: this.config.session.maxConcurrentUsers,
         promptTimeoutMs: this.config.session.promptTimeoutMs,
+        startupTimeoutMs: this.config.session.startupTimeoutMs,
         resumePolicy,
         getPersistedSessionId:
           resumePolicy !== "off" && stateFile

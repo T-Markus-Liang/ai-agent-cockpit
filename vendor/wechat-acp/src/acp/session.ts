@@ -110,6 +110,7 @@ export interface SessionManagerOpts {
   maxConcurrentUsers: number;
   /** Hard cap for one prompt turn; prevents a hung provider blocking later messages forever. */
   promptTimeoutMs?: number;
+  startupTimeoutMs?: number;
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -1011,6 +1012,7 @@ export class SessionManager {
             resumePolicy: isFallback ? "off" : resumePolicy,
             persistedSessionId: isFallback ? undefined : persistedSessionId,
             signal,
+            startupTimeoutMs: this.opts.startupTimeoutMs,
             log: (msg) => this.opts.log(`[${userId}] ${msg}`),
           });
           if (isFallback) {

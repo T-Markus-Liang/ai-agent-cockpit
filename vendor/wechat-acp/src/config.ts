@@ -171,6 +171,8 @@ export interface WeChatAcpConfig {
     maxConcurrentUsers: number;
     /** Maximum time a single ACP prompt may block the per-user queue. */
     promptTimeoutMs?: number;
+    /** Maximum time to wait for an ACP process to initialize. */
+    startupTimeoutMs?: number;
     /**
      * Whether persisted ACP sessions should be loaded after bridge restarts.
      * `auto` falls back to a new session only when loading is unsupported or
@@ -257,6 +259,7 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
       idleTimeoutMs: 1440 * 60_000, // 24 hours
       maxConcurrentUsers: 10,
       promptTimeoutMs: 5 * 60_000,
+      startupTimeoutMs: 60_000,
       resume: "off",
     },
     daemon: {

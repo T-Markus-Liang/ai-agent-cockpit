@@ -38,6 +38,7 @@ const uncertainWindowsProcessTrees = new WeakMap<
   ChildProcess,
   { error: unknown }
 >();
+const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
 
 export async function spawnAgent(params: {
   command: string;
@@ -49,6 +50,7 @@ export async function spawnAgent(params: {
   resumePolicy?: SessionResumePolicy;
   persistedSessionId?: string;
   signal?: AbortSignal;
+  startupTimeoutMs?: number;
   log: (msg: string) => void;
 }): Promise<AgentProcessInfo> {
   const {
@@ -90,6 +92,34 @@ export async function spawnAgent(params: {
     log(`Agent process exited: code=${code} signal=${signal}`);
   });
 
+  // A failed spawn or an ACP process that exits before initialize/newSession must reject the
+  // startup operation immediately. Without this race, ClientSideConnection waits forever for a
+  // JSON-RPC reply from a process that never existed, which prevents configured fallback agents
+  // from taking over.
+  const processFailure = new Promise<never>((_resolve, reject) => {
+    proc.once("error", reject);
+    proc.once("exit", (code, signal) => {
+      reject(
+        new Error(
+          `Agent process exited during startup: code=${code ?? "null"} signal=${signal ?? "null"}`,
+        ),
+      );
+    });
+  });
+  const startupOperation = <T>(operation: Promise<T>): Promise<T> => {
+    const startupTimeoutMs = params.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`ACP startup timed out after ${startupTimeoutMs}ms`)),
+        startupTimeoutMs,
+      );
+    });
+    return Promise.race([operation, processFailure, timeout]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  };
+
   try {
     if (!proc.stdin || !proc.stdout) {
       const err = new Error("Failed to get agent process stdio");
@@ -106,7 +136,7 @@ export async function spawnAgent(params: {
     // Initialize
     log("Initializing ACP connection...");
     const initResult = await abortable(
-      connection.initialize({
+      startupOperation(connection.initialize({
         protocolVersion: acp.PROTOCOL_VERSION,
         clientInfo: {
           name: packageJson.name,
@@ -119,7 +149,7 @@ export async function spawnAgent(params: {
             writeTextFile: true,
           },
         },
-      }),
+      })),
       signal,
     );
     log(`ACP initialized (protocol v${initResult.protocolVersion})`);
@@ -151,11 +181,11 @@ export async function spawnAgent(params: {
         client.beginSessionReplay();
         try {
           const loadResult = await abortable(
-            connection.loadSession({
+            startupOperation(connection.loadSession({
               cwd,
               mcpServers: sessionMcpServers,
               sessionId: persistedSessionId,
-            }),
+            })),
             signal,
           );
           await client.endSessionReplay();
@@ -180,10 +210,10 @@ export async function spawnAgent(params: {
 
     log("Creating ACP session...");
     const sessionResult = await abortable(
-      connection.newSession({
+      startupOperation(connection.newSession({
         cwd,
         mcpServers: sessionMcpServers,
-      }),
+      })),
       signal,
     );
     log(`ACP session created: ${sessionResult.sessionId}`);
