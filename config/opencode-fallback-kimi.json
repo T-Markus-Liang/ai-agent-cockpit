@@ -5,7 +5,7 @@
     "local-kimi": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Local Kimi fallback",
-      "options": { "baseURL": "http://127.0.0.1:15724/v1", "apiKey": "PROXY_MANAGED" },
+      "options": { "baseURL": "http://127.0.0.1:4323/v1", "apiKey": "local" },
       "models": { "kimi-k3": { "name": "Kimi K3" } }
     }
   }

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.markus.ai-agent-cockpit.kimi-shim</string>
+  <key>ProgramArguments</key><array>
+    <string>/opt/homebrew/bin/python3.11</string>
+    <string>/Users/markus/ai-agent-cockpit/gateway/kimi-chat-shim.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/markus/ai-agent-cockpit</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>HTTP_PROXY</key><string>http://127.0.0.1:7892</string>
+    <key>HTTPS_PROXY</key><string>http://127.0.0.1:7892</string>
+    <key>NO_PROXY</key><string>localhost,127.0.0.1,::1</string>
+  </dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/markus/ai-agent-cockpit/logs/kimi-shim.log</string>
+  <key>StandardErrorPath</key><string>/Users/markus/ai-agent-cockpit/logs/kimi-shim.err.log</string>
+</dict></plist>
