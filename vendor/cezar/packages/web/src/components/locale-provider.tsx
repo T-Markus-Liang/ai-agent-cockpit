@@ -75,6 +75,7 @@ const TRANSLATIONS: Record<string, string> = {
   'Open tracker settings': '打开跟踪器设置', 'Retry connection': '重试连接', 'Search results could not be loaded.': '无法加载搜索结果。',
   '系统连接': '系统连接', '本机 Agent、微信入口和模型反代的实际连接状态。': '本机 Agent、微信入口和模型反代的实际连接状态。',
   '打开微信连接': '打开微信连接', '查看本机 Agent 通道': '查看本机 Agent 通道',
+  '主 Agent、fallback、微信和本机 App 的实时边界': '主 Agent、fallback、微信和本机 App 的实时边界', '管理连接': '管理连接',
 }
 
 type LocaleContextValue = { locale: Locale; setLocale: (locale: Locale) => void; t: (text: string) => string }
