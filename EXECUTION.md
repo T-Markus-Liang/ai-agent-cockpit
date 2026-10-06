@@ -17,7 +17,7 @@
 | 微信入口 | 已运行 | launchd 常驻；微信 ACP 主 Codex，5 分钟 prompt 超时；Codex ACP 支持时注入控制面 HTTP MCP，连接器仍不直接承担外部派单。 |
 | Cezar cockpit | 已运行 | `127.0.0.1:4321`；负责本身的 run/worktree；不是全机 App 历史控制面。 |
 | Agent fallback | 已实现第一版 | 主 ACP 启动失败/超时可切换 DeepSeek、Kimi、WorkBuddy、Devin/OpenCode 候选；provider 认证和历史恢复仍分别归各 Agent。 |
-| Dashboard / Settings | 已实现第四版 | Dashboard 首屏增加控制面 Task/Execution 和待审批动作卡片；系统连接和 Settings → Local agents 读取 4324 Feature Map，区分已连接、已发现/待验证、不可用和 GUI-only；深层页面仍有英文待翻译。 |
+| Dashboard / Settings | 已实现第五版 | Dashboard 首屏增加控制面 Task/Execution 和待审批动作卡片；Workflows 页面可视化 Personal AI OS Chief/Router/Worker/Reviewer/Approval 闭环；系统连接和 Settings → Local agents 读取 4324 Feature Map。 |
 | pstack 方法论 | 已纳入设计并有基础回归评估 | Skill-first、Chief/Worker/Reviewer、arena/interrogate/tdd、verification-first、顺序降级；`npm run eval:control-plane` 已覆盖控制面协议边界，独立模型/Skill 行为 Eval 仍待完成。 |
 | Task/Session/Execution 控制面 | 已完成第二片 | `contracts.mjs`、`store.mjs` 和 `gateway/control-plane.mjs` 已提供 Task/Execution 持久化、幂等写入、状态转移、Evidence、Approval、Session lock 和重启阻断；Cezar 真实派单已接入但必须经过精确审批。 |
 

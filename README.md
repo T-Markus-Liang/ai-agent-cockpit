@@ -31,6 +31,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 - 微信显式审批命令：`/approve <approval_id>`、`/reject <approval_id>`，并支持 `/批准`、`/拒绝`；命令只改变 Approval 状态，不绕过控制面执行门槛。
 - Cezar Dashboard / Settings 的系统连接和本机 Agent 页面会读取 `4324/api/control-plane/capabilities`，把“已发现”“已连接”“待验证”“不可用”分开显示。
 - Dashboard 的待审批动作卡片使用同一 Approval API；批准/拒绝不会绕过服务端的目标、参数摘要和有效期校验。
+- Workflows 页面顶部新增 Personal AI OS 控制面工作流图：微信入口 → Chief → Router → Task/Execution → Worker → Reviewer/Verification → Approval/Completion；下方仍保留 Cezar 原生技能链编辑器。
 - Feature Map 也会显示 Devin Cloud / GitHub Actions 的只读入口发现，但不会读取密钥、触发云任务或推断计费/权限可用。
 - `scripts/control-plane.mjs`：CLI 会话索引查询。
 - `launchd/com.markus.ai-agent-cockpit.control-plane.plist`：控制面常驻定义；可按需加载，不改变旧服务。
