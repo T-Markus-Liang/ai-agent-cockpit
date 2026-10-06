@@ -542,3 +542,29 @@ test("a new ACP session is persisted after its first completed prompt", async ()
   assert.deepEqual(persisted, ["user-1:session-1"]);
   assert.equal(session.sessionIdPersisted, true);
 });
+
+test("a fallback ACP session never overwrites the primary session scope", async () => {
+  const persisted: string[] = [];
+  const manager = new SessionManager({
+    agentCommand: "unused",
+    agentArgs: [],
+    agentCwd: process.cwd(),
+    idleTimeoutMs: 0,
+    maxConcurrentUsers: 1,
+    resumePolicy: "auto",
+    persistSessionId: async (userId, sessionId) => {
+      persisted.push(`${userId}:${sessionId}`);
+    },
+    showThoughts: false,
+    log: () => {},
+    onReply: async () => {},
+    sendTyping: async () => {},
+  });
+  const session = makeTurnSession({ flushText: "fallback", producedMessage: true, events: [] });
+  session.fallbackSession = true;
+
+  await processTurn(manager, session);
+
+  assert.deepEqual(persisted, []);
+  assert.equal(Boolean(session.sessionIdPersisted), false);
+});

@@ -73,6 +73,8 @@ export interface UserSession {
   connectionClosedError?: Promise<never>;
   lifecycleGeneration?: number;
   sessionIdPersisted?: boolean;
+  /** True when this session was created by a fallback candidate; never persist its id in the primary scope. */
+  fallbackSession?: boolean;
   lastActivity: number;
   createdAt: number;
 }
@@ -979,6 +981,7 @@ export class SessionManager {
 
     const mcpLease = this.opts.createMcpLease?.();
     let agentInfo: AgentProcessInfo;
+    let fallbackSession = false;
     try {
       const resumePolicy = this.opts.resumePolicy ?? "off";
       const persistedSessionId =
@@ -1021,6 +1024,7 @@ export class SessionManager {
           });
           if (isFallback) {
             this.fallbackUsers.add(userId);
+            fallbackSession = true;
             this.opts.log(`[${userId}] Primary ACP unavailable; fallback agent ${candidate.command} selected`);
           }
           break;
@@ -1075,6 +1079,7 @@ export class SessionManager {
       queue: [],
       processing: false,
       sessionIdPersisted: agentInfo.sessionOutcome === "loaded",
+      fallbackSession,
       lastActivity: Date.now(),
       createdAt: Date.now(),
     };
@@ -1646,6 +1651,7 @@ export class SessionManager {
   private async persistSessionId(session: UserSession): Promise<void> {
     if (
       session.sessionIdPersisted ||
+      session.fallbackSession ||
       !this.opts.persistSessionId ||
       session.processExitedError !== undefined ||
       !this.isCurrentSession(session)
