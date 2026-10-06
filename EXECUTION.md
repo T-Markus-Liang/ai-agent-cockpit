@@ -27,7 +27,7 @@
 | --- | --- |
 | 微信入口 | 已检查配置和启动定义使用默认 Codex；连接器是移动入口，默认 Agent 可承担 Chief。当前文档更新不重新探测实时运行健康。 |
 | Cezar | 已检查实现包含任务派发、run 继续、worktree 和 runner seam；已检查的 runner 注册表没有 Devin。 |
-| Devin 本机 | 之前的孤立 ACP 验证成功完成 initialize 和 session/new；未验证真实 prompt、模型鉴权、旧会话 list/load、历史读取、工具调用或云端调度。 |
+| Devin 本机 | 已通过显式 ACP probe 完成 initialize/session/list；声明 loadSession，但未验证真实 prompt、模型鉴权、session/load、历史读取、工具调用或云端调度。 |
 | Devin preset | config/wechat-acp.json 中已有 devin 入口 preset；没有通过本次更新启用它。它不是 Chief 调用 Worker 的工具。 |
 | 能力页面 | 已检查的 Local agents 是静态声明，不能用作调度成功或运行健康证据。 |
 | 跨 Agent 管理 | 在已检查的入口与调度代码中未发现完整统一会话检索与 Chief 调度闭环，不能标为已实现。 |
