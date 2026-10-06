@@ -4,6 +4,7 @@ import { ControlPlaneStore } from '../control-plane/store.mjs'
 import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution } from '../control-plane/dispatcher.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 import { executeNativeSessionPrompt, nativePromptPlan } from '../control-plane/native-acp-executor.mjs'
+import { createReviewerExecution } from '../control-plane/reviewer.mjs'
 
 const args = process.argv.slice(2)
 const json = args.includes('--json')
@@ -93,6 +94,9 @@ async function main() {
   if (command === 'execution' && subcommand === 'status') {
     return output(await store.updateExecutionStatus(required('id'), { status: required('status'), outcome: value('outcome') }, { idempotencyKey: idempotency() }))
   }
+  if (command === 'review' && subcommand === 'create') {
+    return output(await createReviewerExecution({ store, taskId: required('task'), sourceExecutionId: required('source-execution'), reviewerId: required('reviewer'), sessionRefId: value('session'), idempotencyKey: idempotency() }))
+  }
   if (command === 'native' && subcommand === 'plan') {
     return output(nativePromptPlan({ taskId: required('task'), executionId: required('execution'), source: required('provider'), nativeSessionId: required('session'), cwd: required('cwd'), prompt: required('prompt') }))
   }
@@ -139,7 +143,7 @@ async function main() {
   if (command === 'session' && subcommand === 'unlock') {
     return output(await store.releaseSessionLock(required('id'), { owner: value('owner'), token: value('token') }, { idempotencyKey: idempotency() }))
   }
-  throw new Error('用法：sessions list/native-list/native-load-probe | task create/list/show/completion-plan/complete | execution create/status | native plan/prompt | evidence add | approval create/decide | cezar plan/dispatch/reconcile | session lock/unlock')
+  throw new Error('用法：sessions list/native-list/native-load-probe | task create/list/show/completion-plan/complete | execution create/status | review create | native plan/prompt | evidence add | approval create/decide | cezar plan/dispatch/reconcile | session lock/unlock')
 }
 
 try {

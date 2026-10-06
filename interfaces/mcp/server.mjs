@@ -3,6 +3,7 @@ import { getSessionMetadata } from '../../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../../control-plane/native-acp.mjs'
 import { executeNativeSessionPrompt, nativePromptPlan } from '../../control-plane/native-acp-executor.mjs'
 import { buildRoutePlan } from '../../control-plane/router.mjs'
+import { createReviewerExecution } from '../../control-plane/reviewer.mjs'
 import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution } from '../../control-plane/dispatcher.mjs'
 import { CezarAdapter } from '../../adapters/engines/cezar.mjs'
 
@@ -58,6 +59,11 @@ export const TOOL_DEFINITIONS = Object.freeze([
     name: 'create_execution',
     description: '为 Task 创建一个排队的 Execution；不启动外部 Agent。',
     inputSchema: { type: 'object', required: ['taskId', 'workerId', 'idempotencyKey'], properties: { taskId: { type: 'string' }, workerId: { type: 'string' }, sessionRefId: { type: 'string' }, parentExecutionId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+  },
+  {
+    name: 'create_review_execution',
+    description: '为已完成/验证中的 Worker Execution 创建独立 Reviewer Execution；只创建队列项，不启动 Agent。',
+    inputSchema: { type: 'object', required: ['taskId', 'sourceExecutionId', 'reviewerId', 'idempotencyKey'], properties: { taskId: { type: 'string' }, sourceExecutionId: { type: 'string' }, reviewerId: { type: 'string' }, sessionRefId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'update_execution_status',
@@ -141,6 +147,7 @@ export async function callTool(name, args = {}, { store } = {}) {
   if (name === 'complete_task') return store.completeTask(args.taskId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'list_audit_events') return store.listEvents(args)
   if (name === 'create_execution') return store.createExecution(args.taskId, args, { idempotencyKey: args.idempotencyKey })
+  if (name === 'create_review_execution') return createReviewerExecution({ ...args, store })
   if (name === 'update_execution_status') return store.updateExecutionStatus(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'plan_native_prompt') return nativePromptPlan(args)
   if (name === 'prompt_native_session') return executeNativeSessionPrompt({ ...args, store, idempotencyKey: args.idempotencyKey })

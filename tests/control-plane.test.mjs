@@ -14,6 +14,7 @@ import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
 import { executeNativeSessionPrompt, nativePromptPlan, runNativeAcpPrompt } from '../control-plane/native-acp-executor.mjs'
 import { buildRoutePlan } from '../control-plane/router.mjs'
+import { createReviewerExecution } from '../control-plane/reviewer.mjs'
 
 test('contracts keep Task, SessionRef and Execution separate', () => {
   const task = createTask({ goal: '检查本机 agent 状态', acceptanceCriteria: ['输出可追溯证据'] })
@@ -291,4 +292,20 @@ test('route plan applies capability and policy gates without side effects', asyn
   assert.equal(plan.sideEffects, false)
   assert.equal(plan.requiresApproval, true)
   assert.equal(plan.candidates.find((candidate) => candidate.id === 'gui').eligible, false)
+})
+
+test('reviewer execution is an independent auditable child', async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'personal-ai-os-review-'))
+  try {
+    const store = new ControlPlaneStore({ stateDir })
+    const task = await store.createTask({ goal: 'review test' }, { idempotencyKey: 'review-task' })
+    const source = await store.createExecution(task.task.id, { workerId: 'codex' }, { idempotencyKey: 'review-source' })
+    for (const [index, status] of ['running', 'verifying', 'reviewing', 'succeeded'].entries()) await store.updateExecutionStatus(source.execution.id, { status }, { idempotencyKey: `review-status-${index}` })
+    const review = await createReviewerExecution({ store, taskId: task.task.id, sourceExecutionId: source.execution.id, reviewerId: 'opencode-reviewer', idempotencyKey: 'review-child' })
+    assert.equal(review.reviewOf, source.execution.id)
+    assert.equal(review.independent, true)
+    assert.equal(review.execution.parentExecutionId, source.execution.id)
+  } finally {
+    await fs.rm(stateDir, { recursive: true, force: true })
+  }
 })

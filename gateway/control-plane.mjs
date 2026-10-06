@@ -5,6 +5,7 @@ import { getSessionMetadata } from '../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 import { executeNativeSessionPrompt, nativePromptPlan } from '../control-plane/native-acp-executor.mjs'
 import { buildRoutePlan } from '../control-plane/router.mjs'
+import { createReviewerExecution } from '../control-plane/reviewer.mjs'
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
@@ -148,6 +149,10 @@ const server = http.createServer(async (req, res) => {
     if (executionTaskId && req.method === 'POST') {
       const result = await store.createExecution(executionTaskId, await body(req), { idempotencyKey: idempotencyKey(req) })
       return send(res, result.replay ? 200 : 201, result)
+    }
+    const reviewTaskId = segment(url.pathname, '/api/control-plane/tasks/', '/reviews')
+    if (reviewTaskId && req.method === 'POST') {
+      return send(res, 201, await createReviewerExecution({ ...(await body(req)), store, taskId: reviewTaskId, idempotencyKey: idempotencyKey(req) }))
     }
     const statusExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/status')
     if (statusExecutionId && req.method === 'POST') {

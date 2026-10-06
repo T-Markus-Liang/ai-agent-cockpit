@@ -19,6 +19,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 - `control-plane/contracts.mjs`：运行时校验的 Task、SessionRef、Execution、Evidence、Approval、AgentCapability 契约。
 - `control-plane/store.mjs`：私有状态目录中的原子持久化、幂等键、有限状态转移、Evidence、审批、会话锁和重启恢复保护。
 - Task 完成门槛：所有 Execution 终态、至少一个 succeeded、test/command Evidence、独立 review Evidence，并消费精确绑定的完成 Approval。
+- Reviewer Execution 会保留 parent Execution 关联，只创建可审计 review child，不会自动启动或伪装成 Worker 原上下文。
 - `control-plane/session-index.mjs`：只读发现 Codex、OpenCode、Kimi 的本地会话元数据；发现 WorkBuddy、Devin、Claude Code、Antigravity 时明确报告“入口已发现、历史索引未支持”。
 - `control-plane/session-adapters.mjs`：按明确来源和原生 ID 查询元数据；恢复只返回未验证计划，不静默启动新会话。
 - `control-plane/native-acp-executor.mjs`：在精确 Approval 下 load 并 prompt 已有 ACP 会话；输出进入 VERIFYING，失败进入 BLOCKED。
