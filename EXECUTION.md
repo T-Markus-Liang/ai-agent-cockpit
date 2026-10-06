@@ -30,7 +30,7 @@
 | Devin 本机 | 已通过显式 ACP probe 完成 initialize/session/list；声明 loadSession，但未验证真实 prompt、模型鉴权、session/load、历史读取、工具调用或云端调度。 |
 | Devin preset | config/wechat-acp.json 中已有 devin 入口 preset；没有通过本次更新启用它。它不是 Chief 调用 Worker 的工具。 |
 | 能力页面 | 已检查的 Local agents 是静态声明，不能用作调度成功或运行健康证据。 |
-| 跨 Agent 管理 | 在已检查的入口与调度代码中未发现完整统一会话检索与 Chief 调度闭环，不能标为已实现。 |
+| 跨 Agent 管理 | 已有控制面 Session 元数据索引、原生 ACP list/load probe、MCP 工具和 Approval-bound dispatcher；完整的 Chief 真实 prompt/多 Worker 调度闭环仍未验收。 |
 
 README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的证据边界。
 
