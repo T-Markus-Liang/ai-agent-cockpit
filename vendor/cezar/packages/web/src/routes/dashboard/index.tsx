@@ -45,6 +45,7 @@ import {
 import { useDashboardPage, useDisplacedRows } from './pages'
 import { useLocale } from '@/components/locale-provider'
 import { SystemConnections } from './system-connections'
+import { ControlPlaneTasks } from './control-plane-tasks'
 
 const views = [
   ['overview', 'Overview'],
@@ -332,6 +333,7 @@ function DashboardView({ entryKey }: { entryKey: string }) {
             })}
           </nav>
           <SystemConnections />
+          <ControlPlaneTasks />
           {preferences.failed && (
             <p role="alert" className="text-sm">
               Layout changed for this session, but could not be saved.{' '}
