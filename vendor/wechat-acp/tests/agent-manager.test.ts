@@ -216,3 +216,29 @@ test("spawnAgent off mode ignores a persisted session", async () => {
     killAgent(info.process);
   }
 });
+
+test("spawnAgent forwards configured HTTP MCP servers to capable ACP agents", async () => {
+  const script = `
+    const readline = require("node:readline");
+    const rl = readline.createInterface({ input: process.stdin });
+    const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+    rl.on("line", (line) => {
+      const request = JSON.parse(line);
+      if (request.method === "initialize") send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true } } } });
+      else if (request.method === "session/new") send({ jsonrpc: "2.0", id: request.id, result: { sessionId: "mcp-" + request.params.mcpServers.length, configOptions: [] } });
+    });
+  `;
+  const info = await spawnAgent({
+    command: process.execPath,
+    args: ["-e", script],
+    cwd: process.cwd(),
+    client: makeClient([]),
+    mcpServers: [{ type: "http", name: "control-plane", url: "http://127.0.0.1:4324/mcp", headers: [] }],
+    log: () => {},
+  });
+  try {
+    assert.equal(info.sessionId, "mcp-1");
+  } finally {
+    killAgent(info.process);
+  }
+});
