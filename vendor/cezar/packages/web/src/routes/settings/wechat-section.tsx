@@ -58,9 +58,9 @@ export function WeChatSection() {
                 <RefreshCwIcon className="mr-2 size-4" />{busy ? '生成中…' : '生成微信二维码'}
               </Button>
               {state.qrUrl ? (
-                <iframe title="微信登录二维码" src={state.qrUrl} className="h-80 w-full max-w-sm rounded-md border border-border bg-white" />
+                <iframe title="微信登录二维码" src={state.qrUrl} className="h-80 w-full max-w-sm rounded-md border border-border bg-card" />
               ) : null}
-              {state.status === 'scanned' ? <p className="text-sm text-amber-600">已扫码，请在微信中确认登录。</p> : null}
+              {state.status === 'scanned' ? <p className="text-sm text-warning">已扫码，请在微信中确认登录。</p> : null}
             </div>
           )}
           {state.error ? <p className="text-sm text-destructive">{state.error}</p> : null}

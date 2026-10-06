@@ -138,7 +138,7 @@ function AgentsForm({
             ['OpenCode ACP', 'fallback', 'text-emerald-500'],
             ['Kimi ACP', 'fallback', 'text-emerald-500'],
             ['Antigravity Gemini', '本机反代', 'text-emerald-500'],
-            ['WorkBuddy / Devin', 'GUI / ACP 边界', 'text-amber-500'],
+            ['WorkBuddy / Devin', 'GUI / ACP 边界', 'text-warning'],
           ].map(([name, state, tone]) => (
             <div key={name} className="flex items-center justify-between rounded-md border border-border bg-card-2 px-3 py-2 text-sm">
               <span>{name}</span><span className={`text-xs ${tone}`}>{state}</span>
