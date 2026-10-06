@@ -18,7 +18,7 @@ async function waitForClose(child) {
   await new Promise((resolve) => child.once('close', resolve))
 }
 
-export async function listNativeAcpSessions({ source = 'codex', cwd = path.resolve(process.cwd()), command, args, env = {}, timeoutMs = 30_000 } = {}) {
+export async function listNativeAcpSessions({ source = 'codex', cwd = path.resolve(process.cwd()), command, args, env = {}, timeoutMs = 30_000, loadSessionId } = {}) {
   const selected = command ? { command, args: args ?? [] } : ACP_COMMANDS[source]
   if (!selected) throw new StoreError('NATIVE_ACP_UNSUPPORTED', `no native ACP probe is configured for ${source}`, 501)
   if (!path.isAbsolute(cwd)) throw new StoreError('ABSOLUTE_CWD_REQUIRED', 'native ACP session listing requires an absolute cwd', 400)
@@ -76,7 +76,8 @@ export async function listNativeAcpSessions({ source = 'codex', cwd = path.resol
       return { source, transport: 'acp', verified: true, agentInfo: initialize?.agentInfo, agentCapabilities, sessions: [], limitations: ['ACP agent did not advertise session/list'] }
     }
     const listed = await request('session/list', { cwd })
-    const sessions = (listed?.sessions ?? []).map((session) => createSessionRef({
+    const listedSessions = listed?.sessions ?? []
+    const sessions = listedSessions.map((session) => createSessionRef({
       id: `session:${source}:${session.sessionId}`,
       source,
       nativeSessionId: session.sessionId,
@@ -87,7 +88,14 @@ export async function listNativeAcpSessions({ source = 'codex', cwd = path.resol
       resumeHint: `${source} ACP session/load or session/resume (not invoked by this read-only probe)`,
       limitations: ['本次只调用 initialize/session/list；没有加载、prompt、写入或读取消息正文'],
     }))
-    return { source, transport: 'acp', verified: true, agentInfo: initialize?.agentInfo, agentCapabilities, sessions, nextCursor: listed?.nextCursor ?? undefined, stderr: errors.join('').slice(0, 500) || undefined }
+    let loadProbe
+    if (loadSessionId !== undefined) {
+      if (!agentCapabilities.loadSession) throw new StoreError('NATIVE_ACP_LOAD_UNSUPPORTED', `${source} did not advertise session/load`, 501)
+      if (!listedSessions.some((session) => session.sessionId === loadSessionId)) throw new StoreError('SESSION_NOT_FOUND', `${source} session ${loadSessionId} was not returned by session/list`, 404)
+      const loaded = await request('session/load', { cwd, mcpServers: [], sessionId: loadSessionId })
+      loadProbe = { sessionId: loadSessionId, succeeded: true, responseKeys: Object.keys(loaded ?? {}) }
+    }
+    return { source, transport: 'acp', verified: true, agentInfo: initialize?.agentInfo, agentCapabilities, sessions, nextCursor: listed?.nextCursor ?? undefined, loadProbe, stderr: errors.join('').slice(0, 500) || undefined }
   } finally {
     await close()
   }

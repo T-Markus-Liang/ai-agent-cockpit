@@ -82,6 +82,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 优先原生元数据；SQLite/JSONL fallback 已验证读取一致性和隐私边界，不写外部库、不读取凭据和消息正文。
 - [x] 验收第一片：同标题不同来源可区分；索引不加载全量正文；不支持能力明确报告；测试通过且未创建控制面状态目录。
 - [x] 通过显式 Codex ACP probe 实际验证 `initialize`、`session/list`、`loadSession=true`、`sessionCapabilities.resume/list` 和 HTTP MCP capability；probe 不 load、不 prompt、不读取消息正文。
+- [x] 通过用户显式调用的 CLI `sessions native-load-probe` 实测一个已有 Codex session 的 `session/load` 成功；该动作未暴露给 MCP/自动 Chief 工具，避免无审批恢复外部会话。
 - [ ] 继续验证 Devin/OpenCode/Kimi 原生 list/load、历史读取和恢复，不从命令名或 advertised capability 推断成功。
 
 ### C：Chief 管理工具层（控制面基础工具已完成，微信 Chief 接入未完成）

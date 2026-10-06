@@ -61,6 +61,9 @@ async function main() {
   if (command === 'sessions' && subcommand === 'native-list') {
     return output(await listNativeAcpSessions({ source: value('provider', 'codex'), cwd: value('cwd', process.cwd()) }))
   }
+  if (command === 'sessions' && subcommand === 'native-load-probe') {
+    return output(await listNativeAcpSessions({ source: value('provider', 'codex'), cwd: value('cwd', process.cwd()), loadSessionId: required('session') }))
+  }
   if (command === 'task' && subcommand === 'create') {
     return output(await store.createTask({
       id: value('id'),

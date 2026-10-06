@@ -209,13 +209,15 @@ test('Cezar cancellation is approval-bound', async () => {
 test('native ACP probe lists sessions without loading or prompting', async () => {
   const script = `
     const rl = require('node:readline').createInterface({ input: process.stdin });
-    rl.on('line', (line) => { const m = JSON.parse(line); if (m.method === 'initialize') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'fake-acp'},agentCapabilities:{loadSession:true,sessionCapabilities:{list:{},resume:{}}}}})+'\\n'); if (m.method === 'session/list') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessions:[{sessionId:'native-1',cwd:'/tmp',title:'fake',updatedAt:'2026-10-06T00:00:00.000Z'}]}})+'\\n'); });
+    rl.on('line', (line) => { const m = JSON.parse(line); if (m.method === 'initialize') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'fake-acp'},agentCapabilities:{loadSession:true,sessionCapabilities:{list:{},resume:{}}}}})+'\\n'); if (m.method === 'session/list') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessions:[{sessionId:'native-1',cwd:'/tmp',title:'fake',updatedAt:'2026-10-06T00:00:00.000Z'}]}})+'\\n'); if (m.method === 'session/load') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{modes:[]}})+'\\n'); });
   `
   const probe = await listNativeAcpSessions({ source: 'fake', command: process.execPath, args: ['-e', script], cwd: '/tmp' })
   assert.equal(probe.verified, true)
   assert.equal(probe.sessions.length, 1)
   assert.equal(probe.sessions[0].nativeSessionId, 'native-1')
   assert.equal(probe.sessions[0].capabilities.resume, 'available')
+  const loaded = await listNativeAcpSessions({ source: 'fake', command: process.execPath, args: ['-e', script], cwd: '/tmp', loadSessionId: 'native-1' })
+  assert.deepEqual(loaded.loadProbe, { sessionId: 'native-1', succeeded: true, responseKeys: ['modes'] })
 })
 
 test('Cezar adapter parses run SSE events', async () => {
