@@ -2,6 +2,7 @@ import { indexLocalSessions } from '../../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../../control-plane/native-acp.mjs'
 import { executeNativeSessionPrompt, nativePromptPlan } from '../../control-plane/native-acp-executor.mjs'
+import { buildRoutePlan } from '../../control-plane/router.mjs'
 import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution } from '../../control-plane/dispatcher.mjs'
 import { CezarAdapter } from '../../adapters/engines/cezar.mjs'
 
@@ -12,6 +13,11 @@ export const TOOL_DEFINITIONS = Object.freeze([
     name: 'list_sessions',
     description: '只读列出本机 Agent 会话元数据；不读取凭据或消息正文。',
     inputSchema: { type: 'object', properties: { provider: { type: 'string' }, limit: { type: 'number' } } },
+  },
+  {
+    name: 'plan_route',
+    description: '根据能力证据生成无副作用的 Worker RoutePlan；Jev 只提供 advisory，不能授权执行。',
+    inputSchema: { type: 'object', required: ['goal', 'candidates'], properties: { goal: { type: 'string' }, candidates: { type: 'array' }, policy: { type: 'object' }, useJev: { type: 'boolean' } } },
   },
   {
     name: 'get_session',
@@ -125,6 +131,7 @@ function errorResult(error) {
 
 export async function callTool(name, args = {}, { store } = {}) {
   if (name === 'list_sessions') return indexLocalSessions({ providers: args.provider ? [args.provider] : undefined, limit: args.limit })
+  if (name === 'plan_route') return buildRoutePlan(args)
   if (name === 'get_session') return getSessionMetadata({ source: args.source, nativeSessionId: args.nativeSessionId })
   if (name === 'list_native_sessions') return listNativeAcpSessions({ source: args.provider ?? 'codex', cwd: args.cwd ?? process.cwd() })
   if (!store) throw new Error('control-plane store is unavailable')

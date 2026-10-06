@@ -92,6 +92,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 通过同一 HTTP/CLI 契约创建 Task、Execution、Evidence，并查询任务关联状态；写操作必须带 Idempotency-Key。
 - [x] 定义 Execution 状态、结果查询、Session lock 和有限状态转移；不允许从控制面直接启动未验证的外部 Agent。
 - [x] 增加 `interfaces/mcp/server.mjs`，暴露 session、native session/list、task、execution、evidence、approval、audit、lock 和 Cezar plan/dispatch/cancel 工具。
+- [x] 增加 `router.mjs` 的 capability/policy gate；可选 Jev advisory 只影响候选排序，不授权执行。4324 RoutePlan 已实测返回 codex 选择、confidence 和 `requiresApproval=true`。
 - [x] Cezar dispatch 需要 action/target/parametersDigest 精确匹配的未消费 Approval；无审批不会启动外部 Agent。
 - [x] 微信 bridge 已在 Codex ACP 会话配置中注入 `http://127.0.0.1:4324/mcp`；Agent 不支持 HTTP MCP 时安全忽略，不改变 fallback。
 - [x] 微信 bridge 增加 `/approve <approval_id>`、`/reject <approval_id>` 及中文别名；命令只调用 Approval decision API，不直接启动 Worker。

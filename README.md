@@ -22,6 +22,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 - `control-plane/session-index.mjs`：只读发现 Codex、OpenCode、Kimi 的本地会话元数据；发现 WorkBuddy、Devin、Claude Code、Antigravity 时明确报告“入口已发现、历史索引未支持”。
 - `control-plane/session-adapters.mjs`：按明确来源和原生 ID 查询元数据；恢复只返回未验证计划，不静默启动新会话。
 - `control-plane/native-acp-executor.mjs`：在精确 Approval 下 load 并 prompt 已有 ACP 会话；输出进入 VERIFYING，失败进入 BLOCKED。
+- `control-plane/router.mjs`：先用确定性 capability/policy gate 过滤候选，再可选调用 Jev 做 advisory 排序；RoutePlan 本身无副作用，不能授权执行。
 - `adapters/engines/cezar.mjs` + `control-plane/dispatcher.mjs`：Cezar run/worktree、reconcile 和取消接入；真实派单/取消必须有精确绑定且未消费的 Approval。
 - `interfaces/mcp/server.mjs`：Chief 可用的 MCP 工具层；默认只创建控制面对象，不直接启动外部 Agent。
 - `gateway/control-plane.mjs`：回环地址 HTTP API，持久化自己的 Task/Execution 状态，但不写外部 Agent 历史，不读取认证文件或消息正文。
@@ -64,6 +65,7 @@ GET http://127.0.0.1:4324/api/control-plane/sources
 GET http://127.0.0.1:4324/api/control-plane/sessions?provider=opencode&limit=50
 GET http://127.0.0.1:4324/api/control-plane/tasks
 GET http://127.0.0.1:4324/api/control-plane/audit?limit=50
+POST http://127.0.0.1:4324/api/control-plane/route-plan
 POST http://127.0.0.1:4324/api/control-plane/tasks  # 必须带 Idempotency-Key
 POST http://127.0.0.1:4324/mcp                    # JSON-RPC tools/list / tools/call
 ```

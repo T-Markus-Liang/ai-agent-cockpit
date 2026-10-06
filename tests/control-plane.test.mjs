@@ -13,6 +13,7 @@ import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
 import { executeNativeSessionPrompt, nativePromptPlan, runNativeAcpPrompt } from '../control-plane/native-acp-executor.mjs'
+import { buildRoutePlan } from '../control-plane/router.mjs'
 
 test('contracts keep Task, SessionRef and Execution separate', () => {
   const task = createTask({ goal: '检查本机 agent 状态', acceptanceCriteria: ['输出可追溯证据'] })
@@ -274,4 +275,20 @@ test('native ACP resume+prompt executor is approval-bound and ends in VERIFYING'
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }
+})
+
+test('route plan applies capability and policy gates without side effects', async () => {
+  const plan = await buildRoutePlan({
+    goal: '继续旧代码会话并运行测试',
+    policy: { requireNativeResume: true, requireMcp: true, externalMessage: false },
+    candidates: [
+      { id: 'codex', provider: 'codex', status: 'ready', capabilities: ['native.session.load', 'acp', 'mcp'] },
+      { id: 'devin', provider: 'devin', status: 'unknown', capabilities: ['native.session.list', 'acp', 'mcp'], limitations: ['auth unverified'] },
+      { id: 'gui', provider: 'gui', status: 'ready', capabilities: ['external.message'] },
+    ],
+  })
+  assert.equal(plan.selected.id, 'codex')
+  assert.equal(plan.sideEffects, false)
+  assert.equal(plan.requiresApproval, true)
+  assert.equal(plan.candidates.find((candidate) => candidate.id === 'gui').eligible, false)
 })

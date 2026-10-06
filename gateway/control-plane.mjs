@@ -4,6 +4,7 @@ import { indexLocalSessions } from '../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 import { executeNativeSessionPrompt, nativePromptPlan } from '../control-plane/native-acp-executor.mjs'
+import { buildRoutePlan } from '../control-plane/router.mjs'
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
@@ -91,6 +92,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/mcp') {
       const response = await handleMcpRequest(await body(req), { store })
       return response === null ? send(res, 202, { accepted: true }) : send(res, 200, response)
+    }
+    if (req.method === 'POST' && url.pathname === '/api/control-plane/route-plan') {
+      return send(res, 200, await buildRoutePlan(await body(req)))
     }
     if (req.method === 'GET' && url.pathname === '/api/control-plane/sessions') {
       return send(res, 200, await snapshot(url.searchParams))
