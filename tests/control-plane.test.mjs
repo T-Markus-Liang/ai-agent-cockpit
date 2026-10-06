@@ -79,6 +79,8 @@ test('persistent store is idempotent and keeps execution state auditable', async
     const succeeded = await store.updateExecutionStatus(created.execution.id, { status: 'succeeded', outcome: 'verified' }, { idempotencyKey: 'status-4' })
     assert.equal(succeeded.execution.status, 'succeeded')
     assert.equal((await store.getTask(first.task.id)).task.status, 'reviewing')
+    const audit = await store.listEvents({ entityId: first.task.id })
+    assert.ok(audit.some((event) => event.type === 'task.created'))
 
     const second = await store.createTask({ goal: '验证重启恢复' }, { idempotencyKey: 'task-2' })
     const running = await store.createExecution(second.task.id, { workerId: 'test-worker' }, { idempotencyKey: 'execution-2' })

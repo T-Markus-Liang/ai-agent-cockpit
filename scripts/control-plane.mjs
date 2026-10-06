@@ -74,6 +74,7 @@ async function main() {
     return output(await store.listTasks({ status: value('status'), limit: value('limit') }))
   }
   if (command === 'task' && subcommand === 'show') return output(await store.getTask(required('id')))
+  if (command === 'audit' && subcommand === 'list') return output(await store.listEvents({ entityId: value('entity'), limit: value('limit') }))
   if (command === 'execution' && subcommand === 'create') {
     return output(await store.createExecution(required('task'), {
       id: value('id'),

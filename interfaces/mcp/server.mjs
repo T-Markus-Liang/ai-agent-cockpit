@@ -32,6 +32,11 @@ export const TOOL_DEFINITIONS = Object.freeze([
     inputSchema: { type: 'object', required: ['taskId'], properties: { taskId: { type: 'string' } } },
   },
   {
+    name: 'list_audit_events',
+    description: '读取控制面审计事件；不包含外部 Agent 消息正文或凭据。',
+    inputSchema: { type: 'object', properties: { entityId: { type: 'string' }, limit: { type: 'number' } } },
+  },
+  {
     name: 'create_execution',
     description: '为 Task 创建一个排队的 Execution；不启动外部 Agent。',
     inputSchema: { type: 'object', required: ['taskId', 'workerId', 'idempotencyKey'], properties: { taskId: { type: 'string' }, workerId: { type: 'string' }, sessionRefId: { type: 'string' }, parentExecutionId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
@@ -98,6 +103,7 @@ export async function callTool(name, args = {}, { store } = {}) {
   if (!store) throw new Error('control-plane store is unavailable')
   if (name === 'create_task') return store.createTask(args, { idempotencyKey: args.idempotencyKey })
   if (name === 'get_task') return store.getTask(args.taskId)
+  if (name === 'list_audit_events') return store.listEvents(args)
   if (name === 'create_execution') return store.createExecution(args.taskId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'update_execution_status') return store.updateExecutionStatus(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'add_evidence') return store.addEvidence(args.executionId, args, { idempotencyKey: args.idempotencyKey })

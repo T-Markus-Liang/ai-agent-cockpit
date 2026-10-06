@@ -54,6 +54,7 @@ GET http://127.0.0.1:4324/health
 GET http://127.0.0.1:4324/api/control-plane/sources
 GET http://127.0.0.1:4324/api/control-plane/sessions?provider=opencode&limit=50
 GET http://127.0.0.1:4324/api/control-plane/tasks
+GET http://127.0.0.1:4324/api/control-plane/audit?limit=50
 POST http://127.0.0.1:4324/api/control-plane/tasks  # 必须带 Idempotency-Key
 POST http://127.0.0.1:4324/mcp                    # JSON-RPC tools/list / tools/call
 ```
@@ -78,7 +79,7 @@ Worker 与执行适配器
 
 核心边界：
 
-1. Session 由原生 Agent 管理；Task 和 Execution 由控制面管理。标题不能作为会话身份，恢复必须绑定来源、profile、原生 ID 和工作目录。
+1. Session 由原生 Agent 管理；Task、Execution 和审计事件由控制面管理。标题不能作为会话身份，恢复必须绑定来源、profile、原生 ID 和工作目录。
 2. Worker 报告完成后必须经过验证和 review，不能直接把任务标成最终完成。
 3. fallback 只在尚未产生可确认副作用的启动失败、超时或协议错误边界内执行；已有副作用的执行不会被静默重试。
 4. 工作目录不是沙箱。控制面不会通过 bypass、自动批准或复制凭据来“修复”接入失败。

@@ -89,7 +89,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 通过 `gateway/control-plane.mjs` 和 `scripts/control-plane.mjs` 暴露只读来源/会话查询；CLI/HTTP 复用同一索引契约。
 - [x] 通过同一 HTTP/CLI 契约创建 Task、Execution、Evidence，并查询任务关联状态；写操作必须带 Idempotency-Key。
 - [x] 定义 Execution 状态、结果查询、Session lock 和有限状态转移；不允许从控制面直接启动未验证的外部 Agent。
-- [x] 增加 `interfaces/mcp/server.mjs`，暴露 session、native session/list、task、execution、evidence、approval、lock 和 Cezar plan/dispatch/cancel 工具。
+- [x] 增加 `interfaces/mcp/server.mjs`，暴露 session、native session/list、task、execution、evidence、approval、audit、lock 和 Cezar plan/dispatch/cancel 工具。
 - [x] Cezar dispatch 需要 action/target/parametersDigest 精确匹配的未消费 Approval；无审批不会启动外部 Agent。
 - [x] 微信 bridge 已在 Codex ACP 会话配置中注入 `http://127.0.0.1:4324/mcp`；Agent 不支持 HTTP MCP 时安全忽略，不改变 fallback。
 - [ ] 补齐 Chief 的读上下文、恢复、取消和人工处理工具；恢复失败不能静默新建。

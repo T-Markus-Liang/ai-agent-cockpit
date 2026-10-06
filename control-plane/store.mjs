@@ -470,4 +470,12 @@ export class ControlPlaneStore {
       lastEventAt: state.events.at(-1)?.at,
     }
   }
+
+  async listEvents({ limit, entityId } = {}) {
+    const state = await this.read()
+    return state.events
+      .filter((event) => !entityId || event.entityId === entityId)
+      .slice(-(safeLimit(limit, 100)))
+      .reverse()
+  }
 }
