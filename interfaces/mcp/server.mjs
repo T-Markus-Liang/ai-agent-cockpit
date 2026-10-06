@@ -1,7 +1,8 @@
 import { indexLocalSessions } from '../../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../../control-plane/native-acp.mjs'
-import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar } from '../../control-plane/dispatcher.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution } from '../../control-plane/dispatcher.mjs'
+import { CezarAdapter } from '../../adapters/engines/cezar.mjs'
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
 
@@ -111,7 +112,12 @@ export async function callTool(name, args = {}, { store } = {}) {
   if (name === 'decide_approval') return store.decideApproval(args.approvalId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'lock_session') return store.acquireSessionLock(args.sessionRefId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'plan_cezar_dispatch') return cezarDispatchPlan(args)
-  if (name === 'dispatch_cezar') return dispatchCezar({ ...args, store, idempotencyKey: args.idempotencyKey })
+  if (name === 'dispatch_cezar') {
+    const adapter = new CezarAdapter()
+    const value = await dispatchCezar({ ...args, store, adapter, idempotencyKey: args.idempotencyKey })
+    if (!value.replay) void watchCezarExecution({ store, adapter, executionId: args.executionId }).catch(() => {})
+    return value
+  }
   if (name === 'plan_cancel_cezar') return cezarCancelPlan(args)
   if (name === 'cancel_cezar') return cancelCezarExecution({ ...args, store, idempotencyKey: args.idempotencyKey })
   throw new Error(`unknown MCP tool: ${name}`)

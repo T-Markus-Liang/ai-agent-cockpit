@@ -50,6 +50,46 @@ export class CezarAdapter {
   async cancel(runId) {
     return this.request(`/api/v1/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })
   }
+
+  async *events(runId, { afterSeq = 0, signal } = {}) {
+    const response = await this.fetch(`${this.baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}`, { headers: { Accept: 'text/event-stream' }, signal })
+    if (!response.ok || !response.body) throw new CezarAdapterError(`Cezar SSE ${response.status} /runs/${runId}/events`, { status: response.status })
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let event = {}
+    const emit = function* () {
+      if (!event.data) return
+      let data = event.data
+      try { data = JSON.parse(data) } catch { /* keep text */ }
+      const value = { ...event, data }
+      event = {}
+      return yield value
+    }
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        const lines = buffer.split(/\r?\n/)
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (line === '') {
+            const emitted = emit()
+            if (emitted) yield* emitted
+          } else if (line.startsWith('id:')) event.id = line.slice(3).trim()
+          else if (line.startsWith('event:')) event.event = line.slice(6).trim()
+          else if (line.startsWith('data:')) event.data = `${event.data ? `${event.data}\n` : ''}${line.slice(5).trim()}`
+        }
+      }
+      if (event.data) {
+        const emitted = emit()
+        if (emitted) yield* emitted
+      }
+    } finally {
+      await reader.cancel().catch(() => {})
+    }
+  }
 }
 
 export function mapCezarStatus(status) {
@@ -62,4 +102,3 @@ export function mapCezarStatus(status) {
   if (status === 'waiting') return 'blocked'
   return 'blocked'
 }
-

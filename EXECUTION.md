@@ -102,7 +102,8 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 实现幂等请求、会话锁、有限状态转移、Evidence 关联和启动恢复保护；重启时遗留 running Execution 进入 blocked，不进入 completed。
 - [x] Cezar adapter 通过 `/api/v1/runs` 创建 run，并把 Cezar run id、branch/worktree 元数据关联到 Execution；reconcile 把 Cezar done 映射为控制面 VERIFYING，不直接结案。
 - [x] Cezar 取消也要求精确 Approval；控制面不会只改本地状态而假装外部 run 已停止。
-- [ ] Cezar adapter 继续关联 review gate、SSE 事件和人工处理状态，不复制 Cezar 调度所有权。
+- [x] Cezar adapter 已解析 `/runs/:id/events` SSE；watcher 将 Cezar done 映射到控制面 VERIFYING，并在控制面重启后保留 reconcile 兜底。
+- [ ] 继续关联 review gate 和人工处理状态，不复制 Cezar 调度所有权。
 - [x] 基础验收：重复请求不重复创建；状态非法转移被拒绝；会话锁冲突被拒绝；重启恢复不会把未完成任务标为完成。
 - [ ] 完整验收：转派建立可审计新 Execution；外部会话活跃时不并发恢复；Cezar 重启后关联不丢失。
 

@@ -67,6 +67,26 @@ export async function reconcileCezarExecution({ store, adapter = new CezarAdapte
   return { changed: true, execution: updated.execution, cezarRun: run }
 }
 
+export async function watchCezarExecution({ store, adapter = new CezarAdapter(), executionId, signal } = {}) {
+  const execution = await store.getExecution(executionId)
+  if (execution.engineRef?.engine !== 'cezar') throw new StoreError('CEZAR_REF_REQUIRED', 'execution has no Cezar engine reference', 409)
+  for await (const event of adapter.events(execution.engineRef.id, { signal })) {
+    if (event.event !== 'run' || !event.data || typeof event.data !== 'object') continue
+    const status = event.data.status
+    const nextStatus = mapCezarStatus(status)
+    const current = await store.getExecution(executionId)
+    if (nextStatus !== current.status) {
+      try {
+        await store.updateExecutionStatus(executionId, { status: nextStatus, outcome: event.data.error ?? `Cezar status: ${status}` }, { idempotencyKey: `cezar-watch:${executionId}:${event.id ?? status}` })
+      } catch (error) {
+        return { stopped: true, error: String(error), execution: await store.getExecution(executionId) }
+      }
+    }
+    if (['done', 'failed', 'cancelled'].includes(status)) return { stopped: true, execution: await store.getExecution(executionId), lastEvent: event }
+  }
+  return { stopped: true, execution: await store.getExecution(executionId) }
+}
+
 export async function cancelCezarExecution({ store, adapter = new CezarAdapter(), executionId, approvalId, idempotencyKey } = {}) {
   const execution = await store.getExecution(executionId)
   if (execution.engineRef?.engine !== 'cezar') throw new StoreError('CEZAR_REF_REQUIRED', 'execution has no Cezar engine reference', 409)

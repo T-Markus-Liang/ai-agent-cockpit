@@ -6,7 +6,7 @@ import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
-import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution } from '../control-plane/dispatcher.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution, watchCezarExecution } from '../control-plane/dispatcher.mjs'
 import { handleMcpRequest } from '../interfaces/mcp/server.mjs'
 
 const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 4324)
@@ -151,7 +151,9 @@ const server = http.createServer(async (req, res) => {
     const cezarDispatchExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/dispatch')
     if (cezarDispatchExecutionId && req.method === 'POST') {
       const input = await body(req)
-      const result = await dispatchCezar({ ...input, store, adapter: new CezarAdapter(), executionId: cezarDispatchExecutionId, idempotencyKey: idempotencyKey(req) })
+      const adapter = new CezarAdapter()
+      const result = await dispatchCezar({ ...input, store, adapter, executionId: cezarDispatchExecutionId, idempotencyKey: idempotencyKey(req) })
+      if (!result.replay) void watchCezarExecution({ store, adapter, executionId: cezarDispatchExecutionId }).catch((error) => console.warn(`[control-plane] Cezar SSE watcher stopped: ${String(error)}`))
       return send(res, result.replay ? 200 : 202, result)
     }
     const cezarReconcileExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/reconcile')

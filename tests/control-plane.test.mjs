@@ -8,9 +8,10 @@ import { indexLocalSessions } from '../control-plane/session-index.mjs'
 import { ControlPlaneStore, StoreError, parametersDigest } from '../control-plane/store.mjs'
 import { getSessionMetadata } from '../control-plane/session-adapters.mjs'
 import { handleMcpRequest } from '../interfaces/mcp/server.mjs'
-import { cancelCezarExecution, cezarCancelPlan, dispatchCezar, reconcileCezarExecution } from '../control-plane/dispatcher.mjs'
+import { cancelCezarExecution, cezarCancelPlan, dispatchCezar, reconcileCezarExecution, watchCezarExecution } from '../control-plane/dispatcher.mjs'
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
+import { CezarAdapter } from '../adapters/engines/cezar.mjs'
 
 test('contracts keep Task, SessionRef and Execution separate', () => {
   const task = createTask({ goal: '检查本机 agent 状态', acceptanceCriteria: ['输出可追溯证据'] })
@@ -215,4 +216,29 @@ test('native ACP probe lists sessions without loading or prompting', async () =>
   assert.equal(probe.sessions.length, 1)
   assert.equal(probe.sessions[0].nativeSessionId, 'native-1')
   assert.equal(probe.sessions[0].capabilities.resume, 'available')
+})
+
+test('Cezar adapter parses run SSE events', async () => {
+  const adapter = new CezarAdapter({
+    baseUrl: 'http://fake-cezar',
+    fetchImpl: async () => new Response('id: 3\nevent: run\ndata: {"id":"run-1","status":"done"}\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  })
+  const events = []
+  for await (const event of adapter.events('run-1')) events.push(event)
+  assert.deepEqual(events, [{ id: '3', event: 'run', data: { id: 'run-1', status: 'done' } }])
+})
+
+test('Cezar SSE watcher maps terminal done to VERIFYING', async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'personal-ai-os-cezar-watch-'))
+  try {
+    const store = new ControlPlaneStore({ stateDir })
+    const task = await store.createTask({ goal: 'watch test' }, { idempotencyKey: 'watch-task' })
+    const execution = await store.createExecution(task.task.id, { workerId: 'cezar:codex' }, { idempotencyKey: 'watch-execution' })
+    await store.updateExecutionStatus(execution.execution.id, { status: 'running' }, { idempotencyKey: 'watch-running' })
+    await store.attachExecutionRef(execution.execution.id, { engine: 'cezar', id: 'run-watch-1' }, { idempotencyKey: 'watch-attach' })
+    const watched = await watchCezarExecution({ store, executionId: execution.execution.id, adapter: { events: async function* () { yield { id: '1', event: 'run', data: { status: 'done' } } } } })
+    assert.equal(watched.execution.status, 'verifying')
+  } finally {
+    await fs.rm(stateDir, { recursive: true, force: true })
+  }
 })
