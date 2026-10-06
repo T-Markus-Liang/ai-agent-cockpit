@@ -78,6 +78,16 @@ test("acp-more aliases validate and bare aliases match only the full message", (
   assert.equal(matchBridgeCommand(". extra", BRIDGE_COMMANDS.acpMore, aliases), null);
 });
 
+test("approval commands and Chinese aliases are recognized", () => {
+  const aliases = {
+    [BRIDGE_COMMANDS.approvalApprove]: ["/批准", "批准"],
+    [BRIDGE_COMMANDS.approvalReject]: ["/拒绝", "拒绝"],
+  };
+  assert.doesNotThrow(() => validateCommandAliases(aliases));
+  assert.equal(matchBridgeCommand("/批准 approval_test", BRIDGE_COMMANDS.approvalApprove, aliases), `${BRIDGE_COMMANDS.approvalApprove} approval_test`);
+  assert.equal(matchBridgeCommand("拒绝", BRIDGE_COMMANDS.approvalReject, aliases), BRIDGE_COMMANDS.approvalReject);
+});
+
 test("acp-new supports a configurable clear alias", () => {
   const aliases = {
     [BRIDGE_COMMANDS.acpNew]: ["/acp-clear"],

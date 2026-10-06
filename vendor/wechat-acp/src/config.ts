@@ -115,11 +115,15 @@ export const BRIDGE_COMMANDS = {
   acpCancel: "/acp-cancel",
   acpNew: "/acp-new",
   acpMore: "/acp-more",
+  approvalApprove: "/approve",
+  approvalReject: "/reject",
   promptStart: "/acp-prompt-start",
   promptDone: "/acp-prompt-done",
 } as const;
 
 export interface WeChatAcpConfig {
+  /** Loopback Personal AI OS control-plane API used by explicit approval commands. */
+  controlPlaneUrl?: string;
   /**
    * Optional user-defined aliases for bridge slash commands. Maps a
    * canonical command (e.g. `"/acp-cancel"`) to one or more custom
@@ -245,6 +249,7 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
   const instance = opts?.instance;
   const storageDir = defaultStorageDir(instance);
   return {
+    controlPlaneUrl: "http://127.0.0.1:4324",
     commandAliases: {},
     wechat: {
       baseUrl: "https://ilinkai.weixin.qq.com",

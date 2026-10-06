@@ -26,6 +26,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 - `interfaces/mcp/server.mjs`：Chief 可用的 MCP 工具层；默认只创建控制面对象，不直接启动外部 Agent。
 - `gateway/control-plane.mjs`：回环地址 HTTP API，持久化自己的 Task/Execution 状态，但不写外部 Agent 历史，不读取认证文件或消息正文。
 - `config/wechat-acp.json`：在 Codex ACP 支持 HTTP MCP 时注入控制面工具；不支持时保持原有桥接和 fallback 行为。
+- 微信显式审批命令：`/approve <approval_id>`、`/reject <approval_id>`，并支持 `/批准`、`/拒绝`；命令只改变 Approval 状态，不绕过控制面执行门槛。
 - Cezar Dashboard / Settings 的系统连接和本机 Agent 页面会读取 `4324/api/control-plane/capabilities`，把“已发现”“已连接”“待验证”“不可用”分开显示。
 - Dashboard 的待审批动作卡片使用同一 Approval API；批准/拒绝不会绕过服务端的目标、参数摘要和有效期校验。
 - `scripts/control-plane.mjs`：CLI 会话索引查询。

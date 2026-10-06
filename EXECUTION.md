@@ -94,6 +94,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 增加 `interfaces/mcp/server.mjs`，暴露 session、native session/list、task、execution、evidence、approval、audit、lock 和 Cezar plan/dispatch/cancel 工具。
 - [x] Cezar dispatch 需要 action/target/parametersDigest 精确匹配的未消费 Approval；无审批不会启动外部 Agent。
 - [x] 微信 bridge 已在 Codex ACP 会话配置中注入 `http://127.0.0.1:4324/mcp`；Agent 不支持 HTTP MCP 时安全忽略，不改变 fallback。
+- [x] 微信 bridge 增加 `/approve <approval_id>`、`/reject <approval_id>` 及中文别名；命令只调用 Approval decision API，不直接启动 Worker。
 - [x] 已直接通过 `/mcp` JSON-RPC `tools/call(list_native_sessions)` 实测 OpenCode ACP，返回 3 个本项目会话；这是控制面 MCP 验收，不等同于微信真实 prompt 验收。
 - [x] 增加审批绑定的 Native ACP resume+prompt executor；失败/不确定进入 BLOCKED，成功只进入 VERIFYING。
 - [ ] 补齐 Chief 的读上下文、取消和人工处理工具；恢复失败不能静默新建。

@@ -50,6 +50,8 @@ const ACP_CONFIG_COMMAND = BRIDGE_COMMANDS.acpConfig;
 const ACP_CANCEL_COMMAND = BRIDGE_COMMANDS.acpCancel;
 const ACP_NEW_COMMAND = BRIDGE_COMMANDS.acpNew;
 const ACP_MORE_COMMAND = BRIDGE_COMMANDS.acpMore;
+const APPROVAL_APPROVE_COMMAND = BRIDGE_COMMANDS.approvalApprove;
+const APPROVAL_REJECT_COMMAND = BRIDGE_COMMANDS.approvalReject;
 const BUFFER_START_COMMAND = BRIDGE_COMMANDS.promptStart;
 const BUFFER_DONE_COMMAND = BRIDGE_COMMANDS.promptDone;
 const BUFFER_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -442,6 +444,19 @@ export class WeChatAcpBridge {
       hashUserId(userId),
     );
 
+    const approvalApproveCommand = this.extractBridgeCommand(msg, APPROVAL_APPROVE_COMMAND);
+    const approvalRejectCommand = this.extractBridgeCommand(msg, APPROVAL_REJECT_COMMAND);
+    if (approvalApproveCommand || approvalRejectCommand) {
+      await this.handleApprovalCommand(
+        approvalApproveCommand ?? approvalRejectCommand!,
+        approvalApproveCommand ? "approved" : "rejected",
+        userId,
+        contextToken,
+        generation,
+      );
+      return;
+    }
+
     const acpNewCommand = this.extractAcpNewCommand(msg);
     if (acpNewCommand) {
       await this.handleAcpNewCommand(
@@ -539,6 +554,49 @@ export class WeChatAcpBridge {
       contextToken,
       replyGeneration,
     });
+  }
+
+  private async handleApprovalCommand(
+    command: string,
+    decision: "approved" | "rejected",
+    userId: string,
+    contextToken: string,
+    generation: number,
+  ): Promise<void> {
+    const args = command.trim().split(/\s+/);
+    const approvalId = args[1];
+    if (args.length !== 2 || !approvalId || approvalId.length > 200 || !/^[A-Za-z0-9._:-]+$/.test(approvalId)) {
+      await this.sendReply(
+        userId,
+        contextToken,
+        decision === "approved"
+          ? "用法：/approve <approval_id>（也支持 /批准 <approval_id>）"
+          : "用法：/reject <approval_id>（也支持 /拒绝 <approval_id>）",
+      );
+      return;
+    }
+    const baseUrl = (this.config.controlPlaneUrl ?? "http://127.0.0.1:4324").replace(/\/$/, "");
+    try {
+      const response = await fetch(`${baseUrl}/api/control-plane/approvals/${encodeURIComponent(approvalId)}/decision`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": `wechat-${userId}-${approvalId}-${decision}-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({ decision, approvedBy: `wechat:${userId}` }),
+      });
+      const payload = await response.json().catch(() => ({})) as { message?: string };
+      if (!response.ok) throw new Error(payload.message ?? `HTTP ${response.status}`);
+      if (!this.isMessageGenerationCurrent(userId, generation)) return;
+      await this.sendReply(
+        userId,
+        contextToken,
+        decision === "approved" ? `✅ 已批准：${approvalId}` : `⛔ 已拒绝：${approvalId}`,
+      );
+    } catch (error) {
+      if (!this.isMessageGenerationCurrent(userId, generation)) return;
+      await this.sendReply(userId, contextToken, `⚠️ 审批处理失败：${describeError(error)}`);
+    }
   }
 
   protected async resetUserSession(

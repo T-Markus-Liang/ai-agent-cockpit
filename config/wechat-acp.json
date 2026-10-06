@@ -1,8 +1,11 @@
 {
+  "controlPlaneUrl": "http://127.0.0.1:4324",
   "commandAliases": {
     "/acp-cancel": ["/取消", "取消"],
     "/acp-config": ["/设置", "设置"],
-    "/acp-new": ["/新会话", "新会话"]
+    "/acp-new": ["/新会话", "新会话"],
+    "/approve": ["/批准", "批准"],
+    "/reject": ["/拒绝", "拒绝"]
   },
   "agent": {
     "preset": "codex-official",
