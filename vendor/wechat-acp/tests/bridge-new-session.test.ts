@@ -204,6 +204,8 @@ function makeBridge(): TestBridge {
   config.storage.stateFile = undefined;
   config.commandAliases = {
     [BRIDGE_COMMANDS.acpNew]: ["/acp-clear"],
+    [BRIDGE_COMMANDS.approvalApprove]: ["/批准", "批准"],
+    [BRIDGE_COMMANDS.approvalReject]: ["/拒绝", "拒绝"],
   };
   return new TestBridge(config, () => {});
 }
@@ -224,6 +226,26 @@ test("acp-new and its alias reset without enqueueing an ACP prompt", async () =>
       segment.includes("ACP session cleared")
     ),
   );
+});
+
+test("wechat approval alias calls the control-plane decision API", async () => {
+  const bridge = makeBridge();
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), init });
+    return new Response(JSON.stringify({ approval: { decision: "approved" } }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    await bridge.handleMessage(textMessage("/批准 approval_test", "context-approval"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.url, /\/api\/control-plane\/approvals\/approval_test\/decision$/);
+  assert.equal(calls[0]!.init?.method, "POST");
+  assert.match(String(calls[0]!.init?.body), /"decision":"approved"/);
+  assert.ok(bridge.sent.some(({ segment }) => segment.includes("已批准")));
 });
 
 test("acp-new waits for stale typing to finish before sending cancel", async () => {
