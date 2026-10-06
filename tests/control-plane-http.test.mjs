@@ -131,6 +131,15 @@ test('HTTP control plane covers task lifecycle, approval, audit and MCP boundari
     const audit = await request(`/api/control-plane/audit?entityId=${encodeURIComponent(taskId)}`)
     assert.ok(audit.body.events.some((event) => event.type === 'task.completed'))
 
+    const connectorEvent = await request('/api/control-plane/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'http-connector-event' },
+      body: JSON.stringify({ type: 'wechat.message_received', entityType: 'WeChatUser', entityId: 'wechat:test-hash', details: { kind: 'text' } }),
+    })
+    assert.equal(connectorEvent.response.status, 201)
+    const connectorAudit = await request('/api/control-plane/audit?entityId=wechat%3Atest-hash')
+    assert.equal(connectorAudit.body.events[0].type, 'wechat.message_received')
+
     const mcpInit = await request('/mcp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

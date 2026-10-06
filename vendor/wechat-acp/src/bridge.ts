@@ -443,6 +443,9 @@ export class WeChatAcpBridge {
       },
       hashUserId(userId),
     );
+    void this.recordControlPlaneEvent("wechat.message_received", userId, {
+      kind: this.messageKind(msg),
+    });
 
     const approvalApproveCommand = this.extractBridgeCommand(msg, APPROVAL_APPROVE_COMMAND);
     const approvalRejectCommand = this.extractBridgeCommand(msg, APPROVAL_REJECT_COMMAND);
@@ -596,6 +599,32 @@ export class WeChatAcpBridge {
     } catch (error) {
       if (!this.isMessageGenerationCurrent(userId, generation)) return;
       await this.sendReply(userId, contextToken, `⚠️ 审批处理失败：${describeError(error)}`);
+    }
+  }
+
+  private async recordControlPlaneEvent(
+    type: string,
+    userId: string,
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.config.controlPlaneAudit) return;
+    const baseUrl = (this.config.controlPlaneUrl ?? "http://127.0.0.1:4324").replace(/\/$/, "");
+    try {
+      await fetch(`${baseUrl}/api/control-plane/events`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": `wechat-audit-${type}-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({
+          type,
+          entityType: "WeChatUser",
+          entityId: `wechat:${hashUserId(userId)}`,
+          details,
+        }),
+      });
+    } catch (error) {
+      this.log(`Control-plane audit unavailable: ${String(error)}`);
     }
   }
 
@@ -1313,6 +1342,12 @@ export class WeChatAcpBridge {
       },
       hashUserId(userId),
     );
+    void this.recordControlPlaneEvent("wechat.reply_sent", userId, {
+      segments: segments.length,
+      segmentsSent,
+      chars: text.length,
+      durationMs: Date.now() - startedAt,
+    });
 
     // Cancel typing indicator after reply is sent
     this.cancelTypingIndicator(userId, contextToken).catch(() => {});

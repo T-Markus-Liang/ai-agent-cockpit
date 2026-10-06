@@ -124,6 +124,8 @@ export const BRIDGE_COMMANDS = {
 export interface WeChatAcpConfig {
   /** Loopback Personal AI OS control-plane API used by explicit approval commands. */
   controlPlaneUrl?: string;
+  /** Emit redacted connector lifecycle metadata to the control-plane audit API. */
+  controlPlaneAudit?: boolean;
   /**
    * Optional user-defined aliases for bridge slash commands. Maps a
    * canonical command (e.g. `"/acp-cancel"`) to one or more custom
@@ -250,6 +252,7 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
   const storageDir = defaultStorageDir(instance);
   return {
     controlPlaneUrl: "http://127.0.0.1:4324",
+    controlPlaneAudit: false,
     commandAliases: {},
     wechat: {
       baseUrl: "https://ilinkai.weixin.qq.com",

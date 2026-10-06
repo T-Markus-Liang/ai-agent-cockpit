@@ -1,5 +1,6 @@
 {
   "controlPlaneUrl": "http://127.0.0.1:4324",
+  "controlPlaneAudit": true,
   "commandAliases": {
     "/acp-cancel": ["/取消", "取消"],
     "/acp-config": ["/设置", "设置"],

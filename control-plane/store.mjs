@@ -159,8 +159,10 @@ export class ControlPlaneStore {
   }
 
   #remember(state, { type, entityType, entityId, details = {} }) {
-    state.events.push({ id: randomId('event'), type, entityType, entityId, details, at: now() })
+    const event = { id: randomId('event'), type, entityType, entityId, details, at: now() }
+    state.events.push(event)
     if (state.events.length > 5000) state.events.splice(0, state.events.length - 5000)
+    return event
   }
 
   #idempotent(state, key, request, operation, execute) {
@@ -555,5 +557,17 @@ export class ControlPlaneStore {
       .filter((event) => !entityId || event.entityId === entityId)
       .slice(-(safeLimit(limit, 100)))
       .reverse()
+  }
+
+  async recordEvent(input, { idempotencyKey } = {}) {
+    return this.#mutate(async (state) => {
+      const request = { input, operation: 'audit.record' }
+      const result = this.#idempotent(state, idempotencyKey, request, 'audit.record', () => {
+        if (!input?.type || !input?.entityType || !input?.entityId) throw new StoreError('AUDIT_EVENT_INVALID', 'type, entityType and entityId are required', 400)
+        const event = this.#remember(state, { type: input.type, entityType: input.entityType, entityId: input.entityId, details: input.details ?? {} })
+        return { eventId: event.id }
+      })
+      return { ...result, event: state.events.find((event) => event.id === result.result.eventId) }
+    })
   }
 }

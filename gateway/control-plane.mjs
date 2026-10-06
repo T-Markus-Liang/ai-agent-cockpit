@@ -119,6 +119,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/control-plane/audit') {
       return send(res, 200, { events: await store.listEvents({ entityId: url.searchParams.get('entityId') ?? undefined, limit: url.searchParams.get('limit') ?? undefined }) })
     }
+    if (req.method === 'POST' && url.pathname === '/api/control-plane/events') {
+      const result = await store.recordEvent(await body(req), { idempotencyKey: idempotencyKey(req) })
+      return send(res, result.replay ? 200 : 201, result)
+    }
     if (req.method === 'POST' && url.pathname === '/api/control-plane/tasks') {
       const result = await store.createTask(await body(req), { idempotencyKey: idempotencyKey(req) })
       return send(res, result.replay ? 200 : 201, result)
