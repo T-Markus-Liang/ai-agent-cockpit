@@ -8,7 +8,15 @@
     "preset": "codex-official",
     "cwd": "/Users/markus/ai-agent-cockpit",
     "showThoughts": false,
-    "showDiffs": true
+    "showDiffs": true,
+    "mcpServers": [
+      {
+        "type": "http",
+        "name": "personal-ai-os-control-plane",
+        "url": "http://127.0.0.1:4324/mcp",
+        "headers": []
+      }
+    ]
   },
   "agents": {
     "codex-official": {

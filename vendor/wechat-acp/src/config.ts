@@ -17,6 +17,13 @@ export interface AgentCommandConfig {
   env?: Record<string, string>;
 }
 
+export interface AgentMcpHttpServer {
+  type: "http";
+  name: string;
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+}
+
 export interface AgentPreset extends AgentCommandConfig {
   label: string;
   description?: string;
@@ -162,6 +169,8 @@ export interface WeChatAcpConfig {
      * text resource. Defaults to 1000 characters.
      */
     resourceInlineLimit?: number;
+    /** Optional HTTP MCP servers passed to ACP agents that advertise HTTP MCP support. */
+    mcpServers?: AgentMcpHttpServer[];
   };
   /** Optional ACP agents tried in order when the primary agent cannot initialize. */
   fallbackAgents?: AgentCommandConfig[];

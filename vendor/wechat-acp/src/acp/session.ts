@@ -106,6 +106,7 @@ export interface SessionManagerOpts {
   agentEnv?: Record<string, string>;
   agentPreset?: string;
   fallbackAgents?: AgentCommandConfig[];
+  mcpServers?: acp.McpServer[];
   idleTimeoutMs: number;
   maxConcurrentUsers: number;
   /** Hard cap for one prompt turn; prevents a hung provider blocking later messages forever. */
@@ -1008,7 +1009,10 @@ export class SessionManager {
             cwd: this.opts.agentCwd,
             env: candidate.env,
             client,
-            mcpServers: mcpLease ? [mcpLease.mcpServer] : [],
+            mcpServers: [
+              ...(this.opts.mcpServers ?? []),
+              ...(mcpLease ? [mcpLease.mcpServer] : []),
+            ],
             resumePolicy: isFallback ? "off" : resumePolicy,
             persistedSessionId: isFallback ? undefined : persistedSessionId,
             signal,

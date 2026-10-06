@@ -665,7 +665,7 @@ Chief = 调度主管
   <strong>当前实现状态：</strong>本轮已开始执行重构。已落地根目录兼容期控制面：Task / SessionRef / Execution / Evidence / Approval / AgentCapability 运行时契约、Codex/OpenCode/Kimi 只读会话索引、WorkBuddy/Devin/Claude Code/Antigravity 能力发现、Task/Execution/Evidence/Approval API、幂等写入、会话锁、重启阻断、MCP 工具层、Cezar adapter、CLI/HTTP 查询入口和控制面 launchd 定义。它只写入自己的控制面状态，不写入外部 Agent 历史、不读取凭据；Cezar 真实派单必须经过精确审批，微信 Chief 的实际接入和完整验证闭环仍是路线图。
 </div>
 <h3>17.1 微信、Chief 与 Worker 解耦</h3>
-<p>微信是移动设备的消息、状态、审批和证据入口，不包含 Worker 选择逻辑。默认 Codex 或 Kimi 可担任 Chief，负责理解、规划、分层查阅上下文、调度和汇总；具体任务由专职 Worker 执行。切换微信桥的 ACP preset 只是更换入口 Agent，不等于 Chief 已获得跨 Agent 调度能力。</p>
+<p>微信是移动设备的消息、状态、审批和证据入口，不包含 Worker 选择逻辑。默认 Codex 或 Kimi 可担任 Chief，负责理解、规划、分层查阅上下文、调度和汇总；具体任务由专职 Worker 执行。当前微信 bridge 已在 ACP 支持 HTTP MCP 时注入 Personal AI OS 控制面工具，但这只是工具可见性，不等于 Chief 已完成真实派单验收；外部执行仍由 Approval 和 Cezar/Agent adapter 负责。</p>
 <pre class="arch"><code>微信 / 手机网页
   ↓
 Personal Chief（默认 Codex 或 Kimi，可替换）
