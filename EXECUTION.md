@@ -119,6 +119,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] Approval 已绑定 action、target、parametersDigest 和 expiresAt，支持批准/拒绝/过期/单次消费；Cezar dispatch 已接入执行前复核。
 - [x] Task completion gate 已要求终态 Execution、至少一个 succeeded、test/command Evidence 和独立 review Evidence，再消费一次性完成 Approval。
 - [x] Dashboard 已显示待审批动作，并通过同一 Approval API 执行批准/拒绝；校验仍在控制面服务端完成。
+- [x] `npm run doctor` 已统一检查 Cezar、微信、控制面、Feature Map 和回归评估，当前报告 `ok=true`、7/7 eval 通过。
 - [ ] 将原有任务验证要求继续扩展到可复现命令、独立 review 和完整 Evidence Pack。
 - [x] 微信 `/approve`、`/reject` 和中文别名已连接 Approval API；具体动作绑定、有效期和执行前复核由控制面服务端校验。
 - [ ] 确认可强制权限边界；无法约束的 adapter 不作为自动执行通道，不开启 bypass 或修改安全设置绕过问题。
