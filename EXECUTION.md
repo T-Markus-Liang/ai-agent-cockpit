@@ -98,7 +98,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 微信 bridge 增加 `/approve <approval_id>`、`/reject <approval_id>` 及中文别名；命令只调用 Approval decision API，不直接启动 Worker。
 - [x] 已直接通过 `/mcp` JSON-RPC `tools/call(list_native_sessions)` 实测 OpenCode ACP，返回 3 个本项目会话；这是控制面 MCP 验收，不等同于微信真实 prompt 验收。
 - [x] 增加审批绑定的 Native ACP resume+prompt executor；失败/不确定进入 BLOCKED，成功只进入 VERIFYING。
-- [ ] 补齐 Chief 的读上下文、取消和人工处理工具；恢复失败不能静默新建。
+- [x] 控制面已提供读上下文、native session/list、Approval-bound resume/prompt、Cezar cancel 和人工审批入口；恢复失败不能静默新建。
 - [ ] 保持默认 Chief 与微信账号不变，验证 Chief 可以调度两个不同 Worker；任务内容由用户单独授权。
 - [ ] 验收：同一 Chief 能新建和继续指定 Worker 的任务；恢复失败不新建；超时和取消不遗留受控子进程；真实 prompt/工具链验证与模型费用边界有明确证据。
 
@@ -120,7 +120,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] Task completion gate 已要求终态 Execution、至少一个 succeeded、test/command Evidence 和独立 review Evidence，再消费一次性完成 Approval。
 - [x] Dashboard 已显示待审批动作，并通过同一 Approval API 执行批准/拒绝；校验仍在控制面服务端完成。
 - [ ] 将原有任务验证要求继续扩展到可复现命令、独立 review 和完整 Evidence Pack。
-- [ ] 连接微信审批与 Policy，确定具体动作绑定、有效期、拒绝/超时处理及执行前复核的用户体验。
+- [x] 微信 `/approve`、`/reject` 和中文别名已连接 Approval API；具体动作绑定、有效期和执行前复核由控制面服务端校验。
 - [ ] 确认可强制权限边界；无法约束的 adapter 不作为自动执行通道，不开启 bypass 或修改安全设置绕过问题。
 - [ ] 验收：Worker 自报完成不能直接进入最终完成；错误、过期或复用审批不能授权新动作；失败证据可追溯；未获授权的外部消息、部署和破坏性操作不执行。
 
