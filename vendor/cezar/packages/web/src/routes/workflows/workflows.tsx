@@ -66,6 +66,7 @@ import {
 } from '@/lib/workflow-builder'
 
 import { WorkflowsLoading } from './workflows-loading'
+import { PersonalAiOsWorkflow } from './personal-ai-os-workflow'
 
 /**
  * `/workflows` — the workflow builder rebuilt in React (R6 Step 1.6, spec §"Skills, Workflows,
@@ -338,6 +339,10 @@ function WorkflowsBuilder({ routeName }: { routeName: string | undefined }) {
           Portable skill chains — the agent applies them top to bottom.
         </p>
       </header>
+
+      <div className="px-3 pt-4 md:px-5">
+        <PersonalAiOsWorkflow />
+      </div>
 
       <DndContext
         sensors={sensors}
