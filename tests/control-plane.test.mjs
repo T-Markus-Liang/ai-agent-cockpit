@@ -12,6 +12,7 @@ import { cancelCezarExecution, cezarCancelPlan, dispatchCezar, reconcileCezarExe
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
+import { executeNativeSessionPrompt, nativePromptPlan, runNativeAcpPrompt } from '../control-plane/native-acp-executor.mjs'
 
 test('contracts keep Task, SessionRef and Execution separate', () => {
   const task = createTask({ goal: '检查本机 agent 状态', acceptanceCriteria: ['输出可追溯证据'] })
@@ -247,6 +248,28 @@ test('Cezar SSE watcher maps terminal done to VERIFYING', async () => {
     await store.attachExecutionRef(execution.execution.id, { engine: 'cezar', id: 'run-watch-1' }, { idempotencyKey: 'watch-attach' })
     const watched = await watchCezarExecution({ store, executionId: execution.execution.id, adapter: { events: async function* () { yield { id: '1', event: 'run', data: { status: 'done' } } } } })
     assert.equal(watched.execution.status, 'verifying')
+  } finally {
+    await fs.rm(stateDir, { recursive: true, force: true })
+  }
+})
+
+test('native ACP resume+prompt executor is approval-bound and ends in VERIFYING', async () => {
+  const script = `
+    const readline = require('node:readline'); const rl = readline.createInterface({input:process.stdin}); const send = m => process.stdout.write(JSON.stringify(m)+'\\n');
+    rl.on('line', line => { const m=JSON.parse(line); if(m.method==='initialize') send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'fake'},agentCapabilities:{loadSession:true}}}); if(m.method==='session/load') send({jsonrpc:'2.0',id:m.id,result:{configOptions:[]}}); if(m.method==='session/prompt'){send({jsonrpc:'2.0',method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'继续结果'}}}});send({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}})} });
+  `
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'personal-ai-os-native-exec-'))
+  try {
+    const store = new ControlPlaneStore({ stateDir })
+    const task = await store.createTask({ goal: '继续原生会话' }, { idempotencyKey: 'native-task' })
+    const execution = await store.createExecution(task.task.id, { workerId: 'codex:native', sessionRefId: 'session:codex:native-1' }, { idempotencyKey: 'native-execution' })
+    const plan = nativePromptPlan({ taskId: task.task.id, executionId: execution.execution.id, source: 'fake', nativeSessionId: 'native-1', cwd: '/tmp', prompt: '继续' })
+    const approval = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: 'native-approval' })
+    await store.decideApproval(approval.approval.id, { decision: 'approved', approvedBy: 'test' }, { idempotencyKey: 'native-decision' })
+    const result = await executeNativeSessionPrompt({ store, taskId: task.task.id, executionId: execution.execution.id, approvalId: approval.approval.id, source: 'fake', nativeSessionId: 'native-1', cwd: '/tmp', prompt: '继续', command: process.execPath, args: ['-e', script], idempotencyKey: 'native-run' })
+    assert.equal(result.reply, '继续结果')
+    assert.equal(result.execution.status, 'verifying')
+    assert.equal((await store.getTask(task.task.id)).evidence.length, 1)
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }

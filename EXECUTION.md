@@ -95,7 +95,8 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] Cezar dispatch 需要 action/target/parametersDigest 精确匹配的未消费 Approval；无审批不会启动外部 Agent。
 - [x] 微信 bridge 已在 Codex ACP 会话配置中注入 `http://127.0.0.1:4324/mcp`；Agent 不支持 HTTP MCP 时安全忽略，不改变 fallback。
 - [x] 已直接通过 `/mcp` JSON-RPC `tools/call(list_native_sessions)` 实测 OpenCode ACP，返回 3 个本项目会话；这是控制面 MCP 验收，不等同于微信真实 prompt 验收。
-- [ ] 补齐 Chief 的读上下文、恢复、取消和人工处理工具；恢复失败不能静默新建。
+- [x] 增加审批绑定的 Native ACP resume+prompt executor；失败/不确定进入 BLOCKED，成功只进入 VERIFYING。
+- [ ] 补齐 Chief 的读上下文、取消和人工处理工具；恢复失败不能静默新建。
 - [ ] 保持默认 Chief 与微信账号不变，验证 Chief 可以调度两个不同 Worker；任务内容由用户单独授权。
 - [ ] 验收：同一 Chief 能新建和继续指定 Worker 的任务；恢复失败不新建；超时和取消不遗留受控子进程；真实 prompt/工具链验证与模型费用边界有明确证据。
 
@@ -170,4 +171,4 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - 更新设计 HTML v1.2 和本执行文档，使研究结论、代码状态和限制一致。
 - 验证 `npm run test:control-plane`、HTTP 临时状态端到端测试、Node 语法检查、plist 校验、`127.0.0.1:4324/health` 与会话/任务 API。
 
-尚未执行：微信 Chief 的真实 prompt/工具调用验收、原生旧会话的完整恢复/历史读取、Cezar worktree/review 完整关联、GUI 自动化、Devin 登录绑定、正式目录迁移和云端通道。MCP 配置已注入，但不能用“配置存在”冒充 Agent 实际调用证据。
+尚未执行：微信 Chief 的真实 prompt/工具调用验收、原生旧会话的历史读取/真实用户任务验证、Cezar worktree/review 完整关联、GUI 自动化、Devin 登录绑定、正式目录迁移和云端通道。MCP 配置已注入，但不能用“配置存在”冒充 Agent 实际调用证据。

@@ -5,13 +5,17 @@ import { spawn } from 'node:child_process'
 import { createSessionRef } from './contracts.mjs'
 import { StoreError } from './store.mjs'
 
-const ACP_COMMANDS = Object.freeze({
+export const ACP_COMMANDS = Object.freeze({
   codex: { command: '/usr/local/bin/npx', args: ['--yes', '@agentclientprotocol/codex-acp'] },
   opencode: { command: path.join(os.homedir(), '.opencode/bin/opencode'), args: ['acp'] },
   kimi: { command: path.join(os.homedir(), '.kimi-code/bin/kimi'), args: ['acp'] },
   workbuddy: { command: '/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy', args: ['--acp'] },
   devin: { command: '/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin', args: ['acp'] },
 })
+
+export function nativeAcpCommand(source) {
+  return ACP_COMMANDS[source]
+}
 
 function timeoutError(message) {
   return new StoreError('NATIVE_ACP_TIMEOUT', message, 504)

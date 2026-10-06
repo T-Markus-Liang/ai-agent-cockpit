@@ -21,6 +21,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 - Task 完成门槛：所有 Execution 终态、至少一个 succeeded、test/command Evidence、独立 review Evidence，并消费精确绑定的完成 Approval。
 - `control-plane/session-index.mjs`：只读发现 Codex、OpenCode、Kimi 的本地会话元数据；发现 WorkBuddy、Devin、Claude Code、Antigravity 时明确报告“入口已发现、历史索引未支持”。
 - `control-plane/session-adapters.mjs`：按明确来源和原生 ID 查询元数据；恢复只返回未验证计划，不静默启动新会话。
+- `control-plane/native-acp-executor.mjs`：在精确 Approval 下 load 并 prompt 已有 ACP 会话；输出进入 VERIFYING，失败进入 BLOCKED。
 - `adapters/engines/cezar.mjs` + `control-plane/dispatcher.mjs`：Cezar run/worktree、reconcile 和取消接入；真实派单/取消必须有精确绑定且未消费的 Approval。
 - `interfaces/mcp/server.mjs`：Chief 可用的 MCP 工具层；默认只创建控制面对象，不直接启动外部 Agent。
 - `gateway/control-plane.mjs`：回环地址 HTTP API，持久化自己的 Task/Execution 状态，但不写外部 Agent 历史，不读取认证文件或消息正文。

@@ -3,6 +3,7 @@ import http from 'node:http'
 import { indexLocalSessions } from '../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
+import { executeNativeSessionPrompt, nativePromptPlan } from '../control-plane/native-acp-executor.mjs'
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
@@ -148,6 +149,13 @@ const server = http.createServer(async (req, res) => {
     const evidenceExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/evidence')
     if (evidenceExecutionId && req.method === 'POST') {
       return send(res, 201, await store.addEvidence(evidenceExecutionId, await body(req), { idempotencyKey: idempotencyKey(req) }))
+    }
+    const nativePlanExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/native/plan')
+    if (nativePlanExecutionId && req.method === 'POST') return send(res, 200, nativePromptPlan({ ...(await body(req)), executionId: nativePlanExecutionId }))
+    const nativePromptExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/native/prompt')
+    if (nativePromptExecutionId && req.method === 'POST') {
+      const input = await body(req)
+      return send(res, 202, await executeNativeSessionPrompt({ ...input, store, executionId: nativePromptExecutionId, idempotencyKey: idempotencyKey(req) }))
     }
     const cezarPlanExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/plan')
     if (cezarPlanExecutionId && req.method === 'POST') {

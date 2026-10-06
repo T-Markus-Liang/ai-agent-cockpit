@@ -1,6 +1,7 @@
 import { indexLocalSessions } from '../../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../../control-plane/native-acp.mjs'
+import { executeNativeSessionPrompt, nativePromptPlan } from '../../control-plane/native-acp-executor.mjs'
 import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution } from '../../control-plane/dispatcher.mjs'
 import { CezarAdapter } from '../../adapters/engines/cezar.mjs'
 
@@ -56,6 +57,16 @@ export const TOOL_DEFINITIONS = Object.freeze([
     name: 'update_execution_status',
     description: '按有限状态机推进 Execution；非法转移会被拒绝。',
     inputSchema: { type: 'object', required: ['executionId', 'status', 'idempotencyKey'], properties: { executionId: { type: 'string' }, status: { type: 'string' }, outcome: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+  },
+  {
+    name: 'plan_native_prompt',
+    description: '生成恢复旧 ACP 会话的审批摘要；只规划，不 load 或 prompt。',
+    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'source', 'nativeSessionId', 'cwd', 'prompt'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' } } },
+  },
+  {
+    name: 'prompt_native_session',
+    description: '在精确 Approval 下 load 并 prompt 一个已有 ACP 会话；完成后进入 VERIFYING。',
+    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'approvalId', 'source', 'nativeSessionId', 'cwd', 'prompt', 'idempotencyKey'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, approvalId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'add_evidence',
@@ -119,6 +130,8 @@ export async function callTool(name, args = {}, { store } = {}) {
   if (name === 'list_audit_events') return store.listEvents(args)
   if (name === 'create_execution') return store.createExecution(args.taskId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'update_execution_status') return store.updateExecutionStatus(args.executionId, args, { idempotencyKey: args.idempotencyKey })
+  if (name === 'plan_native_prompt') return nativePromptPlan(args)
+  if (name === 'prompt_native_session') return executeNativeSessionPrompt({ ...args, store, idempotencyKey: args.idempotencyKey })
   if (name === 'add_evidence') return store.addEvidence(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'create_approval') return store.createApproval(args, { idempotencyKey: args.idempotencyKey })
   if (name === 'decide_approval') return store.decideApproval(args.approvalId, args, { idempotencyKey: args.idempotencyKey })
