@@ -94,6 +94,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 增加 `interfaces/mcp/server.mjs`，暴露 session、native session/list、task、execution、evidence、approval、audit、lock 和 Cezar plan/dispatch/cancel 工具。
 - [x] Cezar dispatch 需要 action/target/parametersDigest 精确匹配的未消费 Approval；无审批不会启动外部 Agent。
 - [x] 微信 bridge 已在 Codex ACP 会话配置中注入 `http://127.0.0.1:4324/mcp`；Agent 不支持 HTTP MCP 时安全忽略，不改变 fallback。
+- [x] 已直接通过 `/mcp` JSON-RPC `tools/call(list_native_sessions)` 实测 OpenCode ACP，返回 3 个本项目会话；这是控制面 MCP 验收，不等同于微信真实 prompt 验收。
 - [ ] 补齐 Chief 的读上下文、恢复、取消和人工处理工具；恢复失败不能静默新建。
 - [ ] 保持默认 Chief 与微信账号不变，验证 Chief 可以调度两个不同 Worker；任务内容由用户单独授权。
 - [ ] 验收：同一 Chief 能新建和继续指定 Worker 的任务；恢复失败不新建；超时和取消不遗留受控子进程；真实 prompt/工具链验证与模型费用边界有明确证据。
@@ -153,6 +154,8 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 | WorkBuddy ACP | `initialize`、loadSession、HTTP/SSE MCP 成功，但未声明 session/list | 旧会话不能由控制面猜测或静默创建 |
 
 探测只保留规范化元数据和 capability 结果，不把 stderr、消息正文、token 或凭据写入控制面状态。
+
+另外，控制面 `/mcp` 的 `tools/call(list_native_sessions)` 已用 OpenCode 实测返回 3 个会话；微信桥只完成 MCP 注入和桥接单元测试，尚未发送真实微信 prompt 触发工具调用。
 
 ## 7. 本次交付边界
 
