@@ -46,6 +46,8 @@ function emptyTurnNotice(stopReason: acp.StopReason | undefined): string {
 
 export interface PendingMessage {
   prompt: acp.ContentBlock[];
+  /** Prepared once immediately before dispatch; reused by a safe fallback retry. */
+  preparedPrompt?: acp.ContentBlock[];
   contextToken: string;
   replyGeneration?: number;
   completion?: {
@@ -114,6 +116,7 @@ export interface SessionManagerOpts {
   /** Hard cap for one prompt turn; prevents a hung provider blocking later messages forever. */
   promptTimeoutMs?: number;
   startupTimeoutMs?: number;
+  preparePrompt?: (userId: string, prompt: acp.ContentBlock[]) => Promise<acp.ContentBlock[]>;
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -1222,13 +1225,17 @@ export class SessionManager {
           ).catch(() => {});
 
           // Send ACP prompt
+          pending.preparedPrompt ??= this.opts.preparePrompt
+            ? await this.opts.preparePrompt(session.userId, pending.prompt)
+            : pending.prompt;
+          if (!this.isCurrentSession(session)) continue;
           this.opts.log(`[${session.userId}] Sending prompt to agent...`);
           session.promptDispatched = true;
           const result = await this.awaitAgentOperation(
             session,
             session.agentInfo.connection.prompt({
               sessionId: session.agentInfo.sessionId,
-              prompt: pending.prompt,
+              prompt: pending.preparedPrompt,
             }),
             "prompt response",
             this.opts.promptTimeoutMs,

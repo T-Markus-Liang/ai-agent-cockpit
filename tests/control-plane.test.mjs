@@ -191,12 +191,28 @@ test('feature map separates detected capability from verified session support', 
   const featureMap = await probeFeatureMap({
     sessionSnapshot: { sources: [{ provider: 'workbuddy', limitations: ['history unavailable'] }, { provider: 'devin', limitations: ['auth unverified'] }], sessions: [] },
     cezar: { health: async () => ({ capabilities: { dispatch: true } }) },
+    memoryProbe: async () => ({ status: 'unavailable' }),
   })
   assert.equal(featureMap.type, 'FeatureMapSnapshot')
   assert.ok(featureMap.capabilities.some((capability) => capability.agentId === 'cezar-local' && capability.capabilities.includes('dispatch')))
   const workbuddy = featureMap.capabilities.find((capability) => capability.agentId === 'workbuddy-local')
   assert.ok(workbuddy)
   assert.ok(['unknown', 'unavailable'].includes(workbuddy.status))
+})
+
+test('feature map reflects Kimi conversation primary and memory health separately from workers', async () => {
+  const featureMap = await probeFeatureMap({
+    sessionSnapshot: { sources: [], sessions: [] }, conversationPreset: 'kimi-primary',
+    cezar: { health: async () => ({ capabilities: {} }) },
+    memoryProbe: async () => ({ status: 'ready', engine: 'mem0-oss', ingestion: { pending: 1, retrying: 0 } }),
+  })
+  assert.equal(featureMap.conversation.provider, 'kimi')
+  assert.equal(featureMap.conversation.evidence, 'configuration')
+  assert.equal(featureMap.capabilities.find(item => item.provider === 'kimi').role, 'chief')
+  assert.equal(featureMap.capabilities.find(item => item.provider === 'codex').role, 'worker')
+  assert.equal(featureMap.services.memory.status, 'ready')
+  assert.equal(featureMap.services.memory.ingestion.pending, 1)
+  assert.equal(featureMap.capabilities.some(item => item.provider === 'mem0'), false)
 })
 
 test('Cezar cancellation is approval-bound', async () => {

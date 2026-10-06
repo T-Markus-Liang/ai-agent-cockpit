@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import {
   SessionManager,
+  type PendingMessage,
   type UserSession,
 } from "../src/acp/session.js";
 
@@ -567,4 +568,59 @@ test("a fallback ACP session never overwrites the primary session scope", async 
 
   assert.deepEqual(persisted, []);
   assert.equal(Boolean(session.sessionIdPersisted), false);
+});
+
+test("queued prompts prepare memory after the preceding reply is delivered", async () => {
+  const replies: string[] = [];
+  const prepared: string[] = [];
+  const manager = new SessionManager({
+    agentCommand: "unused", agentArgs: [], agentCwd: process.cwd(),
+    idleTimeoutMs: 0, maxConcurrentUsers: 1, showThoughts: false,
+    log: () => {}, sendTyping: async () => {}, killAgentProcess: async () => {},
+    preparePrompt: async (_id, prompt) => {
+      const context = replies.join("|");
+      prepared.push(context);
+      return [{ type: "text", text: context }, ...prompt];
+    },
+    onReply: async (_id, _token, text) => { replies.push(text); },
+  });
+  const session = makeTurnSession({ flushText: "preceding answer", producedMessage: true, events: [] });
+  session.queue.push({ prompt: [{ type: "text", text: "second question" }], contextToken: "second" });
+  try {
+    await processTurn(manager, session);
+    assert.deepEqual(prepared, ["", "preceding answer"]);
+  } finally { await manager.stop(); }
+});
+
+test("timeout fallback reuses prepared context without archiving the user twice", async () => {
+  let preparations = 0;
+  let retry: PendingMessage | undefined;
+  const manager = new SessionManager({
+    agentCommand: "unused", agentArgs: [], agentCwd: process.cwd(),
+    idleTimeoutMs: 0, maxConcurrentUsers: 1, showThoughts: false,
+    promptTimeoutMs: 20, fallbackAgents: [{ command: "fallback", args: [] }],
+    log: () => {}, sendTyping: async () => {}, onReply: async () => {},
+    killAgentProcess: async () => {},
+    preparePrompt: async (_id, prompt) => {
+      preparations++;
+      return [{ type: "text", text: "shared memory and persona" }, ...prompt];
+    },
+  });
+  manager.enqueue = async (_id, pending) => { retry = pending; };
+  const primary = makeTurnSession({ flushText: "", producedMessage: false, events: [] });
+  primary.agentInfo.connection.prompt = async () => new Promise(() => {});
+  primary.agentInfo.connection.cancel = async () => {};
+  try {
+    await processTurn(manager, primary);
+    assert.ok(retry?.preparedPrompt);
+    const originalPrepared = retry.preparedPrompt;
+    const fallback = makeTurnSession({ flushText: "recalled", producedMessage: true, events: [] });
+    fallback.fallbackSession = true;
+    fallback.queue = [retry];
+    let dispatched: unknown;
+    fallback.agentInfo.connection.prompt = async (params) => { dispatched = params.prompt; return { stopReason: "end_turn" }; };
+    await processTurn(manager, fallback);
+    assert.equal(preparations, 1);
+    assert.equal(dispatched, originalPrepared);
+  } finally { await manager.stop(); }
 });

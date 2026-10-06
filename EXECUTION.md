@@ -1,6 +1,6 @@
 # Personal AI OS 执行文档
 
-状态：重构进行中。本文与 [设计文档 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 配套；已完成兼容期部署、微信常驻、ACP fallback、首批控制面可视化、统一契约、只读会话索引，以及第一版 Task/Execution 持久化、幂等、会话锁和重启恢复保护，正在进入原生会话恢复与 Chief 调度阶段。
+状态：重构进行中。本文与 [设计文档 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 配套；已完成兼容期部署、微信常驻、ACP fallback、首批控制面可视化、统一契约、只读会话索引，以及第一版 Task/Execution 持久化、幂等、会话锁和重启恢复保护。2026-10-06 已部署 Mem0 OSS 共享记忆，实际微信启动参数已纠正为 Kimi，详见 6.2；原生旧会话恢复与完整 Chief 调度仍未完成。
 
 ## 1. 当前授权与范围
 
@@ -14,7 +14,8 @@
 
 | 能力 | 当前状态 | 证据/限制 |
 | --- | --- | --- |
-| 微信入口 | 已运行 | launchd 常驻；微信 ACP 主 Codex，5 分钟 prompt 超时；Codex ACP 支持时注入控制面 HTTP MCP，连接器仍不直接承担外部派单。 |
+| 微信入口 | 已运行 | launchd 常驻；微信 ACP 主 Kimi，已核对配置和实际启动参数；仍保留 prompt 超时与 fallback。连接器不直接承担外部派单。 |
+| 微信共享记忆 | 已部署并验证 | Mem0 OSS 2.2.1 / 4325，本地 embedding + Qdrant/SQLite；统一上下文/人格注入、完整正文归档、持久 outbox 与真实停启恢复测试已通过；提炼调用现有 Kimi API。 |
 | Cezar cockpit | 已运行 | `127.0.0.1:4321`；负责本身的 run/worktree；不是全机 App 历史控制面。 |
 | Agent fallback | 已实现第一版 | 主 ACP 启动失败/超时可切换 DeepSeek、Kimi、WorkBuddy、Devin/OpenCode 候选；provider 认证和历史恢复仍分别归各 Agent。 |
 | Dashboard / Settings | 已实现第五版 | Dashboard 首屏增加控制面 Task/Execution 和待审批动作卡片；Workflows 页面可视化 Personal AI OS Chief/Router/Worker/Reviewer/Approval 闭环；系统连接和 Settings → Local agents 读取 4324 Feature Map。 |
@@ -25,11 +26,11 @@
 
 | 项目 | 证据边界 |
 | --- | --- |
-| 微信入口 | 已检查配置和启动定义使用默认 Codex；连接器是移动入口，默认 Agent 可承担 Chief。当前文档更新不重新探测实时运行健康。 |
+| 微信入口 | 早期基线为 Codex。6.2 部署核对发现已安装启动定义仍覆盖 Kimi 配置；现已修正为 `--agent kimi-primary` 并重启、实测健康。 |
 | Cezar | 已检查实现包含任务派发、run 继续、worktree 和 runner seam；已检查的 runner 注册表没有 Devin。 |
 | Devin 本机 | 已通过显式 ACP probe 完成 initialize/session/list；声明 loadSession，但未验证真实 prompt、模型鉴权、session/load、历史读取、工具调用或云端调度。 |
 | Devin preset | config/wechat-acp.json 中已有 devin 入口 preset；没有通过本次更新启用它。它不是 Chief 调用 Worker 的工具。 |
-| 能力页面 | 已检查的 Local agents 是静态声明，不能用作调度成功或运行健康证据。 |
+| 能力页面 | Dashboard / Settings 系统连接已改为共享动态状态；微信主 Agent 标记来自配置，Mem0 来自真实 `/health`。CLI 存在仍不能证明旧会话恢复或外部派单成功。 |
 | 跨 Agent 管理 | 已有控制面 Session 元数据索引、原生 ACP list/load probe、MCP 工具和 Approval-bound dispatcher；完整的 Chief 真实 prompt/多 Worker 调度闭环仍未验收。 |
 
 README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的证据边界。
@@ -151,6 +152,8 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 
 ### 6.1 原生 ACP 探测证据（2026-10-06）
 
+以下为早期只读探测的历史记录；Kimi 新建隔离会话的真实 prompt 验证随后已在 6.2 完成，不等同于用户旧会话恢复。
+
 使用 `npm run sessions -- sessions native-list --provider=<id> --cwd=/Users/markus/ai-agent-cockpit --json` 做显式、无 prompt 的探测：
 
 | Agent | 实际结果 | 当前边界 |
@@ -165,6 +168,38 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 
 另外，控制面 `/mcp` 的 `tools/call(list_native_sessions)` 已用 OpenCode 实测返回 3 个会话；微信桥只完成 MCP 注入和桥接单元测试，尚未发送真实微信 prompt 触发工具调用。
 
+### 6.2 Mem0 部署与验收（2026-10-06）
+
+授权：用户要求直接部署推荐的记忆方案并验证可用性。本轮只修改项目记忆链路、相关可视化/测试/文档和对应常驻服务；不发送合成消息到真实微信，不恢复用户的原生 Agent 旧会话。
+
+实际部署：
+
+- `services/memory/service.py` 使用真实 Mem0 SDK 2.2.1，Python 3.11 独立环境，55 项依赖固定并通过兼容检查。API 为回环地址 `4325`，由 `com.markus.personal-ai-os.memory` 常驻；本机 token 鉴权，不启用 wildcard CORS。
+- 多语言 MiniLM embedding 在本机运行，384 维；Qdrant 和 SQLite 存本机。事实提炼通过 4323 shim 调用已有 Kimi API，适配非 thinking / temperature 0.6 / top_p 0.95；不是全离线推理。
+- 实际 ACP 派发前构建近期上下文、较早有损摘录、相关长期事实和可信人格；准备结果用于 fallback 重试，避免重复归档用户输入或混用原生 session。
+- 正文追加到私有 JSONL；持久 outbox 在服务确认 SQLite 接收后移除。过长提炼输入分块，永久拒绝保留在 `rejectedOutbox`，不会卡住后续事件。只从用户表述提炼事实，助手输出仅归档。
+- 修复索引式压缩、超长上下文界限、跨实例写锁、prototype-like 用户 ID 和关闭后的上传竞态。旧快照生成私有备份，并回填尚存的 9 条对话正文；没有删除或迁移原生历史和微信身份。
+- 发现已安装微信 plist 的 `--agent codex-official` 覆盖配置；已备份并改为 `kimi-primary`，不只是修改配置文件。
+- Dashboard / Settings 复用系统连接组件，增加 Mem0 实时队列状态，移除固定 Codex 主 Agent/微信已连接声明。
+
+验证命令与结果：
+
+| 验证 | 结果 |
+| --- | --- |
+| `npm test`（vendor/wechat-acp） | 233 通过、1 个仅 Windows 适用的测试跳过；包含派发时记忆准备、fallback 复用、并发、归档、服务不可用、永久拒绝和停机测试 |
+| `npm run test:memory-service` | 11/11；鉴权、大小/schema、用户隔离、并发幂等、token/队列重启保留、脱敏错误重试、助手排除和权限 |
+| `npm run test:control-plane` | 20/20；包括 Kimi 主对话配置和 Mem0 独立服务状态，不把记忆服务列成 Worker |
+| 前端 SystemConnections + AgentsSection | 28/28；真实/不可用记忆状态、Kimi 标签、微信入口和既有设置回归 |
+| 微信桥 build、前端 typecheck/build、plist lint、依赖兼容检查 | 通过 |
+| 实际浏览器页面验收 | 未完成；ego-browser 导航/CDP 超时，恢复尝试后结束该自动化，不把构建和单元测试冒充浏览器实页通过；HTTP 已确认部署后的新资源被服务提供 |
+| `MEMORY_TEST_TAG=mem0-verification-primary npm run test:memory-live` | 真实 Mem0/Kimi 中文提炼与语义检索、鉴权、幂等、隔离、桥实例重建后上下文和归档通过；在实际服务停启后复测通过 |
+| `npm run test:memory-kimi` | 真实 Kimi ACP 从仅存于 Mem0 的合成事实正确召回“小柚”；实际桥接准备和用户/助手正文归档通过；真实微信发送数为 0 |
+| `npm run test:memory-recovery` | 实际停止/恢复 Mem0；本地上下文降级小于 3 秒、持久积压、旧向量保留、恢复后真实语义入库、助手推测排除及隔离通过 |
+
+边界与回退：原文归档是对话正文，不含附件二进制和原生工具内部状态；较早摘录有损，模型每轮不必加载全量历史。投递为 at-least-once，SDK 写入与 receipt 更新间的断电可能重放，不保证 exactly-once。常见 token 脱敏不覆盖所有秘密形式，Jev advisory 风险检查也不能替代实际隐私校验。可选 spaCy/BM25 未列为已验收能力。没有做真实微信消息回包或长时间合盖耐久测试，本轮不据此保证全链路永不出错。
+
+回退时先停微信写入并备份当前状态；可把配置的 `memory.mem0` 关闭而保留本地上下文/完整归档，再停 Mem0 服务。不要删 runtime、私有备份或恢复旧快照覆盖新对话。旧微信启动定义备份保存在私有 `mem0/migration/`，不把凭据或备份提交到公开仓库。
+
 ## 7. 本次交付边界
 
 本轮已执行并验证：
@@ -177,4 +212,4 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - 更新设计 HTML v1.2 和本执行文档，使研究结论、代码状态和限制一致。
 - 验证 `npm run test:control-plane`、HTTP 临时状态端到端测试、Node 语法检查、plist 校验、`127.0.0.1:4324/health` 与会话/任务 API。
 
-尚未执行：微信 Chief 的真实 prompt/工具调用验收、原生旧会话的历史读取/真实用户任务验证、Cezar worktree/review 完整关联、GUI 自动化、Devin 登录绑定、正式目录迁移和云端通道。MCP 配置已注入，但不能用“配置存在”冒充 Agent 实际调用证据。
+本轮新增共享记忆的交付与验证见 6.2；真实 Kimi ACP 的合成对话已验收。尚未执行：真实微信消息驱动 Chief 工具调用/派单的完整闭环、原生旧会话的历史读取/真实用户任务验证、Cezar worktree/review 完整关联、GUI Agent 自动化、Devin 登录绑定、正式目录迁移和云端通道。MCP 配置已注入，但不能用“配置存在”冒充 Agent 实际调用证据。

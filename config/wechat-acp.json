@@ -5,7 +5,14 @@
     "enabled": true,
     "maxTurns": 16,
     "maxChars": 24000,
-    "summaryChars": 6000
+    "summaryChars": 6000,
+    "personaFile": "/Users/markus/ai-agent-cockpit/AGENTS.md",
+    "mem0": {
+      "url": "http://127.0.0.1:4325",
+      "tokenFile": "/Users/markus/.local/state/personal-ai-os/mem0/api-token",
+      "timeoutMs": 1500,
+      "topK": 5
+    }
   },
   "commandAliases": {
     "/acp-cancel": ["/取消", "取消"],

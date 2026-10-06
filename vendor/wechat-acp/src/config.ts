@@ -132,6 +132,8 @@ export interface WeChatAcpConfig {
     maxTurns?: number;
     maxChars?: number;
     summaryChars?: number;
+    mem0?: { url: string; tokenFile: string; timeoutMs?: number; topK?: number };
+    personaFile?: string;
   };
   /**
    * Optional user-defined aliases for bridge slash commands. Maps a

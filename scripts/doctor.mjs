@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 
 async function get(url) {
   try {
-    const response = await fetch(url)
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000) })
     const text = await response.text()
     return { ok: response.ok, status: response.status, body: JSON.parse(text) }
   } catch (error) {
@@ -24,21 +24,21 @@ function runEval() {
   })
 }
 
-const [cezar, wechat, controlPlane, capabilities] = await Promise.all([
+const [cezar, wechat, controlPlane, capabilities, memory] = await Promise.all([
   get('http://127.0.0.1:4321/api/v1/health'),
   get('http://127.0.0.1:4322/api/wechat/status'),
   get('http://127.0.0.1:4324/health'),
   get('http://127.0.0.1:4324/api/control-plane/capabilities'),
+  get('http://127.0.0.1:4325/health'),
 ])
 const evaluation = await runEval()
 const report = {
   type: 'PersonalAiOsDoctorReport',
-  ok: cezar.ok && wechat.ok && controlPlane.ok && capabilities.ok && evaluation.ok,
-  services: { cezar, wechat, controlPlane },
+  ok: cezar.ok && wechat.ok && controlPlane.ok && capabilities.ok && memory.ok && evaluation.ok,
+  services: { cezar, wechat, controlPlane, memory },
   capabilities: capabilities.body?.capabilities?.map((item) => ({ agentId: item.agentId, provider: item.provider, status: item.status })) ?? [],
   evaluation: evaluation.report ?? evaluation,
   checkedAt: new Date().toISOString(),
 }
 console.log(JSON.stringify(report, null, 2))
 if (!report.ok) process.exitCode = 1
-

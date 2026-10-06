@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.markus.personal-ai-os.memory</string>
+  <key>ProgramArguments</key><array>
+    <string>/Users/markus/ai-agent-cockpit/.venv-memory/bin/python</string>
+    <string>-m</string><string>uvicorn</string><string>services.memory.service:app</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>4325</string>
+    <string>--no-access-log</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/markus/ai-agent-cockpit</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>HOME</key><string>/Users/markus</string>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>MEM0_TELEMETRY</key><string>false</string>
+    <key>HF_HUB_DISABLE_TELEMETRY</key><string>1</string>
+    <key>HF_HUB_OFFLINE</key><string>1</string>
+    <key>TOKENIZERS_PARALLELISM</key><string>false</string>
+    <key>NO_PROXY</key><string>localhost,127.0.0.1,::1</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/markus/ai-agent-cockpit/logs/memory-launchd.log</string>
+  <key>StandardErrorPath</key><string>/Users/markus/ai-agent-cockpit/logs/memory-launchd.err.log</string>
+</dict></plist>

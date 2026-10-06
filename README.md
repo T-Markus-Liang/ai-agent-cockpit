@@ -11,7 +11,8 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 | Cezar cockpit | <http://127.0.0.1:4321> | 本地任务、工作树和运行界面 |
 | 微信控制服务 | <http://127.0.0.1:4322> | 二维码、登录状态和 bridge 启动控制 |
 | Personal AI OS 控制面 | <http://127.0.0.1:4324> | 本机会话元数据索引、Task/Execution 状态和 Agent 来源能力边界 |
-| 微信 ACP bridge | launchd | 微信 → 默认 Codex，失败/超时按配置顺序 fallback |
+| 微信 ACP bridge | launchd | 微信 → 默认 Kimi，失败/超时按配置顺序 fallback；各模型使用同一共享记忆 |
+| Mem0 OSS 记忆服务 | <http://127.0.0.1:4325/health> | 本地多语言向量检索、持久入库队列；用户事实由现有 Kimi API 提炼 |
 | Provider shim | launchd | Kimi、DeepSeek、GLM、Antigravity 等本机已有反代/配置 |
 
 已完成的第一轮重构包括：
@@ -57,9 +58,30 @@ npm run test:control-plane
 # 运行协议级回归评估（临时状态目录，不调用模型）
 npm run eval:control-plane
 
-# 一次性诊断 Cezar、微信、控制面、Feature Map 和回归评估
+# 一次性诊断 Cezar、微信、控制面、Mem0、Feature Map 和回归评估
 npm run doctor
 ```
+
+## 微信共享记忆（已部署 Mem0 OSS）
+
+微信主对话使用 Kimi。每轮实际派发前统一注入人格规则、近期对话、较早的有损摘录和 Mem0 检索到的相关事实；切换 fallback 不更换用户的记忆命名空间。近期上下文并非全部历史，Mem0 也不是原生 Agent 工具状态的无损复制。
+
+完整对话正文追加到私有 `conversation-archive/*.jsonl`；近期快照和持久 outbox 仍由微信实例管理。Mem0 在本机使用 Qdrant + SQLite，目录位于 `~/.local/state/personal-ai-os/mem0/`，不提交 Git。只从用户表述提炼长期事实，不把助手推测当作事实。
+
+记忆服务不可用时，桥接器继续使用本地上下文；上传记录保留，服务恢复后重试。过长正文只在提炼输入中分块，归档不截断；永久拒绝的记录保留在私有 `rejectedOutbox`，不会阻塞后续上传。交付语义是 at-least-once，不保证断电窗口中的 exactly-once。
+
+**存储和 embedding 本地运行，但事实提炼会调用现有 Kimi API，不是全离线。** 常见 token 格式会在提炼前屏蔽，不能保证识别所有秘密；不要在微信对话中发送密钥。Dashboard 与设置里的系统连接显示 Mem0 实时健康/队列和配置的微信主 Agent，而非固定的 Codex 标签。
+
+安装、固定依赖和运维说明见 [记忆服务文档](services/memory/README.md)。
+
+```bash
+npm run test:memory-service  # 鉴权、隔离、幂等、持久重试、权限与提炼边界
+npm run test:memory-live     # 真实 Mem0 + Kimi 中文提炼/召回（少量模型调用）
+npm run test:memory-kimi     # 真实 Kimi ACP 使用注入记忆；不发真实微信消息
+npm run test:memory-recovery # macOS：短暂停止 Mem0，验证降级/恢复；不停止微信
+```
+
+部署时回填了旧快照尚存的 9 条对话正文，并生成私有备份；此前已被截断/删除的历史无法重建。本轮测试结论和未验证边界见 [执行记录](EXECUTION.md#62-mem0-部署与验收2026-10-06)。
 
 `native-load-probe` 是显式的本机验证命令，会调用指定 Codex `session/load`；它没有暴露给 MCP/自动 Chief，避免无审批恢复外部会话。
 
@@ -83,7 +105,7 @@ POST http://127.0.0.1:4324/mcp                    # JSON-RPC tools/list / tools/
 ```text
 微信 / 手机网页
         ↓
-Chief（当前默认 Codex；未来可替换）
+Chief（当前微信默认 Kimi；可替换）
         ↓
 Task / SessionRef / Execution / Policy / Evidence 控制面
         ↓
@@ -108,7 +130,7 @@ Worker 与执行适配器
 | --- | --- | --- | --- |
 | Codex | SQLite + 显式 ACP `session/list` 只读索引 | ACP `session/load` / `session/resume` 已被 capability probe 证实存在 | 未执行恢复、prompt 或工具调用 |
 | OpenCode | SQLite + ACP `session/list` 只读索引 | ACP load/resume capability 已实测 | 未执行 load、prompt 或消息读取 |
-| Kimi CLI | `session_index.jsonl` + ACP `session/list` | ACP load/resume capability 已实测 | 本项目 cwd 暂无会话；未执行 load、prompt 或认证验证 |
+| Kimi CLI | `session_index.jsonl` + ACP `session/list` | ACP load/resume capability 已实测 | 新建隔离 ACP 会话的真实 prompt/记忆召回已通过；用户旧会话恢复仍未验收 |
 | WorkBuddy | 已发现 App/`codebuddy --acp`，ACP initialize 成功 | 声明 loadSession/MCP，但未声明 session/list | 旧会话不能由控制面猜测或静默创建 |
 | Devin | App/ACP `session/list` 已实测 | 声明 loadSession，未声明 resume | 真实 prompt、认证、load 和云端能力仍待验证 |
 | Claude Code | 已发现本地入口 | 原生 session 机制 | 本版本不读取 `~/.claude` 历史 |

@@ -7,7 +7,7 @@
     <string>/usr/local/bin/node</string>
     <string>/Users/markus/ai-agent-cockpit/vendor/wechat-acp/dist/bin/wechat-acp.js</string>
     <string>--instance</string><string>cezar-codex</string>
-    <string>--agent</string><string>codex-official</string>
+    <string>--agent</string><string>kimi-primary</string>
     <string>--cwd</string><string>/Users/markus/ai-agent-cockpit</string>
     <string>--config</string><string>/Users/markus/ai-agent-cockpit/config/wechat-acp.json</string>
     <string>--session-resume</string><string>auto</string>

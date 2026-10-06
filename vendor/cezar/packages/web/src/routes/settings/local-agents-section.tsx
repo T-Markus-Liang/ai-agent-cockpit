@@ -5,7 +5,7 @@ import { useLocale } from '@/components/locale-provider'
 
 type Adapter = { name: string; provider: string; kind: string; channel: string; command?: string; url?: string; status: 'connected' | 'available' | 'unknown' | 'unavailable' | 'gui-only'; note: string }
 const ADAPTERS: Adapter[] = [
-  { name: 'Codex', provider: 'codex', kind: 'ACP / app-server', channel: 'codex-official', command: 'codex app-server', status: 'connected', note: '当前微信主 Agent' },
+  { name: 'Codex', provider: 'codex', kind: 'ACP / app-server', channel: 'codex-official', command: 'codex app-server', status: 'connected', note: '独立本机 Agent 通道' },
   { name: 'Codex App', provider: 'codex-app', kind: 'GUI / desktop app', channel: 'codex-app', status: 'gui-only', note: 'Codex App 的旧会话由 App 自己管理，控制面不静默操作 GUI' },
   { name: 'OpenCode', provider: 'opencode', kind: 'ACP', channel: 'opencode', command: 'opencode acp', status: 'available', note: '可作为本机 fallback 和独立工作流' },
   { name: 'Claude Code', provider: 'claude', kind: 'CLI / ACP', channel: 'claude', command: 'claude', status: 'available', note: '检测到配置入口，需完成登录后启用' },
@@ -18,10 +18,14 @@ const ADAPTERS: Adapter[] = [
   { name: 'DeepSeek Harness', provider: 'deepseek-harness', kind: 'GUI / desktop host', channel: 'deepseek-harness', status: 'gui-only', note: '当前只有桌面 App 和内部 IPC，没有可验证的 CLI/ACP 端口' },
 ]
 
-type FeatureMap = { capabilities?: Array<{ provider?: string; status?: string; limitations?: string[] }> }
+type FeatureMap = {
+  capabilities?: Array<{ provider?: string; status?: string; limitations?: string[] }>
+  conversation?: { provider?: string }
+  services?: { memory?: { status?: string; ingestion?: { pending?: number; retrying?: number } } }
+}
 
 async function featureMap(): Promise<FeatureMap> {
-  const response = await fetch('http://127.0.0.1:4324/api/control-plane/capabilities', { cache: 'no-store' })
+  const response = await fetch('http://127.0.0.1:4324/api/control-plane/capabilities', { cache: 'no-store', signal: AbortSignal.timeout(3000) })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json() as Promise<FeatureMap>
 }
@@ -34,7 +38,8 @@ export function LocalAgentsSection() {
     const capability = capabilities.get(adapter.provider)
     if (!capability) return adapter
     const status = capability.status === 'ready' ? 'connected' : capability.status === 'unknown' ? 'unknown' : 'unavailable'
-    return { ...adapter, status, note: capability.limitations?.[0] ? `${adapter.note} · ${capability.limitations[0]}` : adapter.note }
+    const note = live.data?.conversation?.provider === adapter.provider ? `微信主 Agent（配置） · ${adapter.note}` : adapter.note
+    return { ...adapter, status, note: capability.limitations?.[0] ? `${note} · ${capability.limitations[0]}` : note }
   }
   return <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4 md:p-6" data-slot="local-agents-settings">
     <Card><CardHeader><CardTitle className="flex items-center gap-2"><TerminalIcon className="size-4" />{t('Local agents')}</CardTitle><CardDescription>{t('本机 Agent 通道、协议和可用状态。')}</CardDescription></CardHeader>
@@ -44,6 +49,10 @@ export function LocalAgentsSection() {
         {adapter.command ? <code className="mt-2 block rounded bg-muted px-2 py-1 text-[11px]">{adapter.command}</code> : null}
         {adapter.url ? <a className="mt-2 inline-flex items-center gap-1 text-xs text-violet underline" href={adapter.url} target="_blank" rel="noreferrer">{adapter.url}<ExternalLinkIcon className="size-3" /></a> : null}
       </div>)}</CardContent>
+    </Card>
+    <Card><CardHeader><CardTitle>Mem0 共享记忆</CardTitle><CardDescription>近期上下文、完整原文归档与跨模型长期语义记忆。</CardDescription></CardHeader>
+      <CardContent><p className="text-sm">{live.data?.services?.memory?.status === 'ready' ? `已连接 · 待提炼 ${live.data.services.memory.ingestion?.pending ?? 0} · 重试 ${live.data.services.memory.ingestion?.retrying ?? 0}` : '长期检索暂不可用；微信继续使用本地上下文'}</p>
+        <p className="mt-2 text-xs text-muted-foreground">本地 Qdrant + SQLite；事实提炼使用已有 Kimi API，不是全离线推理。</p></CardContent>
     </Card>
   </div>
 }

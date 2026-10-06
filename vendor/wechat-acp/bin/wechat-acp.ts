@@ -391,6 +391,7 @@ async function main(): Promise<void> {
   let configFileSetInboxDir = false;
   let configFileSetStateFile = false;
   let configFileSetInjectDir = false;
+  let configFileSetMemoryFile = false;
   if (args.configFile) {
         const fileConfig = loadConfigFile(args.configFile);
         if (fileConfig.controlPlaneUrl !== undefined) {
@@ -438,6 +439,7 @@ async function main(): Promise<void> {
       configFileSetInjectDir = true;
     }
     Object.assign(config.storage, fileConfig.storage ?? {});
+    configFileSetMemoryFile = fileConfig.storage?.memoryFile !== undefined;
   }
 
   // CLI --instance always wins over config-file storage.dir so users can
@@ -495,6 +497,9 @@ async function main(): Promise<void> {
   }
 
   // Handle subcommands
+  config.storage.memoryFile = configFileSetMemoryFile
+    ? path.resolve(config.storage.memoryFile!)
+    : path.join(config.storage.dir, "conversation-memory.json");
   if (args.command === "agents") {
     handleAgents(config);
     return;

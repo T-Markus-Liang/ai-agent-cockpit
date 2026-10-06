@@ -11,3 +11,7 @@ vendor/*/.ai/
 .wechat-acp/
 .ai/cezar/
 .DS_Store
+.venv-memory/
+__pycache__/
+*.pyc
+services/memory/.cache/

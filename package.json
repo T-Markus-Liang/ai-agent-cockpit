@@ -8,6 +8,10 @@
     "sessions": "node scripts/control-plane.mjs",
     "control-plane": "node gateway/control-plane.mjs",
     "doctor": "node scripts/doctor.mjs",
+    "test:memory-service": ".venv-memory/bin/python -m unittest discover -s tests -p 'memory_service_test.py' -v",
+    "test:memory-live": "node scripts/test-memory-live.mjs",
+    "test:memory-kimi": "node scripts/test-memory-kimi.mjs",
+    "test:memory-recovery": "MEMORY_RECOVERY_TEST=1 node scripts/test-memory-recovery.mjs",
     "eval:control-plane": "node evals/control-plane-regression.mjs",
     "test:control-plane": "node --test tests/control-plane.test.mjs tests/control-plane-http.test.mjs"
   }
