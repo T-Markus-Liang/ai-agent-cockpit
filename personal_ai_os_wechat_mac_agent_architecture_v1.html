@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Personal AI Operating System：MacBook × 微信 × 多 Agent 大管家升级方案</title>
+<style>
+  :root{
+    --bg:#0b1020; --panel:#121a2b; --panel2:#182238; --text:#edf2f7;
+    --muted:#9fb0c7; --accent:#79a8ff; --accent2:#7be0c3; --warn:#ffd166;
+    --danger:#ff7b8a; --border:#2b3a56; --code:#0a0f1b; --link:#9bc1ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+      "Hiragino Sans GB","Microsoft YaHei",Arial,sans-serif;
+    background:linear-gradient(180deg,#08101f 0%,#0d1425 100%);
+    color:var(--text); line-height:1.72;
+  }
+  a{color:var(--link); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1180px;margin:0 auto;padding:48px 24px 88px}
+  .hero{
+    padding:48px; border:1px solid var(--border); border-radius:24px;
+    background:radial-gradient(circle at 85% 5%, rgba(121,168,255,.20), transparent 30%),
+               linear-gradient(145deg,#121a2c,#0f1728);
+    box-shadow:0 20px 70px rgba(0,0,0,.28);
+  }
+  .eyebrow{color:var(--accent2);font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:13px}
+  h1{font-size:44px;line-height:1.15;margin:10px 0 14px}
+  h2{font-size:29px;margin-top:54px;padding-top:8px}
+  h3{font-size:21px;margin-top:30px}
+  p{color:#d9e2ee}
+  .subtitle{font-size:19px;color:#b9c8da;max-width:920px}
+  .callout{
+    margin:24px 0; padding:22px 24px; border-left:4px solid var(--accent2);
+    background:rgba(123,224,195,.08); border-radius:12px;
+  }
+  .warning{border-left-color:var(--warn);background:rgba(255,209,102,.08)}
+  .danger{border-left-color:var(--danger);background:rgba(255,123,138,.08)}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin:20px 0}
+  .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:20px 0}
+  .card{
+    background:linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid var(--border);border-radius:16px;padding:20px;
+  }
+  .card h3{margin:0 0 8px}
+  .muted{color:var(--muted)}
+  pre{
+    background:var(--code); border:1px solid #22314c; border-radius:14px;
+    padding:18px; overflow:auto; color:#dbe8ff; line-height:1.5;
+  }
+  code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+  table{width:100%;border-collapse:collapse;margin:20px 0;background:rgba(18,26,43,.65)}
+  th,td{border:1px solid var(--border);padding:12px 14px;vertical-align:top}
+  th{background:#16213a;text-align:left}
+  .tag{display:inline-block;padding:3px 9px;border-radius:999px;background:#203150;color:#cfe0ff;margin:2px 4px 2px 0;font-size:12px}
+  .ref{font-size:.82em;vertical-align:super}
+  .toc{
+    margin-top:26px;padding:22px;border:1px solid var(--border);border-radius:14px;background:#0f1728
+  }
+  .toc ol{columns:2;column-gap:30px;margin:0;padding-left:24px}
+  .kpi{font-size:32px;font-weight:800;color:var(--accent2)}
+  .footer{margin-top:60px;padding-top:24px;border-top:1px solid var(--border);color:var(--muted)}
+  .pill{display:inline-block;border:1px solid var(--border);border-radius:999px;padding:7px 11px;margin:5px 5px 0 0;color:#cfdaea}
+  .arch{font-size:14px}
+  @media (max-width:800px){
+    .wrap{padding:20px 12px 54px}
+    .hero{padding:28px 22px}
+    h1{font-size:34px}
+    .grid,.grid3{grid-template-columns:1fr}
+    .toc ol{columns:1}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<section class="hero">
+<div class="eyebrow">Architecture Upgrade · 2026-10-06 · v1.2</div>
+  <h1>Personal AI Operating System</h1>
+  <p class="subtitle">
+    面向 MacBook、微信、多 Agent CLI、桌面 App、GitHub、Cloud Agent 与远程设备的统一 AI 大管家设计方案。
+    核心目标不是“再做一个聊天机器人”，而是把个人工作环境升级成一个可路由、可验证、可审计、可扩展的 Agent Control Plane。
+  </p>
+  <div class="callout">
+    <strong>核心判断：</strong>
+    真正决定系统是否能长期自动运行的，不是某个模型有多聪明，而是
+    <strong>Verification、Eval、Hard Constraints、独立 Memory 与清晰的任务状态机</strong>。
+    Lauren Tan 的 pstack / Cursor workflow 明确强调 reusable playbooks、review processes、debugging workflows 和长期记忆式能力积累
+    <sup class="ref"><a href="#ref1">[1]</a></sup><sup class="ref"><a href="#ref3">[3]</a></sup>。
+  </div>
+
+  <div class="toc">
+    <strong>目录</strong>
+    <ol>
+      <li><a href="#goal">设计目标</a></li>
+      <li><a href="#principles">核心原则</a></li>
+      <li><a href="#architecture">总体架构</a></li>
+      <li><a href="#chief">Chief of Staff</a></li>
+      <li><a href="#featuremap">Feature Map</a></li>
+      <li><a href="#router">模型与 Agent Router</a></li>
+      <li><a href="#task">任务对象与状态机</a></li>
+      <li><a href="#memory">独立 Memory</a></li>
+      <li><a href="#skills">Skills / Playbooks</a></li>
+      <li><a href="#verify">Verification Layer</a></li>
+      <li><a href="#eval">Eval / Judge Layer</a></li>
+      <li><a href="#policy">Policy / Permission</a></li>
+      <li><a href="#localcloud">Local / Cloud 分工</a></li>
+      <li><a href="#wechat">微信交互层</a></li>
+      <li><a href="#rollout">分阶段落地</a></li>
+      <li><a href="#implementation-boundaries">本机接入与控制面边界</a></li>
+      <li><a href="#project-layout">项目目录与实施计划</a></li>
+      <li><a href="#pstack-method">pstack / SpaceXAI 方法论吸收</a></li>
+      <li><a href="#sources">参考资料</a></li>
+    </ol>
+  </div>
+</section>
+
+<section id="goal">
+<h2>1. 设计目标</h2>
+
+<div class="grid3">
+  <div class="card"><div class="kpi">01</div><h3>统一入口</h3><p>微信成为主入口，但不承担业务逻辑。它只负责命令、通知、审批、图片与语音输入。</p></div>
+  <div class="card"><div class="kpi">02</div><h3>统一调度</h3><p>所有 Claude Code、Codex、OpenCode、Kimi、Cloud Agent、GitHub Actions 都由一个 Chief Router 管理。</p></div>
+  <div class="card"><div class="kpi">03</div><h3>闭环验证</h3><p>Agent 说“完成”不算完成。必须附带可执行验证、日志、测试、截图或其他证据。</p></div>
+</div>
+
+<p>目标工作流：</p>
+
+<pre class="arch"><code>微信
+  ↓
+Personal Chief
+  ↓
+Intent / Planning
+  ↓
+Task Graph
+  ↓
+Agent Router
+  ├─ Claude Code
+  ├─ Codex CLI
+  ├─ OpenCode
+  ├─ Kimi / DeepSeek
+  ├─ Claude Cloud
+  ├─ Devin
+  └─ GitHub Actions
+  ↓
+Execution
+  ↓
+Verification
+  ↓
+Eval / Review
+  ↓
+Policy Engine
+  ↓
+Evidence Pack
+  ↓
+微信摘要 / 审批</code></pre>
+</section>
+
+<section id="principles">
+<h2>2. 核心原则</h2>
+
+<table>
+<tr><th>原则</th><th>落地要求</th><th>依据</th></tr>
+<tr>
+<td><strong>Chief 不做重活</strong></td>
+<td>Chief 负责理解、规划、路由、监督、汇总；具体执行交给专职 Agent。</td>
+<td>pstack 使用高阶 router 将任务导向不同 skill / playbook <sup class="ref"><a href="#ref1">[1]</a></sup><sup class="ref"><a href="#ref3">[3]</a></sup></td>
+</tr>
+<tr>
+<td><strong>Harness 与模型解耦</strong></td>
+<td>Claude、Codex、OpenCode 都视作可替换 worker；能力由统一 Task Contract 调用。</td>
+<td>已有 pstack 的 harness-neutral / cross-agent 移植支持 Claude Code、Codex、OpenCode、Gemini 等 <sup class="ref"><a href="#ref2">[2]</a></sup><sup class="ref"><a href="#ref4">[4]</a></sup></td>
+</tr>
+<tr>
+<td><strong>Agent Done ≠ Done</strong></td>
+<td>所有任务必须进入测试、验证、review、证据采集阶段。</td>
+<td>workshop 重点是 reusable engineering workflows 与 review / debugging process <sup class="ref"><a href="#ref1">[1]</a></sup></td>
+</tr>
+<tr>
+<td><strong>规则尽量机器化</strong></td>
+<td>安全、架构和质量要求优先变成脚本、CI、lint、权限 gate，而不是只写 Prompt。</td>
+<td>pstack 的工程方式强调规则、skills、tools、playbooks <sup class="ref"><a href="#ref3">[3]</a></sup></td>
+</tr>
+<tr>
+<td><strong>记忆按角色隔离</strong></td>
+<td>不同 Agent / 项目分开记忆，避免一个超级上下文污染全部任务。</td>
+<td>“Agents are like new hires in constant amnesia”，通过 rules / skills / tools / long-term memory 弥补 <sup class="ref"><a href="#ref3">[3]</a></sup></td>
+</tr>
+</table>
+</section>
+
+<section id="architecture">
+<h2>3. 总体架构</h2>
+
+<pre class="arch"><code>                         ┌────────────────────┐
+                         │       微信          │
+                         │ text/voice/image   │
+                         └─────────┬──────────┘
+                                   │
+                                   ▼
+                         ┌────────────────────┐
+                         │   Personal Chief   │
+                         │  Intent / Planner  │
+                         └─────────┬──────────┘
+                                   │
+                  ┌────────────────┴────────────────┐
+                  ▼                                 ▼
+           ┌─────────────┐                   ┌─────────────┐
+           │ Feature Map │                   │  Task Graph │
+           └──────┬──────┘                   └──────┬──────┘
+                  └────────────────┬────────────────┘
+                                   ▼
+                         ┌────────────────────┐
+                         │    Agent Router    │
+                         └───┬────┬────┬─────┘
+                             │    │    │
+                 ┌───────────┘    │    └────────────┐
+                 ▼                ▼                 ▼
+             Claude Code       Codex CLI        OpenCode
+                 │                │                 │
+                 └──────────────┬─┴─────────────────┘
+                                ▼
+                       ┌─────────────────┐
+                       │ Skills/Playbook │
+                       └────────┬────────┘
+                                ▼
+                       ┌─────────────────┐
+                       │    Execution    │
+                       │ shell/gui/web   │
+                       │ git/cloud/ssh   │
+                       └────────┬────────┘
+                                ▼
+                       ┌─────────────────┐
+                       │  Verification   │
+                       └────────┬────────┘
+                                ▼
+                       ┌─────────────────┐
+                       │   Eval/Judge    │
+                       └────────┬────────┘
+                                ▼
+                       ┌─────────────────┐
+                       │  Policy Engine  │
+                       └────────┬────────┘
+                                ▼
+                       ┌─────────────────┐
+                       │ Evidence / Log  │
+                       └────────┬────────┘
+                                ▼
+                              微信</code></pre>
+</section>
+
+<section id="chief">
+<h2>4. Personal Chief of Staff</h2>
+
+<p>Chief 的职责必须严格限制，否则它会迅速进化成一个什么都做、什么都知道一点、最后什么都管理不好的上下文沼泽。</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>Chief 应负责</h3>
+    <p>
+      <span class="tag">Intent Recognition</span>
+      <span class="tag">Task Planning</span>
+      <span class="tag">Agent Routing</span>
+      <span class="tag">Priority</span>
+      <span class="tag">Resource Budget</span>
+      <span class="tag">Progress Tracking</span>
+      <span class="tag">Approval</span>
+      <span class="tag">Summary</span>
+    </p>
+  </div>
+  <div class="card">
+    <h3>Chief 不应负责</h3>
+    <p>
+      长时间写代码、直接改大量文件、手工点击 GUI、自己跑全部测试、长期保存所有项目细节。
+    </p>
+  </div>
+</div>
+
+<p>建议 Chief 的输出不是自然语言散文，而是一个标准化 Task Plan：</p>
+
+<pre><code>{
+  "goal": "修复 Feedlot 仿真中动物路径穿模",
+  "project": "autoware-feedlot",
+  "risk_level": 1,
+  "worker": "claude-code",
+  "reviewer": "codex",
+  "verification": [
+    "build",
+    "unit_test",
+    "simulation_log_check"
+  ],
+  "requires_human_approval": false
+}</code></pre>
+</section>
+
+<section id="featuremap">
+<h2>5. Feature Map：给大管家一张机器地图</h2>
+
+<p>Agent 不应每次重新探索机器上有什么。系统要维护一个动态 Feature Map，描述软件、CLI、机器、账号、可执行能力和边界。</p>
+
+<pre><code>apps:
+  claude_code:
+    type: cli
+    capabilities: [coding, planning, review]
+  codex:
+    type: cli
+    capabilities: [coding, cloud_task, review]
+  opencode:
+    type: cli
+    capabilities: [coding, cheap_execution]
+  github:
+    type: service
+    capabilities: [issue, branch, pull_request, actions]
+  chrome:
+    type: gui
+    capabilities: [browse, devtools, webapp]
+  wechat:
+    type: messenger
+    capabilities: [receive, reply, approve]
+
+machines:
+  macbook:
+    capabilities: [macos, build, gui, simulation]
+  orin:
+    capabilities: [cuda, ros2, hardware_test]</code></pre>
+
+<div class="callout">
+  Feature Map 是把“Agent 猜环境”升级为“Agent 查能力目录”。这类结构化上下文与 pstack 的工程 playbook 思路一致：先建立可复用工作方法，再让 Agent 执行，而不是每个 session 从零摸索 <sup class="ref"><a href="#ref1">[1]</a></sup>。
+</div>
+</section>
+
+<section id="router">
+<h2>6. Model / Agent Router</h2>
+
+<p>不要绑定“一个万能模型”。建议按任务类型动态路由：</p>
+
+<table>
+<tr><th>任务类型</th><th>首选</th><th>备选</th><th>理由</th></tr>
+<tr><td>架构设计 / 高复杂度 Review</td><td>Claude</td><td>Codex</td><td>深层代码理解与设计优先</td></tr>
+<tr><td>大规模执行 / 重构</td><td>Claude Code</td><td>Codex CLI</td><td>需要长上下文和多文件操作</td></tr>
+<tr><td>廉价批处理</td><td>OpenCode / DeepSeek</td><td>Kimi</td><td>降低 token 成本</td></tr>
+<tr><td>长时云任务</td><td>Claude Cloud / Devin Cloud</td><td>GitHub Actions</td><td>释放本机和人工监督</td></tr>
+<tr><td>第二意见</td><td>不同模型 Reviewer</td><td>multi-model panel</td><td>降低同模型自证偏差</td></tr>
+</table>
+
+<p>
+pstack 已经出现针对 Claude Code、Codex、OpenCode、Gemini 等不同 harness 的移植，
+说明方法论本身可以和具体模型解耦 <sup class="ref"><a href="#ref2">[2]</a></sup><sup class="ref"><a href="#ref4">[4]</a></sup>。
+</p>
+</section>
+
+<section id="task">
+<h2>7. Task Object 与状态机</h2>
+
+<p>每个任务必须是数据库中的一等对象，而不是散落在聊天历史里的几句话。</p>
+
+<pre><code>{
+  "task_id": "sim-1842",
+  "project": "autoware-feedlot",
+  "source": "wechat",
+  "intent": "fix_bug",
+  "worker": "claude-code",
+  "reviewer": "codex",
+  "status": "VERIFYING",
+  "workspace": "~/AgentWorkspace/autoware/task-1842",
+  "branch": "agent/sim-1842",
+  "artifacts": [],
+  "evidence": [],
+  "created_at": "...",
+  "updated_at": "..."
+}</code></pre>
+
+<p>建议状态机：</p>
+
+<pre><code>CREATED
+  ↓
+PLANNED
+  ↓
+RUNNING
+  ↓
+IMPLEMENTED
+  ↓
+VERIFYING
+  ↓
+REVIEWING
+  ↓
+READY
+  ↓
+MERGED / DELIVERED
+
+失败分支：
+RUNNING / VERIFYING / REVIEWING
+  ↓
+FAILED
+  ↓
+RETRY / REROUTE / HUMAN_REVIEW</code></pre>
+</section>
+
+<section id="memory">
+<h2>8. 独立 Memory 与 Context 隔离</h2>
+
+<p>不要建立一个无限膨胀的“万能记忆”。建议最少拆分：</p>
+
+<div class="grid3">
+  <div class="card"><h3>Chief Memory</h3><p>用户偏好、系统拓扑、Agent 能力、长期规则。</p></div>
+  <div class="card"><h3>Project Memory</h3><p>代码结构、历史决策、项目约束、known issues。</p></div>
+  <div class="card"><h3>Role Memory</h3><p>Reviewer、Tester、Researcher 等角色自己的经验与 rubric。</p></div>
+</div>
+
+<p>
+Lauren Tan 公开描述 pstack 时把 Agent 类比成“高能力但持续失忆的新员工”，并强调使用 rules、skills、tools 和 long-term memory 来近似补偿这一问题
+<sup class="ref"><a href="#ref3">[3]</a></sup>。
+</p>
+</section>
+
+<section id="skills">
+<h2>9. Skills / Playbooks：真正可积累的资产</h2>
+
+<p>应把经验从 Prompt 中剥离出来，形成版本化 Skill。</p>
+
+<table>
+<tr><th>Skill</th><th>作用</th><th>系统内对应能力</th></tr>
+<tr><td><code>/how</code></td><td>深入理解子系统怎么工作</td><td>Research / Codebase Understanding</td></tr>
+<tr><td><code>/why</code></td><td>追溯源代码、历史、issue 等解释为何这样设计</td><td>Decision Reconstruction</td></tr>
+<tr><td><code>/architect</code></td><td>先稳定类型、数据结构、边界</td><td>Design Gate</td></tr>
+<tr><td><code>/tdd</code></td><td>先失败测试，再修复</td><td>Verification-first</td></tr>
+<tr><td><code>/interrogate</code></td><td>多模型对抗 Review</td><td>Adversarial Review</td></tr>
+<tr><td><code>/arena</code></td><td>N 个并行方案，提取最优部分</td><td>Parallel Candidate Search</td></tr>
+<tr><td><code>/show-me-your-work</code></td><td>保留可审计决策轨迹</td><td>Evidence / Audit Trail</td></tr>
+</table>
+
+<p>
+这些 skill 在 Lauren Tan 对 pstack 的公开介绍中被直接列出
+<sup class="ref"><a href="#ref3">[3]</a></sup>；
+workshop 页面也点名 <code>/architect</code>、<code>/interrogate</code>、<code>/arena</code>、<code>/tdd</code>
+<sup class="ref"><a href="#ref1">[1]</a></sup>。
+</p>
+</section>
+
+<section id="verify">
+<h2>10. Verification Layer：系统的心脏</h2>
+
+<div class="callout">
+  <strong>定义：</strong> Agent 不能通过“我已经修改了代码”证明任务完成。必须提供可复现证据。
+</div>
+
+<table>
+<tr><th>任务</th><th>最低验证要求</th></tr>
+<tr><td>代码 Bug</td><td>repro → failing test → fix → passing test</td></tr>
+<tr><td>Web</td><td>启动应用 → 浏览器交互 → UI state / screenshot</td></tr>
+<tr><td>CLI</td><td>真实命令执行 → exit code → stdout/stderr</td></tr>
+<tr><td>性能</td><td>before / after benchmark 或 profile</td></tr>
+<tr><td>仿真</td><td>build → launch → log / metric → expected behavior</td></tr>
+<tr><td>GitHub PR</td><td>CI → review threads → merge readiness</td></tr>
+</table>
+
+<p>
+pstack 的官方/社区说明把它定位为用于理解代码、设计修改、测试修复以及准备 PR 的严格工作流
+<sup class="ref"><a href="#ref2">[2]</a></sup>，而不是单纯代码生成工具。
+</p>
+</section>
+
+<section id="eval">
+<h2>11. Eval / Judge Layer：连 Skill 本身也要被测试</h2>
+
+<p>Agent workflow 也会退化，因此要有 Eval Harness：</p>
+
+<pre><code>Skill v1
+  ↓
+生成 N 个测试任务
+  ↓
+多个独立 Agent 执行
+  ↓
+Blind Judge
+  ↓
+Rubric Score
+  ↓
+Failure Analysis
+  ↓
+Skill v2
+  ↓
+Regression Eval</code></pre>
+
+<p>建议核心指标：</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>任务质量</h3>
+    <ul>
+      <li>正确率</li>
+      <li>测试通过率</li>
+      <li>回归率</li>
+      <li>Reviewer 驳回率</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>系统效率</h3>
+    <ul>
+      <li>人工干预次数</li>
+      <li>平均重试次数</li>
+      <li>token / cost</li>
+      <li>从接单到 READY 的时间</li>
+    </ul>
+  </div>
+</div>
+</section>
+
+<section id="policy">
+<h2>12. Policy / Permission Engine</h2>
+
+<p>权限建议五层：</p>
+
+<table>
+<tr><th>等级</th><th>能力</th><th>默认策略</th></tr>
+<tr><td>L0</td><td>读文件、查状态、搜索</td><td>自动</td></tr>
+<tr><td>L1</td><td>改项目文件、跑测试、Git branch</td><td>自动</td></tr>
+<tr><td>L2</td><td>安装依赖、启动服务、修改开发环境</td><td>自动 + 日志</td></tr>
+<tr><td>L3</td><td>删除、覆盖、sudo、系统设置</td><td>Policy Gate / 条件审批</td></tr>
+<tr><td>L4</td><td>支付、生产部署、代表用户发送外部消息</td><td>微信二次确认</td></tr>
+</table>
+
+<div class="danger callout">
+  不要只写一句“不要删除重要文件”。应在工具层直接拦截高风险命令。
+  任何能由程序强制执行的规则，都不应该只依赖 Prompt 和记忆。
+</div>
+</section>
+
+<section id="localcloud">
+<h2>13. Local Chief + Cloud Workers</h2>
+
+<p>推荐分工：</p>
+
+<pre><code>微信
+  ↓
+MacBook Personal Chief
+  ↓
+Router
+  ├─ 轻量任务 → OpenCode / DeepSeek
+  ├─ 复杂代码 → Claude Code / Codex
+  ├─ 长时开发 → Claude Cloud
+  ├─ 完整云电脑任务 → Devin Cloud
+  ├─ CI / batch → GitHub Actions
+  └─ 硬件任务 → SSH → Orin</code></pre>
+
+<p>重点不是“云端越多越好”，而是先让本地 workflow 可验证，再把已经稳定的任务迁移到 Cloud。</p>
+</section>
+
+<section id="wechat">
+<h2>14. 微信交互层</h2>
+
+<p>微信只承担四类交互：</p>
+
+<div class="grid">
+  <div class="card"><h3>Command</h3><p>“把 1842 交给 Codex 重做。”</p></div>
+  <div class="card"><h3>Status</h3><p>“Feedlot 昨天的问题修好了吗？”</p></div>
+  <div class="card"><h3>Approval</h3><p>“允许 L4：部署到生产。”</p></div>
+  <div class="card"><h3>Evidence</h3><p>接收摘要、截图、失败原因、PR、性能对比。</p></div>
+</div>
+
+<p>示例输出：</p>
+<pre><code>Feedlot 项目：3 个任务
+
+#1842 ✅ READY
+- Claude Code 完成
+- build/test 全通过
+- Codex Review 通过
+- PR #312
+
+#1843 ⚠ RETRY
+- 首轮测试失败
+- 已自动切换 Codex 修复
+- 当前 VERIFYING
+
+#1844 ⏸ WAITING_LOCAL
+- 需要 Gazebo GUI 验证
+- 已排队等待 MacBook 空闲</code></pre>
+</section>
+
+<section id="rollout">
+<h2>15. 推荐落地路线</h2>
+
+<table>
+<tr><th>阶段</th><th>范围</th><th>目标</th></tr>
+<tr>
+<td><strong>Phase 1</strong></td>
+<td>微信 → Chief → 2 个 CLI Agent → Task DB</td>
+<td>先打通“派单、状态、结果回传”闭环</td>
+</tr>
+<tr>
+<td><strong>Phase 2</strong></td>
+<td>加入 Git worktree、独立 workspace、Reviewer</td>
+<td>支持安全并发</td>
+</tr>
+<tr>
+<td><strong>Phase 3</strong></td>
+<td>Verification + Evidence Pack</td>
+<td>把“AI 说完成”升级成“系统证明完成”</td>
+</tr>
+<tr>
+<td><strong>Phase 4</strong></td>
+<td>Skills / Playbooks + pstack 移植</td>
+<td>把经验做成长期资产</td>
+</tr>
+<tr>
+<td><strong>Phase 5</strong></td>
+<td>Eval / Judge / Regression</td>
+<td>防止 skill 和 agent workflow 漂移</td>
+</tr>
+<tr>
+<td><strong>Phase 6</strong></td>
+<td>Claude Cloud / Devin Cloud / GitHub Actions</td>
+<td>把已验证的任务迁移到云端自动执行</td>
+</tr>
+<tr>
+<td><strong>Phase 7</strong></td>
+<td>GUI / App / Orin / 其他机器</td>
+<td>形成真正的 Personal AI OS</td>
+</tr>
+</table>
+
+<div class="callout warning">
+  <strong>优先级：</strong>
+  第一版不要做“全自动控制整台 Mac”。先做好 Task Object、Router、Verification、Permission。
+  这些底座如果烂，后面 Agent 越多，只会更高效地制造混乱。
+</div>
+</section>
+
+<section>
+<h2>16. 最终推荐技术边界</h2>
+<div class="grid">
+  <div class="card">
+    <h3>必须长期稳定</h3>
+    <p>Task DB、Policy Engine、Feature Map、Evidence Store、Router Contract、Audit Log。</p>
+  </div>
+  <div class="card">
+    <h3>应该可替换</h3>
+    <p>Claude / Codex / OpenCode / Kimi / Devin / Cloud Provider / Browser Agent。</p>
+  </div>
+</div>
+
+<p><strong>最终设计哲学：</strong></p>
+
+<pre><code>模型 = 可替换算力
+Agent = 专职员工
+Skill = SOP
+Verification = 质检
+Eval = 培训考试
+Policy = 公司制度
+Task DB = 工单系统
+Chief = 调度主管
+微信 = 老板的遥控器</code></pre>
+
+<p>
+这才是长期可扩展的结构。否则所谓“AI 大管家”，最终往往只是一个权限很大的聊天机器人。
+这种东西非常符合人类工程史传统：先给它 root，再祈祷它成熟。
+</p>
+</section>
+
+<section id="implementation-boundaries">
+<h2>17. 本机接入与控制面边界</h2>
+<div class="callout">
+  <strong>当前实现状态：</strong>本轮已开始执行重构。已落地根目录兼容期控制面：Task / SessionRef / Execution / Evidence / Approval / AgentCapability 运行时契约、Codex/OpenCode/Kimi 只读会话索引、WorkBuddy/Devin/Claude Code/Antigravity 能力发现、CLI/HTTP 查询入口和控制面 launchd 定义。它仍不写入外部 Agent 历史、不读取凭据、不承担 Chief 派单；下方未标记为已实现的模块仍是路线图。
+</div>
+<h3>17.1 微信、Chief 与 Worker 解耦</h3>
+<p>微信是移动设备的消息、状态、审批和证据入口，不包含 Worker 选择逻辑。默认 Codex 或 Kimi 可担任 Chief，负责理解、规划、分层查阅上下文、调度和汇总；具体任务由专职 Worker 执行。切换微信桥的 ACP preset 只是更换入口 Agent，不等于 Chief 已获得跨 Agent 调度能力。</p>
+<pre class="arch"><code>微信 / 手机网页
+  ↓
+Personal Chief（默认 Codex 或 Kimi，可替换）
+  ↓
+统一 Task / Session / Policy / Memory / Evidence 控制面
+  ↓
+执行适配器
+  ├─ Cezar：已有工作流、worktree、run 与 review gate
+  ├─ 本机 Agent：Devin CLI、Codex、Kimi 等
+  └─ 云端服务：Devin Cloud、GitHub Actions 等</code></pre>
+<p>Cezar 是可复用的执行引擎和界面，不是全部本机 App 历史会话的唯一管理者。自有控制面通过明确适配边界接入 Cezar，不把全部业务继续塞入 gateway，也不大规模改写 vendor。</p>
+<h3>17.2 Session、Task、Execution 分开管理</h3>
+<table>
+<tr><th>对象</th><th>职责与所有者</th></tr>
+<tr><td>Session</td><td>原生 Agent 管理对话和上下文。引用包含 Agent 来源、账号/profile 范围、原生会话 ID 与工作目录；标题不是唯一标识。</td></tr>
+<tr><td>Task</td><td>控制面管理用户目标、约束、依赖、验收和最终状态。任务可以关联多个执行尝试。</td></tr>
+<tr><td>Execution</td><td>一次派给某个 Worker 或引擎的执行。关联原生 Session、Cezar run 或云任务 ID。转派是新执行，不伪装成原生上下文无损迁移。</td></tr>
+</table>
+<p>控制面与 Cezar 不得同时启动同一次执行。使用请求幂等标识、原生会话执行锁和事件关联避免重复派单；Cezar 保留自身 run/worktree 状态所有权，控制面接收证据和事件后决定 Task 状态。Worker 报告完成只能进入待验证状态，不能直接进入最终完成状态。</p>
+<h3>17.3 分层历史检索与恢复</h3>
+<pre><code>会话元数据 → 摘要 → 相关消息片段 → 必要的完整上下文</code></pre>
+<p>外部 Agent 历史默认只读，结果保留来源和读取范围；摘要不等于完整历史，不全量复制为 Chief 的万能上下文。优先使用经验证的原生接口；无支持接口时才评估只读文件或 SQLite 适配，不写外部历史库、不读取或转交认证凭据。</p>
+<p>恢复必须确认 Agent、profile、原生会话 ID 与工作目录。恢复失败要明确返回错误，不得静默创建新会话并声称继续成功。App 与控制面对同一会话的并发写入需要可靠协调；无法判断是否空闲时，暂停恢复并请求确认，不声称本机锁可以阻止未接入的 App 写入。</p>
+<h3>17.4 本机 Devin 与 Devin Cloud</h3>
+<p>本机 Devin CLI/App 和 Devin Cloud 是两个独立适配器，分别管理认证、会话标识、工作空间、计费及执行证据。原有 Phase 6 的云电脑场景指 Devin Cloud；本机 Devin 接入可以在本机会话与 Worker 阶段验证，但不代表云端能力已打通。</p>
+<table>
+<tr><th>观察项</th><th>当前证据与限制</th></tr>
+<tr><td>Devin 本机 ACP</td><td>已验证 devin acp 的 initialize 握手与 session/new 创建会话。未验证真实任务 prompt、旧会话 list/load、历史读取和完整工具调用；创建会话成功不证明模型请求的鉴权与计费路径已可用。</td></tr>
+<tr><td>微信入口</td><td>已检查配置与启动定义使用默认 Codex；Devin preset 已存在，但不是管家工具注册，也不代表微信已切换到 Devin。</td></tr>
+<tr><td>Cezar</td><td>已有任务派发、继续 run 和 ACP 实现可供接入参考；已检查的 runner 注册表没有 Devin。</td></tr>
+<tr><td>本机能力展示</td><td>已检查的 Local agents 页面包含静态能力声明；声明可接入不能作为真实运行健康或调度成功的证明。</td></tr>
+<tr><td>统一控制面</td><td>在已检查的项目入口与调度代码中尚未发现完整跨 Agent 历史检索、Chief 工具层和任务关联闭环；本节描述的是后续设计。</td></tr>
+</table>
+<h3>17.5 权限边界</h3>
+<p>第 12 节权限等级是目标策略，不是已部署授权，也不覆盖用户当前的“只更新文档”指令。连接器确认身份，Policy 对具体操作、参数、目标和有效期做确定性校验；审批不得泛化复用。既有部分 ACP runner 使用自动批准工具，协议处理可复用，但自动批准策略不能直接作为新控制面的默认值。</p>
+<p>工作目录不等于沙箱，Agent 声明支持权限不等于实际强制隔离。无法可靠约束的操作必须报告限制并停止自动执行；不得开启 bypass、自动审批或放宽现有安全设置来绕过接入失败。Policy 在执行前生效，执行后还需验证和审计。</p>
+</section>
+
+<section id="project-layout">
+<h2>18. 项目目录与实施计划</h2>
+<p>以下是目标模块布局；仅随实际实现逐步创建，不用空目录伪装完成度。当前控制面第一片暂放在根目录 <code>control-plane/</code>，用于兼容现有 launchd 和 vendor 结构；待 Task 持久化与接口稳定后，再按本节布局归档迁移。完整方案保留当前 HTML 文件名与位置，本次不执行 HTML 归档迁移。</p>
+<pre><code>ai-agent-cockpit/
+├── README.md                         项目导航、运行方法、实现进度
+├── AGENTS.md                         架构必读与 Chief/Worker 边界
+├── EXECUTION.md                      分阶段实施清单与验收记录
+├── docs/architecture/                未来归档完整设计 HTML
+├── src/
+│   ├── contracts/                    统一任务、会话、能力、审批、事件契约
+│   ├── control-plane/
+│   │   ├── chief/                    理解、规划、监督与汇总
+│   │   ├── feature-map/              动态能力探测与证据
+│   │   ├── router/                   Worker 选择、预算与失败转派
+│   │   ├── tasks/                    任务图、状态机、调度与恢复
+│   │   ├── sessions/                 会话目录与分层检索
+│   │   ├── memory/                   Chief / Project / Role 记忆
+│   │   ├── policy/                   权限与具体操作审批
+│   │   └── evidence/                 证据索引与审计
+│   ├── connectors/wechat/            移动端消息与附件转换
+│   ├── adapters/
+│   │   ├── engines/cezar/            Cezar run/worktree 接入
+│   │   ├── agents/                   devin-local / codex / kimi
+│   │   ├── cloud/                    devin-cloud / github-actions
+│   │   └── providers/                模型 API 兼容桥
+│   ├── interfaces/                   http / cli / mcp
+│   └── verification/                可复现验证与结果归档
+├── tests/                            自有单元、协议、权限与恢复测试
+├── evals/                            后续独立行为评估
+├── .devin/                           新增项目设置与 skills
+├── scripts/                          构建、探测、迁移入口
+├── deploy/macos/launchd/             最终部署定义
+├── vendor/                           保留 cezar 与 wechat-acp 上游结构
+├── config/                           现有配置，兼容期保留
+├── gateway/                          现有入口，兼容期保留
+├── launchd/                          现有服务定义，兼容期保留
+├── logs/                             现有日志，兼容期保留
+└── .ai/                              现有 Cezar 状态，不随意搬动</code></pre>
+<p>未来自有运行数据建议存放在 <code>~/.local/state/ai-agent-cockpit/</code> 的 tasks、session-index、memory、evidence、audit 和 logs 下。存储格式、保留周期及迁移细节须在实现前确定；不移动各 Agent 原生历史和凭据，不建立第二套并行派单源。现有目录与服务定义存在路径依赖，必须先验证兼容入口，再单独审批切换。</p>
+<p>原 Phase 1–7 保留为产品路线；执行文档中的 A–G 是工程实施顺序，二者不是相同编号。详见 <a href="EXECUTION.md">EXECUTION.md</a>：先整理文档入口和边界，再做本机会话与 Chief 工具、任务闭环、验证审批，最后迁移运行路径与增加云端能力。</p>
+</section>
+
+<section id="pstack-method">
+<h2>19. pstack / SpaceXAI 方法论的吸收</h2>
+
+<div class="callout">
+  设计文档最初引用的 Lauren Tan 并不是普通的“Claude Code 工程师”：公开资料显示她参与 SpaceXAI 的 Grok Bot 与 Cursor 工作，并公开分享了 pstack——把 Agent 从一次性聊天升级为带有 playbook、验证、review、并行协作和长期记忆的工程系统。pstack 的公开仓库还记录了 Codex、Claude Code、OpenCode、Gemini CLI 等运行时的移植方式，以及在无法并行时的顺序降级路径。
+</div>
+
+<div class="grid3">
+  <div class="card"><h3>Skill-first Routing</h3><p>Chief 先选择工作流/Skill，再选择 worker；不要把所有任务都交给同一个“万能 Agent”。</p></div>
+  <div class="card"><h3>Chief + Workers</h3><p>Chief 负责理解、拆解和监督；Worker 负责执行；Reviewer 独立检查结果。复杂任务可以并行，无法并行时顺序执行。</p></div>
+  <div class="card"><h3>Verification-first</h3><p>把测试、运行、截图、日志、diff 和 review 作为任务状态的一部分，Agent 自报完成不能直接结案。</p></div>
+</div>
+
+<table>
+<tr><th>pstack 做法</th><th>Personal AI OS 吸收方式</th><th>第一阶段实现</th></tr>
+<tr><td><code>poteto-mode</code> / 自动路由</td><td>Chief 根据意图、风险和能力目录选择 Skill 与 Worker</td><td>Feature Map + Task Contract</td></tr>
+<tr><td><code>arena</code> / 并行候选</td><td>为互不冲突的方案创建独立 Execution 和 worktree</td><td>保留 Cezar worktree，记录 parent/child Execution</td></tr>
+<tr><td><code>interrogate</code> / 对抗 review</td><td>不同模型或不同角色独立审查，不让实现 Agent 自证</td><td>Reviewer 状态和 Evidence Pack</td></tr>
+<tr><td><code>tdd</code> / verification skill</td><td>将失败测试、修复、验证作为强制状态流</td><td>VERIFYING → REVIEWING → READY</td></tr>
+<tr><td><code>show-me-your-work</code></td><td>保留命令、输入、输出、diff、来源和审批绑定</td><td>Audit Event 与 Evidence 索引</td></tr>
+<tr><td>多运行时共享 Skill</td><td>Skill 不绑定 Claude；Codex、OpenCode、Kimi、WorkBuddy ACP 等适配器共享同一任务契约</td><td><code>.devin/skills</code> + Adapter mapping</td></tr>
+</table>
+
+<p><strong>新增约束：</strong>并行不是默认目标，可靠性才是。每个并行分支必须有独立工作区、预算和验证；如果运行时不支持并行，系统必须顺序降级并保留相同的状态和证据语义。</p>
+</section>
+
+<section id="sources">
+<h2>参考资料与引用</h2>
+
+<ol>
+  <li id="ref1">
+    <strong>Lenny's Workshops — “How Cursor Turned AI Agents Into Better Engineers”</strong><br/>
+    Lauren Tan 主讲，页面明确说明 workshop 主题包括 reusable playbooks、decision-making frameworks、review processes、debugging workflows，
+    并点名 <code>/architect</code>、<code>/interrogate</code>、<code>/arena</code>、<code>/tdd</code>。<br/>
+    <a href="https://lennysworkshops.com/w/how-cursor-turned-ai-agents-into-better-engineers-23469a" target="_blank" rel="noopener">
+      https://lennysworkshops.com/w/how-cursor-turned-ai-agents-into-better-engineers-23469a
+    </a>
+  </li>
+  <br/>
+  <li id="ref2">
+    <strong>GitHub — chid/pstack</strong><br/>
+    描述为 Lauren Tan pstack 的 Claude Code / Codex / OpenCode / Gemini 等 Agent 版本，
+    并明确其用途是理解代码库、设计修改、测试修复和准备 PR。<br/>
+    <a href="https://github.com/chid/pstack" target="_blank" rel="noopener">
+      https://github.com/chid/pstack
+    </a>
+  </li>
+  <br/>
+  <li id="ref3">
+    <strong>Lauren Tan — “pstack: the skills behind 10,000 agent runs”</strong><br/>
+    公开介绍 pstack 的设计目标与核心 skill；强调 agents 像持续失忆的新员工，并通过 rules、skills、tools、long-term memory 来改善表现。<br/>
+    <a href="https://www.linkedin.com/posts/laurenelizabethtan_cursor-pstack-the-skills-behind-10000-activity-7465439429042737152-ADbv" target="_blank" rel="noopener">
+      LinkedIn 原帖
+    </a>
+  </li>
+  <br/>
+  <li id="ref4">
+    <strong>GitHub — finografic/pstack</strong><br/>
+    Harness-neutral extraction，说明该方法可运行在 Claude Code、Codex、Cursor、Gemini CLI、OpenCode 等不同 Agent 环境。<br/>
+    <a href="https://github.com/finografic/pstack" target="_blank" rel="noopener">
+      https://github.com/finografic/pstack
+    </a>
+  </li>
+  <br/>
+  <li id="ref5">
+    <strong>GitHub — JoshueOsuna/pstack</strong><br/>
+    社区镜像/工作副本，README 对 babysit、swarm、show-me-your-work、setup-pstack 等能力有较完整说明，同时指出官方源位于 Cursor 公共 plugins 仓库。<br/>
+    <a href="https://github.com/JoshueOsuna/pstack" target="_blank" rel="noopener">
+      https://github.com/JoshueOsuna/pstack
+    </a>
+  </li>
+</ol>
+
+<div class="callout">
+  <strong>引用说明：</strong>
+  本文将公开 workshop 页面、Lauren Tan 本人的 pstack 公开说明、以及多个 pstack 移植仓库作为可核验依据。
+  涉及“你的 Personal AI OS 应该怎么设计”的部分属于基于这些工程原则进行的二次架构推演，不等同于来源作者的逐字观点。
+</div>
+</section>
+
+<div class="footer">
+  文档版本：v1.2 · 原始生成日期：2026-10-05 · 本次补充：控制面边界、pstack/SpaceXAI 方法论与第一阶段实施落地状态<br/>
+  主题：MacBook × 微信 × 多 Agent × Cloud Worker Personal AI Operating System
+</div>
+
+</div>
+</body>
+</html>

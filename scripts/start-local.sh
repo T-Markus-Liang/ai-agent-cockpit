@@ -14,3 +14,8 @@ if ! curl -fsS http://127.0.0.1:4322/api/wechat/status >/dev/null 2>&1; then
   nohup node "$ROOT/gateway/wechat-control.mjs" >"$ROOT/logs/wechat-control.log" 2>&1 &
   echo "Started WeChat control on http://127.0.0.1:4322"
 fi
+
+if ! curl -fsS http://127.0.0.1:4324/health >/dev/null 2>&1; then
+  nohup node "$ROOT/gateway/control-plane.mjs" >"$ROOT/logs/control-plane.log" 2>&1 &
+  echo "Started read-only control plane on http://127.0.0.1:4324"
+fi
