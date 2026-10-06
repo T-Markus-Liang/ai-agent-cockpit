@@ -77,6 +77,8 @@ async function main() {
     return output(await store.listTasks({ status: value('status'), limit: value('limit') }))
   }
   if (command === 'task' && subcommand === 'show') return output(await store.getTask(required('id')))
+  if (command === 'task' && subcommand === 'completion-plan') return output(await store.completionPlan(required('id')))
+  if (command === 'task' && subcommand === 'complete') return output(await store.completeTask(required('id'), { approvalId: required('approval') }, { idempotencyKey: idempotency() }))
   if (command === 'audit' && subcommand === 'list') return output(await store.listEvents({ entityId: value('entity'), limit: value('limit') }))
   if (command === 'execution' && subcommand === 'create') {
     return output(await store.createExecution(required('task'), {
@@ -130,7 +132,7 @@ async function main() {
   if (command === 'session' && subcommand === 'unlock') {
     return output(await store.releaseSessionLock(required('id'), { owner: value('owner'), token: value('token') }, { idempotencyKey: idempotency() }))
   }
-  throw new Error('用法：sessions list | task create/list/show | execution create/status | evidence add | approval create/decide | cezar plan/dispatch/reconcile | session lock/unlock')
+  throw new Error('用法：sessions list/native-list/native-load-probe | task create/list/show/completion-plan/complete | execution create/status | evidence add | approval create/decide | cezar plan/dispatch/reconcile | session lock/unlock')
 }
 
 try {

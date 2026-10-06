@@ -188,6 +188,53 @@ export class ControlPlaneStore {
     }
   }
 
+  #completionPlanState(state, taskId) {
+    const task = state.tasks[taskId]
+    if (!task) throw new StoreError('TASK_NOT_FOUND', `task ${taskId} was not found`, 404)
+    const executions = task.executionIds.map((id) => state.executions[id]).filter(Boolean)
+    const evidence = executions.flatMap((execution) => (execution.evidenceIds ?? []).map((id) => state.evidence[id]).filter(Boolean))
+    const allTerminal = executions.length > 0 && executions.every((execution) => TERMINAL_EXECUTION_STATUSES.has(execution.status))
+    const hasSuccess = executions.some((execution) => execution.status === 'succeeded')
+    const hasReview = evidence.some((item) => item.kind === 'review')
+    const hasVerification = evidence.some((item) => item.kind === 'test' || item.kind === 'command')
+    const parameters = {
+      taskId,
+      executionIds: executions.map((execution) => `${execution.id}:${execution.status}`).sort(),
+      evidenceIds: evidence.map((item) => `${item.id}:${item.kind}`).sort(),
+    }
+    const reasons = []
+    if (!allTerminal) reasons.push('所有 Execution 必须先进入终态')
+    if (!hasSuccess) reasons.push('至少需要一个 succeeded Execution')
+    if (!hasVerification) reasons.push('至少需要 test 或 command Evidence')
+    if (!hasReview) reasons.push('至少需要独立 review Evidence')
+    if (task.status === 'completed') reasons.push('Task 已经完成')
+    return {
+      action: 'task.complete',
+      target: taskId,
+      parameters,
+      parametersDigest: parametersDigest(parameters),
+      ready: reasons.length === 0 && task.status !== 'completed',
+      reasons,
+    }
+  }
+
+  #consumeApprovalState(state, approvalId, input) {
+    const approval = state.approvals[approvalId]
+    if (!approval) throw new StoreError('APPROVAL_NOT_FOUND', `approval ${approvalId} was not found`, 404)
+    if (approval.decision !== 'approved') throw new StoreError('APPROVAL_NOT_APPROVED', `approval is ${approval.decision}`, 409)
+    if (approval.usedAt) throw new StoreError('APPROVAL_ALREADY_USED', 'approval has already been consumed', 409)
+    if (approval.expiresAt && Date.parse(approval.expiresAt) <= Date.now()) {
+      approval.decision = 'expired'
+      throw new StoreError('APPROVAL_EXPIRED', 'approval has expired', 409)
+    }
+    for (const field of ['action', 'target', 'parametersDigest']) {
+      if (String(input?.[field] ?? '') !== String(approval[field])) throw new StoreError('APPROVAL_SCOPE_MISMATCH', `approval does not cover ${field}`, 403)
+    }
+    approval.usedAt = now()
+    this.#remember(state, { type: 'approval.consumed', entityType: 'Approval', entityId: approvalId, details: { action: approval.action, target: approval.target } })
+    return approval
+  }
+
   async createTask(input, { idempotencyKey } = {}) {
     return this.#mutate(async (state) => {
       const request = { input, operation: 'task.create' }
@@ -222,6 +269,29 @@ export class ControlPlaneStore {
       evidence: task.executionIds.flatMap((id) => state.executions[id]?.evidenceIds ?? [])
         .map((id) => state.evidence[id]).filter(Boolean),
     }
+  }
+
+  async completionPlan(taskId) {
+    const state = await this.read()
+    return this.#completionPlanState(state, taskId)
+  }
+
+  async completeTask(taskId, { approvalId } = {}, { idempotencyKey } = {}) {
+    return this.#mutate(async (state) => {
+      const request = { taskId, approvalId, operation: 'task.complete' }
+      const result = this.#idempotent(state, idempotencyKey, request, 'task.complete', () => {
+        const plan = this.#completionPlanState(state, taskId)
+        if (!plan.ready) throw new StoreError('TASK_NOT_READY', `task ${taskId} is not ready for completion`, 409, { reasons: plan.reasons, plan })
+        if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'task completion requires an approved approval id', 403)
+        this.#consumeApprovalState(state, approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest })
+        const task = state.tasks[taskId]
+        task.status = 'completed'
+        task.updatedAt = now()
+        this.#remember(state, { type: 'task.completed', entityType: 'Task', entityId: taskId, details: { evidenceCount: plan.parameters.evidenceIds.length } })
+        return { taskId, approvalId }
+      })
+      return { ...result, task: state.tasks[result.result.taskId], approval: state.approvals[result.result.approvalId] }
+    })
   }
 
   async getExecution(executionId) {

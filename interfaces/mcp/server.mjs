@@ -33,6 +33,16 @@ export const TOOL_DEFINITIONS = Object.freeze([
     inputSchema: { type: 'object', required: ['taskId'], properties: { taskId: { type: 'string' } } },
   },
   {
+    name: 'plan_task_completion',
+    description: '检查 Verification/Review/Evidence 是否齐备并生成完成审批摘要；只读。',
+    inputSchema: { type: 'object', required: ['taskId'], properties: { taskId: { type: 'string' } } },
+  },
+  {
+    name: 'complete_task',
+    description: '在 Evidence 齐备且 Approval 精确匹配后将 Task 标为 completed。',
+    inputSchema: { type: 'object', required: ['taskId', 'approvalId', 'idempotencyKey'], properties: { taskId: { type: 'string' }, approvalId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+  },
+  {
     name: 'list_audit_events',
     description: '读取控制面审计事件；不包含外部 Agent 消息正文或凭据。',
     inputSchema: { type: 'object', properties: { entityId: { type: 'string' }, limit: { type: 'number' } } },
@@ -104,6 +114,8 @@ export async function callTool(name, args = {}, { store } = {}) {
   if (!store) throw new Error('control-plane store is unavailable')
   if (name === 'create_task') return store.createTask(args, { idempotencyKey: args.idempotencyKey })
   if (name === 'get_task') return store.getTask(args.taskId)
+  if (name === 'plan_task_completion') return store.completionPlan(args.taskId)
+  if (name === 'complete_task') return store.completeTask(args.taskId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'list_audit_events') return store.listEvents(args)
   if (name === 'create_execution') return store.createExecution(args.taskId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'update_execution_status') return store.updateExecutionStatus(args.executionId, args, { idempotencyKey: args.idempotencyKey })

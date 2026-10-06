@@ -114,7 +114,8 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 
 - [x] Evidence 已记录 kind、summary、source、capturedAt、exitCode/uri 和执行关联；Worker 成功只进入 VERIFYING。
 - [x] Approval 已绑定 action、target、parametersDigest 和 expiresAt，支持批准/拒绝/过期/单次消费；Cezar dispatch 已接入执行前复核。
-- [ ] 将原有任务验证要求映射到可复现命令、独立 review 和 Evidence Pack。
+- [x] Task completion gate 已要求终态 Execution、至少一个 succeeded、test/command Evidence 和独立 review Evidence，再消费一次性完成 Approval。
+- [ ] 将原有任务验证要求继续扩展到可复现命令、独立 review 和完整 Evidence Pack。
 - [ ] 连接微信审批与 Policy，确定具体动作绑定、有效期、拒绝/超时处理及执行前复核的用户体验。
 - [ ] 确认可强制权限边界；无法约束的 adapter 不作为自动执行通道，不开启 bypass 或修改安全设置绕过问题。
 - [ ] 验收：Worker 自报完成不能直接进入最终完成；错误、过期或复用审批不能授权新动作；失败证据可追溯；未获授权的外部消息、部署和破坏性操作不执行。

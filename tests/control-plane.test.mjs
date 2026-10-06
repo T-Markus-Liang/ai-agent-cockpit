@@ -82,6 +82,13 @@ test('persistent store is idempotent and keeps execution state auditable', async
     assert.equal((await store.getTask(first.task.id)).task.status, 'reviewing')
     const audit = await store.listEvents({ entityId: first.task.id })
     assert.ok(audit.some((event) => event.type === 'task.created'))
+    await store.addEvidence(created.execution.id, { kind: 'review', summary: '独立 review 通过', source: 'reviewer:test' }, { idempotencyKey: 'evidence-review-1' })
+    const completionPlan = await store.completionPlan(first.task.id)
+    assert.equal(completionPlan.ready, true)
+    const completionApproval = await store.createApproval({ action: completionPlan.action, target: completionPlan.target, parametersDigest: completionPlan.parametersDigest }, { idempotencyKey: 'completion-approval' })
+    await store.decideApproval(completionApproval.approval.id, { decision: 'approved', approvedBy: 'wechat:test' }, { idempotencyKey: 'completion-decision' })
+    const completed = await store.completeTask(first.task.id, { approvalId: completionApproval.approval.id }, { idempotencyKey: 'completion-1' })
+    assert.equal(completed.task.status, 'completed')
 
     const second = await store.createTask({ goal: '验证重启恢复' }, { idempotencyKey: 'task-2' })
     const running = await store.createExecution(second.task.id, { workerId: 'test-worker' }, { idempotencyKey: 'execution-2' })

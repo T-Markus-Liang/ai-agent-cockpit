@@ -130,6 +130,12 @@ const server = http.createServer(async (req, res) => {
     }
     const taskId = segment(url.pathname, '/api/control-plane/tasks/')
     if (taskId && req.method === 'GET') return send(res, 200, await store.getTask(taskId))
+    const completionPlanTaskId = segment(url.pathname, '/api/control-plane/tasks/', '/completion-plan')
+    if (completionPlanTaskId && req.method === 'GET') return send(res, 200, await store.completionPlan(completionPlanTaskId))
+    const completeTaskId = segment(url.pathname, '/api/control-plane/tasks/', '/complete')
+    if (completeTaskId && req.method === 'POST') {
+      return send(res, 200, await store.completeTask(completeTaskId, await body(req), { idempotencyKey: idempotencyKey(req) }))
+    }
     const executionTaskId = segment(url.pathname, '/api/control-plane/tasks/', '/executions')
     if (executionTaskId && req.method === 'POST') {
       const result = await store.createExecution(executionTaskId, await body(req), { idempotencyKey: idempotencyKey(req) })
