@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { CheckCircle2Icon, CircleHelpIcon, ExternalLinkIcon, XCircleIcon } from 'lucide-react'
+import { Link as RouterLink } from 'react-router'
 
 import { useHealth } from '@/api/queries'
 import { Card } from '@/components/ui/card'
@@ -36,9 +37,14 @@ export function SystemConnections() {
     ['Devin App', { status: 'gui-only', note: '只有桌面 CLI/GUI，没有稳定 ACP API' }],
   ]
   return <Card data-dashboard-module="connections" className="gap-0 overflow-hidden py-0">
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
       <div><h2 className="text-sm font-semibold">{t('系统连接')}</h2><p className="text-xs text-muted-foreground">{t('主 Agent、fallback、微信和本机 App 的实时边界')}</p></div>
-      <a href="/settings/global/local-agents" className="text-xs text-violet underline">{t('管理连接')}</a>
+      <div className="flex items-center gap-3">
+        <RouterLink to="/settings/global/wechat" className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90">
+          {wechat.data?.status === 'connected' ? t('微信已连接') : t('连接微信')}
+        </RouterLink>
+        <a href="/settings/global/local-agents" className="text-xs text-violet underline">{t('管理连接')}</a>
+      </div>
     </div>
     <div className="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-4">{agents.map(([name, item]) => <div key={name} className="rounded-md border border-border bg-card-2 p-3"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{name}</span><Status probe={item} /></div><p className="mt-1 text-xs text-soft-foreground">{item.note}</p>{item.href ? <a href={item.href} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-[11px] text-violet underline">{item.href}<ExternalLinkIcon className="size-3" /></a> : null}</div>)}</div>
   </Card>
