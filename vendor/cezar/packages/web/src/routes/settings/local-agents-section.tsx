@@ -7,9 +7,11 @@ const ADAPTERS: Adapter[] = [
   { name: 'Codex', kind: 'ACP / app-server', channel: 'codex-official', command: 'codex app-server', status: 'connected', note: '当前微信主 Agent' },
   { name: 'OpenCode', kind: 'ACP', channel: 'opencode', command: 'opencode acp', status: 'available', note: '可作为本机 fallback 和独立工作流' },
   { name: 'Claude Code', kind: 'CLI / ACP', channel: 'claude', command: 'claude', status: 'available', note: '检测到配置入口，需完成登录后启用' },
+  { name: 'Kimi CLI', kind: 'ACP / CLI', channel: 'kimi', command: 'kimi acp', status: 'available', note: '支持 ACP；旧会话可通过 kimi --session 选择恢复' },
+  { name: 'WorkBuddy', kind: 'ACP / CLI', channel: 'workbuddy', command: 'codebuddy --acp', status: 'available', note: '检测到内置 CodeBuddy CLI；可通过 ACP 接入新会话' },
   { name: 'Antigravity', kind: 'OpenAI-compatible proxy', channel: 'antigravity', url: 'http://127.0.0.1:8080', status: 'available', note: '通过本机 Gemini 反代接入' },
-  { name: 'WorkBuddy', kind: 'GUI / future adapter', channel: 'workbuddy', status: 'gui-only', note: '当前只有桌面 App，尚无稳定 CLI/ACP 接口' },
   { name: 'Devin', kind: 'GUI / future adapter', channel: 'devin', status: 'gui-only', note: '当前只有桌面 App，需官方 API/CLI 才能安全调度' },
+  { name: 'DeepSeek Harness', kind: 'GUI / desktop host', channel: 'deepseek-harness', status: 'gui-only', note: '当前只有桌面 App 和内部 IPC，没有可验证的 CLI/ACP 端口' },
 ]
 
 export function LocalAgentsSection() {
