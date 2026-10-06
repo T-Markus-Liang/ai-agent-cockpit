@@ -34,7 +34,7 @@ export function SystemConnections() {
     ['Antigravity Gemini', { status: antigravity.data?.status === 'ok' ? 'connected' : 'unavailable', note: '本机 OpenAI-compatible 反代', href: 'http://127.0.0.1:8080' }],
     ['WorkBuddy', { status: 'available', note: 'codebuddy --acp；旧会话需显式 resume' }],
     ['Claude Code', { status: checks.get('claude')?.available ? 'connected' : 'unavailable', note: 'CLI / ACP' }],
-    ['Devin App', { status: 'gui-only', note: '只有桌面 CLI/GUI，没有稳定 ACP API' }],
+    ['Devin ACP', { status: 'available', note: '已发现 Devin ACP；旧会话需显式恢复' }],
   ]
   return <Card data-dashboard-module="connections" className="gap-0 overflow-hidden py-0">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">

@@ -10,7 +10,7 @@ const ADAPTERS: Adapter[] = [
   { name: 'Kimi CLI', kind: 'ACP / CLI', channel: 'kimi', command: 'kimi acp', status: 'available', note: '支持 ACP；旧会话可通过 kimi --session 选择恢复' },
   { name: 'WorkBuddy', kind: 'ACP / CLI', channel: 'workbuddy', command: 'codebuddy --acp', status: 'available', note: '检测到内置 CodeBuddy CLI；可通过 ACP 接入新会话' },
   { name: 'Antigravity', kind: 'OpenAI-compatible proxy', channel: 'antigravity', url: 'http://127.0.0.1:8080', status: 'available', note: '通过本机 Gemini 反代接入' },
-  { name: 'Devin', kind: 'GUI / future adapter', channel: 'devin', status: 'gui-only', note: '当前只有桌面 App，需官方 API/CLI 才能安全调度' },
+  { name: 'Devin', kind: 'ACP / desktop CLI', channel: 'devin', command: 'devin acp', status: 'available', note: '已发现 Devin ACP；旧会话需通过 Devin 自身 session 参数选择' },
   { name: 'DeepSeek Harness', kind: 'GUI / desktop host', channel: 'deepseek-harness', status: 'gui-only', note: '当前只有桌面 App 和内部 IPC，没有可验证的 CLI/ACP 端口' },
 ]
 
