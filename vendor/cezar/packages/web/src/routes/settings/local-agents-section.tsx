@@ -13,6 +13,8 @@ const ADAPTERS: Adapter[] = [
   { name: 'WorkBuddy', provider: 'workbuddy', kind: 'ACP / CLI', channel: 'workbuddy', command: 'codebuddy --acp', status: 'available', note: '检测到内置 CodeBuddy CLI；可通过 ACP 接入新会话' },
   { name: 'Antigravity', provider: 'antigravity', kind: 'OpenAI-compatible proxy', channel: 'antigravity', url: 'http://127.0.0.1:8080', status: 'available', note: '通过本机 Gemini 反代接入' },
   { name: 'Devin', provider: 'devin', kind: 'ACP / desktop CLI', channel: 'devin', command: 'devin acp', status: 'available', note: '已发现 Devin ACP；旧会话需通过 Devin 自身 session 参数选择' },
+  { name: 'Devin Cloud', provider: 'devin-cloud', kind: 'Cloud Agent', channel: 'devin-cloud', status: 'unknown', note: '仅显示入口证据；未自动创建云端任务或读取认证' },
+  { name: 'GitHub Actions', provider: 'github-actions', kind: 'CI / remote', channel: 'github-actions', command: 'gh workflow', status: 'unknown', note: '仅发现 CLI；未触发 workflow' },
   { name: 'DeepSeek Harness', provider: 'deepseek-harness', kind: 'GUI / desktop host', channel: 'deepseek-harness', status: 'gui-only', note: '当前只有桌面 App 和内部 IPC，没有可验证的 CLI/ACP 端口' },
 ]
 

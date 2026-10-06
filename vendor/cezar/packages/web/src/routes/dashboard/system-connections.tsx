@@ -46,6 +46,8 @@ export function SystemConnections() {
     ['WorkBuddy', controlPlaneProbe('workbuddy', { status: 'available', note: 'codebuddy --acp；旧会话需显式 resume' })],
     ['Claude Code', controlPlaneProbe('claude', { status: checks.get('claude')?.available ? 'connected' : 'unavailable', note: 'CLI / ACP' })],
     ['Devin ACP', controlPlaneProbe('devin', { status: 'available', note: '已发现 Devin ACP；旧会话需显式恢复' })],
+    ['Devin Cloud', controlPlaneProbe('devin-cloud', { status: 'available', note: '云端入口已发现；未验证认证/计费' })],
+    ['GitHub Actions', controlPlaneProbe('github-actions', { status: 'available', note: 'CI 入口已发现；未触发 workflow' })],
     ['DeepSeek Harness', controlPlaneProbe('deepseek-harness', { status: 'available', note: 'GUI-only；没有稳定 CLI/ACP 控制通道' })],
   ]
   return <Card data-dashboard-module="connections" className="gap-0 overflow-hidden py-0">

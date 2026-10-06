@@ -33,6 +33,8 @@ export async function probeFeatureMap({ sessionSnapshot, cezar = new CezarAdapte
   const antigravity = '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
   const codexApp = '/Applications/Codex.app/Contents/MacOS/Codex'
   const deepseekHarness = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness'
+  const devinCloudConfig = path.join(home, '.config/devin/config.json')
+  const gh = await commandExists('gh')
   let cezarHealth
   try { cezarHealth = await cezar.health() } catch (error) { cezarHealth = { error: error.message } }
 
@@ -47,6 +49,8 @@ export async function probeFeatureMap({ sessionSnapshot, cezar = new CezarAdapte
     capability({ agentId: 'claude-local', provider: 'claude', role: 'worker', transport: 'cli', status: claude ? 'ready' : 'unavailable', capabilities: ['cli'], limitations: ['本版本未读取 ~/.claude 历史'] }),
     capability({ agentId: 'antigravity-local', provider: 'antigravity', role: 'worker', transport: 'http', status: existsSync(path.join(home, 'Library/Application Support/Antigravity')) ? 'unknown' : 'unavailable', capabilities: ['provider.proxy', 'fallback'], limitations: source('antigravity')?.limitations ?? ['未验证 GUI 会话 API'] }),
     capability({ agentId: 'deepseek-harness-app', provider: 'deepseek-harness', role: 'worker', transport: 'gui', status: appDetected(path.join(home, 'Library/Application Support/@deepseek-ai'), deepseekHarness) || existsSync(path.join(home, '.config/dsh-crew')) ? 'unknown' : 'unavailable', capabilities: ['gui'], limitations: ['只有桌面 App/内部 IPC；没有可验证的 CLI/ACP 控制通道'] }),
+    capability({ agentId: 'devin-cloud', provider: 'devin-cloud', role: 'worker', transport: 'http', status: existsSync(devinCloudConfig) ? 'unknown' : 'unavailable', capabilities: ['cloud.task'], limitations: ['未读取认证内容；未验证云端任务、计费、权限或旧会话'] }),
+    capability({ agentId: 'github-actions', provider: 'github-actions', role: 'worker', transport: 'cli', status: gh ? 'unknown' : 'unavailable', capabilities: ['ci'], limitations: ['只发现 gh 入口；未创建、触发或支付任何 workflow'] }),
     capability({ agentId: 'cezar-local', provider: 'cezar', role: 'worker', transport: 'http', status: cezarHealth?.capabilities ? 'ready' : 'unknown', capabilities: ['runs', 'worktrees', 'review-gate', ...(cezarHealth?.capabilities?.dispatch ? ['dispatch'] : [])], limitations: cezarHealth?.error ? [cezarHealth.error] : [] }),
   ]
   return { type: 'FeatureMapSnapshot', version: 1, scannedAt: new Date().toISOString(), capabilities: result, evidence: { sessionSources: snapshot.sources.length, cezarHealth: cezarHealth?.status ?? 'unknown' } }

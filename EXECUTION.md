@@ -134,6 +134,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 
 ### G：云端、GUI 与远程设备
 
+- [x] Feature Map 已增加 Devin Cloud 与 GitHub Actions 的只读入口发现，并明确未验证认证、计费、权限和触发边界。
 - [ ] 分开验证 Devin Cloud、GitHub Actions、GUI 与 SSH 设备接入，明确身份、计费、权限、并发与证据边界。
 - [ ] 优先迁移已验证的本地工作流，不用本机 Devin ACP 证据替代云端能力验证。
 - [ ] 验收：每类通道有独立 capability evidence；未授权支付、部署、外发与不可逆操作不执行；不支持能力明确降级而非假装已调度。
