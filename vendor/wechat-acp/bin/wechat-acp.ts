@@ -399,6 +399,9 @@ async function main(): Promise<void> {
         if (fileConfig.controlPlaneAudit !== undefined) {
           config.controlPlaneAudit = Boolean(fileConfig.controlPlaneAudit);
         }
+        if (fileConfig.memory !== undefined) {
+          config.memory = { ...config.memory, ...fileConfig.memory };
+        }
         Object.assign(config.wechat, fileConfig.wechat ?? {});
     Object.assign(config.agent, fileConfig.agent ?? {});
     Object.assign(config.agents, fileConfig.agents ?? {});

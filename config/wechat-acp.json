@@ -1,6 +1,12 @@
 {
   "controlPlaneUrl": "http://127.0.0.1:4324",
   "controlPlaneAudit": true,
+  "memory": {
+    "enabled": true,
+    "maxTurns": 16,
+    "maxChars": 24000,
+    "summaryChars": 6000
+  },
   "commandAliases": {
     "/acp-cancel": ["/取消", "取消"],
     "/acp-config": ["/设置", "设置"],
@@ -9,7 +15,7 @@
     "/reject": ["/拒绝", "拒绝"]
   },
   "agent": {
-    "preset": "codex-official",
+    "preset": "kimi-primary",
     "cwd": "/Users/markus/ai-agent-cockpit",
     "showThoughts": false,
     "showDiffs": true,
@@ -30,6 +36,16 @@
       "args": ["@agentclientprotocol/codex-acp"],
       "env": {
         "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+        "HOME": "/Users/markus"
+      }
+    },
+    "kimi-primary": {
+      "label": "Kimi CLI (primary)",
+      "description": "Kimi Code ACP primary WeChat agent",
+      "command": "/Users/markus/.kimi-code/bin/kimi",
+      "args": ["acp"],
+      "env": {
+        "PATH": "/Users/markus/.kimi-code/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
         "HOME": "/Users/markus"
       }
     },

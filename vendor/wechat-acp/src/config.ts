@@ -126,6 +126,13 @@ export interface WeChatAcpConfig {
   controlPlaneUrl?: string;
   /** Emit redacted connector lifecycle metadata to the control-plane audit API. */
   controlPlaneAudit?: boolean;
+  /** Provider-independent local conversation memory settings. */
+  memory?: {
+    enabled?: boolean;
+    maxTurns?: number;
+    maxChars?: number;
+    summaryChars?: number;
+  };
   /**
    * Optional user-defined aliases for bridge slash commands. Maps a
    * canonical command (e.g. `"/acp-cancel"`) to one or more custom
@@ -219,6 +226,7 @@ export interface WeChatAcpConfig {
      * construct `WeChatAcpConfig` without this field keep working.
      */
     inboxDir?: string | null;
+    memoryFile?: string;
   };
 }
 
@@ -253,6 +261,7 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
   return {
     controlPlaneUrl: "http://127.0.0.1:4324",
     controlPlaneAudit: false,
+    memory: { enabled: false },
     commandAliases: {},
     wechat: {
       baseUrl: "https://ilinkai.weixin.qq.com",
@@ -290,6 +299,7 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
       stateFile: path.join(storageDir, "state.json"),
       injectDir: path.join(storageDir, "inject"),
       inboxDir: path.join(storageDir, "inbox"),
+      memoryFile: path.join(storageDir, "conversation-memory.json"),
     },
   };
 }

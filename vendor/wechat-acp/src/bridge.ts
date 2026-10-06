@@ -7,6 +7,7 @@
 
 import type * as acp from "@agentclientprotocol/sdk";
 import crypto from "node:crypto";
+import path from "node:path";
 import { login, loadToken, type TokenData } from "./weixin/auth.js";
 import { startMonitor } from "./weixin/monitor.js";
 import { sendTextMessage, uploadImageMedia, sendImageItem, uploadFileMedia, sendFileItem, splitText, TEXT_CHUNK_LIMIT } from "./weixin/send.js";
@@ -44,6 +45,7 @@ import {
   updateLastActiveUser,
   updatePersistedSession,
 } from "./storage/state.js";
+import { ConversationMemoryStore } from "./storage/memory.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 
 const ACP_CONFIG_COMMAND = BRIDGE_COMMANDS.acpConfig;
@@ -122,6 +124,7 @@ export class WeChatAcpBridge {
   // enqueue first, preserving turn order.
   private bufferFlushing = new Map<string, Promise<void>>();
   private log: (msg: string) => void;
+  private readonly conversationMemory: ConversationMemoryStore;
 
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
     this.config = config;
@@ -130,6 +133,13 @@ export class WeChatAcpBridge {
       ttlMs: PENDING_TEXT_TTL_MS,
       maxUsers: Math.max(1, config.session.maxConcurrentUsers),
       maxSegmentsPerUser: PENDING_TEXT_MAX_SEGMENTS,
+    });
+    this.conversationMemory = new ConversationMemoryStore({
+      file: config.storage.memoryFile ?? path.join(config.storage.dir, "conversation-memory.json"),
+      enabled: config.memory?.enabled ?? false,
+      maxTurns: config.memory?.maxTurns,
+      maxChars: config.memory?.maxChars,
+      summaryChars: config.memory?.summaryChars,
     });
   }
 
@@ -552,11 +562,26 @@ export class WeChatAcpBridge {
     );
 
     if (!isCurrent()) return;
+    const promptWithMemory = await this.enrichPromptWithMemory(userId, prompt);
     await this.sessionManager!.enqueue(userId, {
-      prompt,
+      prompt: promptWithMemory,
       contextToken,
       replyGeneration,
     });
+  }
+
+  private async enrichPromptWithMemory(
+    userId: string,
+    prompt: acp.ContentBlock[],
+  ): Promise<acp.ContentBlock[]> {
+    const memoryContext = await this.conversationMemory.context(userId);
+    const userText = prompt
+      .filter((block) => block.type === "text")
+      .map((block) => (block as { type: string; text?: string }).text ?? "")
+      .join("\n")
+      .trim();
+    await this.conversationMemory.append(userId, "user", userText);
+    return memoryContext ? [{ type: "text", text: memoryContext }, ...prompt] : prompt;
   }
 
   private async handleApprovalCommand(
@@ -744,7 +769,7 @@ export class WeChatAcpBridge {
       );
     }
     this.beginAgentPrompt(target.userId, target.contextToken);
-    const prompt: acp.ContentBlock[] = [{ type: "text", text: job.text }];
+    const prompt: acp.ContentBlock[] = await this.enrichPromptWithMemory(target.userId, [{ type: "text", text: job.text }]);
     this.log(`[inject] enqueue ${job.id} for ${target.userId}`);
     trackEvent(
       "message.injected",
@@ -1123,8 +1148,9 @@ export class WeChatAcpBridge {
     prompt: acp.ContentBlock[],
     replyGeneration?: number,
   ): Promise<void> {
+    const promptWithMemory = await this.enrichPromptWithMemory(userId, prompt);
     await this.sessionManager!.enqueue(userId, {
-      prompt,
+      prompt: promptWithMemory,
       contextToken,
       replyGeneration,
     });
@@ -1249,6 +1275,9 @@ export class WeChatAcpBridge {
     replyGeneration: number,
     isSessionCurrent: () => boolean = () => true,
   ): Promise<void> {
+    if (isSessionCurrent() && this.isMessageGenerationCurrent(userId, replyGeneration)) {
+      await this.conversationMemory.append(userId, "assistant", text);
+    }
     const generation = this.pendingText.generationForContext(userId, contextToken);
     return this.queueAgentSendTask(
       userId,
