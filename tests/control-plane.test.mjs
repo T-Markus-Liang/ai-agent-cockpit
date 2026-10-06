@@ -133,6 +133,7 @@ test('approvals are scoped, expiring and single-use', async () => {
       parametersDigest: 'sha256:demo',
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     }, { idempotencyKey: 'approval-1' })
+    assert.equal((await store.listApprovals({ decision: 'pending' })).length, 1)
     await assert.rejects(() => store.consumeApproval(approval.approval.id, { action: 'cezar.dispatch', target: 'execution:other', parametersDigest: 'sha256:demo' }, { idempotencyKey: 'consume-wrong' }), (error) => error instanceof StoreError && error.code === 'APPROVAL_NOT_APPROVED')
     await store.decideApproval(approval.approval.id, { decision: 'approved', approvedBy: 'wechat:user-1' }, { idempotencyKey: 'decision-1' })
     const consumed = await store.consumeApproval(approval.approval.id, { action: 'cezar.dispatch', target: 'execution:test-1', parametersDigest: 'sha256:demo' }, { idempotencyKey: 'consume-1' })

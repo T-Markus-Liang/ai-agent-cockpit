@@ -84,6 +84,11 @@ export const TOOL_DEFINITIONS = Object.freeze([
     inputSchema: { type: 'object', required: ['approvalId', 'decision', 'idempotencyKey'], properties: { approvalId: { type: 'string' }, decision: { type: 'string' }, approvedBy: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
+    name: 'list_approvals',
+    description: '读取当前控制面审批状态。',
+    inputSchema: { type: 'object', properties: { decision: { type: 'string' }, limit: { type: 'number' } } },
+  },
+  {
     name: 'lock_session',
     description: '为外部 SessionRef 建立短期写入锁，避免控制面并发恢复。',
     inputSchema: { type: 'object', required: ['sessionRefId', 'owner', 'idempotencyKey'], properties: { sessionRefId: { type: 'string' }, owner: { type: 'string' }, ttlMs: { type: 'number' }, idempotencyKey: { type: 'string' } } },
@@ -135,6 +140,7 @@ export async function callTool(name, args = {}, { store } = {}) {
   if (name === 'add_evidence') return store.addEvidence(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'create_approval') return store.createApproval(args, { idempotencyKey: args.idempotencyKey })
   if (name === 'decide_approval') return store.decideApproval(args.approvalId, args, { idempotencyKey: args.idempotencyKey })
+  if (name === 'list_approvals') return store.listApprovals(args)
   if (name === 'lock_session') return store.acquireSessionLock(args.sessionRefId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'plan_cezar_dispatch') return cezarDispatchPlan(args)
   if (name === 'dispatch_cezar') {

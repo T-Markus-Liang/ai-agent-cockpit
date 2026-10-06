@@ -122,6 +122,9 @@ const server = http.createServer(async (req, res) => {
       const result = await store.createApproval(await body(req), { idempotencyKey: idempotencyKey(req) })
       return send(res, result.replay ? 200 : 201, result)
     }
+    if (req.method === 'GET' && url.pathname === '/api/control-plane/approvals') {
+      return send(res, 200, { approvals: await store.listApprovals({ decision: url.searchParams.get('decision') ?? undefined, limit: url.searchParams.get('limit') ?? undefined }) })
+    }
     const approvalId = segment(url.pathname, '/api/control-plane/approvals/')
     if (approvalId && req.method === 'GET') return send(res, 200, await store.getApproval(approvalId))
     const decisionApprovalId = segment(url.pathname, '/api/control-plane/approvals/', '/decision')

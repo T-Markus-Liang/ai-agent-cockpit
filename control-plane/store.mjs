@@ -421,6 +421,14 @@ export class ControlPlaneStore {
     return approval
   }
 
+  async listApprovals({ decision, limit } = {}) {
+    const state = await this.read()
+    return Object.values(state.approvals)
+      .filter((approval) => !decision || approval.decision === decision)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, safeLimit(limit))
+  }
+
   async decideApproval(approvalId, input, { idempotencyKey } = {}) {
     return this.#mutate(async (state) => {
       const request = { approvalId, input, operation: 'approval.decide' }

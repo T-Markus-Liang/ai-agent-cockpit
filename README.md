@@ -27,6 +27,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 - `gateway/control-plane.mjs`：回环地址 HTTP API，持久化自己的 Task/Execution 状态，但不写外部 Agent 历史，不读取认证文件或消息正文。
 - `config/wechat-acp.json`：在 Codex ACP 支持 HTTP MCP 时注入控制面工具；不支持时保持原有桥接和 fallback 行为。
 - Cezar Dashboard / Settings 的系统连接和本机 Agent 页面会读取 `4324/api/control-plane/capabilities`，把“已发现”“已连接”“待验证”“不可用”分开显示。
+- Dashboard 的待审批动作卡片使用同一 Approval API；批准/拒绝不会绕过服务端的目标、参数摘要和有效期校验。
 - `scripts/control-plane.mjs`：CLI 会话索引查询。
 - `launchd/com.markus.ai-agent-cockpit.control-plane.plist`：控制面常驻定义；可按需加载，不改变旧服务。
 - `scripts/start-local.sh`：增加控制面健康检查和启动。

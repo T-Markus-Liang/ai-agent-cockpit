@@ -17,7 +17,7 @@
 | 微信入口 | 已运行 | launchd 常驻；微信 ACP 主 Codex，5 分钟 prompt 超时；Codex ACP 支持时注入控制面 HTTP MCP，连接器仍不直接承担外部派单。 |
 | Cezar cockpit | 已运行 | `127.0.0.1:4321`；负责本身的 run/worktree；不是全机 App 历史控制面。 |
 | Agent fallback | 已实现第一版 | 主 ACP 启动失败/超时可切换 DeepSeek、Kimi、WorkBuddy、Devin/OpenCode 候选；provider 认证和历史恢复仍分别归各 Agent。 |
-| Dashboard / Settings | 已实现第三版 | Dashboard 首屏增加控制面 Task/Execution 状态卡片；系统连接和 Settings → Local agents 读取 4324 Feature Map，区分已连接、已发现/待验证、不可用和 GUI-only；深层页面仍有英文待翻译。 |
+| Dashboard / Settings | 已实现第四版 | Dashboard 首屏增加控制面 Task/Execution 和待审批动作卡片；系统连接和 Settings → Local agents 读取 4324 Feature Map，区分已连接、已发现/待验证、不可用和 GUI-only；深层页面仍有英文待翻译。 |
 | pstack 方法论 | 已纳入设计 | Skill-first、Chief/Worker/Reviewer、arena/interrogate/tdd、verification-first、顺序降级。尚未完成独立 Eval Harness。 |
 | Task/Session/Execution 控制面 | 已完成第二片 | `contracts.mjs`、`store.mjs` 和 `gateway/control-plane.mjs` 已提供 Task/Execution 持久化、幂等写入、状态转移、Evidence、Approval、Session lock 和重启阻断；Cezar 真实派单已接入但必须经过精确审批。 |
 
@@ -116,6 +116,7 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] Evidence 已记录 kind、summary、source、capturedAt、exitCode/uri 和执行关联；Worker 成功只进入 VERIFYING。
 - [x] Approval 已绑定 action、target、parametersDigest 和 expiresAt，支持批准/拒绝/过期/单次消费；Cezar dispatch 已接入执行前复核。
 - [x] Task completion gate 已要求终态 Execution、至少一个 succeeded、test/command Evidence 和独立 review Evidence，再消费一次性完成 Approval。
+- [x] Dashboard 已显示待审批动作，并通过同一 Approval API 执行批准/拒绝；校验仍在控制面服务端完成。
 - [ ] 将原有任务验证要求继续扩展到可复现命令、独立 review 和完整 Evidence Pack。
 - [ ] 连接微信审批与 Policy，确定具体动作绑定、有效期、拒绝/超时处理及执行前复核的用户体验。
 - [ ] 确认可强制权限边界；无法约束的 adapter 不作为自动执行通道，不开启 bypass 或修改安全设置绕过问题。
