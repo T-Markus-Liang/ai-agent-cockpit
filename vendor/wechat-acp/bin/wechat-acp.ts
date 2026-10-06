@@ -392,8 +392,11 @@ async function main(): Promise<void> {
   let configFileSetStateFile = false;
   let configFileSetInjectDir = false;
   if (args.configFile) {
-    const fileConfig = loadConfigFile(args.configFile);
-    Object.assign(config.wechat, fileConfig.wechat ?? {});
+        const fileConfig = loadConfigFile(args.configFile);
+        if (fileConfig.controlPlaneUrl !== undefined) {
+          config.controlPlaneUrl = fileConfig.controlPlaneUrl;
+        }
+        Object.assign(config.wechat, fileConfig.wechat ?? {});
     Object.assign(config.agent, fileConfig.agent ?? {});
     Object.assign(config.agents, fileConfig.agents ?? {});
     if (fileConfig.fallbackAgents) {
