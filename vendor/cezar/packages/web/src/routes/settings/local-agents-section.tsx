@@ -6,6 +6,7 @@ import { useLocale } from '@/components/locale-provider'
 type Adapter = { name: string; provider: string; kind: string; channel: string; command?: string; url?: string; status: 'connected' | 'available' | 'unknown' | 'unavailable' | 'gui-only'; note: string }
 const ADAPTERS: Adapter[] = [
   { name: 'Codex', provider: 'codex', kind: 'ACP / app-server', channel: 'codex-official', command: 'codex app-server', status: 'connected', note: '当前微信主 Agent' },
+  { name: 'Codex App', provider: 'codex-app', kind: 'GUI / desktop app', channel: 'codex-app', status: 'gui-only', note: 'Codex App 的旧会话由 App 自己管理，控制面不静默操作 GUI' },
   { name: 'OpenCode', provider: 'opencode', kind: 'ACP', channel: 'opencode', command: 'opencode acp', status: 'available', note: '可作为本机 fallback 和独立工作流' },
   { name: 'Claude Code', provider: 'claude', kind: 'CLI / ACP', channel: 'claude', command: 'claude', status: 'available', note: '检测到配置入口，需完成登录后启用' },
   { name: 'Kimi CLI', provider: 'kimi', kind: 'ACP / CLI', channel: 'kimi', command: 'kimi acp', status: 'available', note: '支持 ACP；旧会话可通过 kimi --session 选择恢复' },
