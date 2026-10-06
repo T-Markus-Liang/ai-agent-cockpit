@@ -49,6 +49,9 @@ npm run sessions -- sessions native-list --provider=codex --cwd="$PWD" --json
 
 # 运行控制面契约和隐私边界测试
 npm run test:control-plane
+
+# 运行协议级回归评估（临时状态目录，不调用模型）
+npm run eval:control-plane
 ```
 
 `native-load-probe` 是显式的本机验证命令，会调用指定 Codex `session/load`；它没有暴露给 MCP/自动 Chief，避免无审批恢复外部会话。
