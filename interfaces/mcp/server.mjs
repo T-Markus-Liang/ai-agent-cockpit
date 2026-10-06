@@ -1,6 +1,7 @@
 import { indexLocalSessions } from '../../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../../control-plane/session-adapters.mjs'
-import { cezarDispatchPlan, dispatchCezar } from '../../control-plane/dispatcher.mjs'
+import { listNativeAcpSessions } from '../../control-plane/native-acp.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar } from '../../control-plane/dispatcher.mjs'
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
 
@@ -14,6 +15,11 @@ export const TOOL_DEFINITIONS = Object.freeze([
     name: 'get_session',
     description: '读取一个明确来源和原生 ID 的会话元数据与恢复限制，不静默创建新会话。',
     inputSchema: { type: 'object', required: ['source', 'nativeSessionId'], properties: { source: { type: 'string' }, nativeSessionId: { type: 'string' } } },
+  },
+  {
+    name: 'list_native_sessions',
+    description: '显式调用 Agent 原生 ACP session/list（当前已配置 Codex）；只读，不 load、不 prompt。',
+    inputSchema: { type: 'object', properties: { provider: { type: 'string' }, cwd: { type: 'string' } } },
   },
   {
     name: 'create_task',
@@ -65,6 +71,16 @@ export const TOOL_DEFINITIONS = Object.freeze([
     description: '使用精确匹配且未消费的 Approval 启动 Cezar；没有审批不会启动。',
     inputSchema: { type: 'object', required: ['taskId', 'executionId', 'approvalId', 'idempotencyKey'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, approvalId: { type: 'string' }, runner: { type: 'string' }, workflow: { type: 'string' }, worktree: { type: 'boolean' }, idempotencyKey: { type: 'string' } } },
   },
+  {
+    name: 'plan_cancel_cezar',
+    description: '生成 Cezar 取消审批摘要；只规划，不取消。',
+    inputSchema: { type: 'object', required: ['executionId'], properties: { executionId: { type: 'string' } } },
+  },
+  {
+    name: 'cancel_cezar',
+    description: '使用精确匹配且未消费的 Approval 取消 Cezar run。',
+    inputSchema: { type: 'object', required: ['executionId', 'approvalId', 'idempotencyKey'], properties: { executionId: { type: 'string' }, approvalId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+  },
 ])
 
 function result(value) {
@@ -78,6 +94,7 @@ function errorResult(error) {
 export async function callTool(name, args = {}, { store } = {}) {
   if (name === 'list_sessions') return indexLocalSessions({ providers: args.provider ? [args.provider] : undefined, limit: args.limit })
   if (name === 'get_session') return getSessionMetadata({ source: args.source, nativeSessionId: args.nativeSessionId })
+  if (name === 'list_native_sessions') return listNativeAcpSessions({ source: args.provider ?? 'codex', cwd: args.cwd ?? process.cwd() })
   if (!store) throw new Error('control-plane store is unavailable')
   if (name === 'create_task') return store.createTask(args, { idempotencyKey: args.idempotencyKey })
   if (name === 'get_task') return store.getTask(args.taskId)
@@ -89,6 +106,8 @@ export async function callTool(name, args = {}, { store } = {}) {
   if (name === 'lock_session') return store.acquireSessionLock(args.sessionRefId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'plan_cezar_dispatch') return cezarDispatchPlan(args)
   if (name === 'dispatch_cezar') return dispatchCezar({ ...args, store, idempotencyKey: args.idempotencyKey })
+  if (name === 'plan_cancel_cezar') return cezarCancelPlan(args)
+  if (name === 'cancel_cezar') return cancelCezarExecution({ ...args, store, idempotencyKey: args.idempotencyKey })
   throw new Error(`unknown MCP tool: ${name}`)
 }
 

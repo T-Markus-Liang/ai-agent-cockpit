@@ -694,6 +694,7 @@ Personal Chief（默认 Codex 或 Kimi，可替换）
 <table>
 <tr><th>观察项</th><th>当前证据与限制</th></tr>
 <tr><td>Devin 本机 ACP</td><td>已验证 devin acp 的 initialize 握手与 session/new 创建会话。未验证真实任务 prompt、旧会话 list/load、历史读取和完整工具调用；创建会话成功不证明模型请求的鉴权与计费路径已可用。</td></tr>
+<tr><td>Codex ACP 原生会话</td><td>已通过显式只读 probe 验证 initialize、session/list、loadSession=true、sessionCapabilities.list/resume，以及 HTTP MCP capability；probe 没有 load、prompt 或读取消息正文。真实恢复和工具调用仍需单独审批与验收。</td></tr>
 <tr><td>微信入口</td><td>已检查配置与启动定义使用默认 Codex；Devin preset 已存在，但不是管家工具注册，也不代表微信已切换到 Devin。</td></tr>
 <tr><td>Cezar</td><td>已有任务派发、继续 run 和 ACP 实现可供接入参考；已检查的 runner 注册表没有 Devin。</td></tr>
 <tr><td>本机能力展示</td><td>已检查的 Local agents 页面包含静态能力声明；声明可接入不能作为真实运行健康或调度成功的证明。</td></tr>

@@ -20,7 +20,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 - `control-plane/store.mjs`：私有状态目录中的原子持久化、幂等键、有限状态转移、Evidence、审批、会话锁和重启恢复保护。
 - `control-plane/session-index.mjs`：只读发现 Codex、OpenCode、Kimi 的本地会话元数据；发现 WorkBuddy、Devin、Claude Code、Antigravity 时明确报告“入口已发现、历史索引未支持”。
 - `control-plane/session-adapters.mjs`：按明确来源和原生 ID 查询元数据；恢复只返回未验证计划，不静默启动新会话。
-- `adapters/engines/cezar.mjs` + `control-plane/dispatcher.mjs`：Cezar run/worktree 接入；真实派单必须有精确绑定且未消费的 Approval。
+- `adapters/engines/cezar.mjs` + `control-plane/dispatcher.mjs`：Cezar run/worktree、reconcile 和取消接入；真实派单/取消必须有精确绑定且未消费的 Approval。
 - `interfaces/mcp/server.mjs`：Chief 可用的 MCP 工具层；默认只创建控制面对象，不直接启动外部 Agent。
 - `gateway/control-plane.mjs`：回环地址 HTTP API，持久化自己的 Task/Execution 状态，但不写外部 Agent 历史，不读取认证文件或消息正文。
 - `config/wechat-acp.json`：在 Codex ACP 支持 HTTP MCP 时注入控制面工具；不支持时保持原有桥接和 fallback 行为。
@@ -40,6 +40,8 @@ cd /Users/markus/ai-agent-cockpit
 # 查看本机 Agent 会话元数据（只读）
 npm run sessions
 npm run sessions -- --json --provider=codex --limit=20
+# 显式调用 Codex ACP session/list（只读，不 load、不 prompt）
+npm run sessions -- sessions native-list --provider=codex --cwd="$PWD" --json
 
 # 运行控制面契约和隐私边界测试
 npm run test:control-plane
@@ -86,7 +88,7 @@ Worker 与执行适配器
 
 | Agent | 会话元数据 | 原生恢复提示 | 目前限制 |
 | --- | --- | --- | --- |
-| Codex | 已接入本机 SQLite 只读索引 | Codex app-server / native thread | 未在索引阶段执行恢复和工具调用 |
+| Codex | SQLite + 显式 ACP `session/list` 只读索引 | ACP `session/load` / `session/resume` 已被 capability probe 证实存在 | 未执行恢复、prompt 或工具调用 |
 | OpenCode | 已接入本机 SQLite 只读索引 | OpenCode native session | 不读取 `auth.json`，未执行恢复 |
 | Kimi CLI | 已接入 `session_index.jsonl` + `state.json` | `kimi --session <id>` | 不读取 credentials 和消息正文 |
 | WorkBuddy | 已发现 App/`codebuddy --acp` | `codebuddy --resume` | 没有稳定的只读旧会话索引接口 |

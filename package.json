@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Personal AI OS control plane for local agent sessions, WeChat entry and Cezar cockpit",
   "scripts": {
-    "sessions": "node scripts/control-plane.mjs sessions list",
+    "sessions": "node scripts/control-plane.mjs",
     "control-plane": "node gateway/control-plane.mjs",
     "test:control-plane": "node --test tests/control-plane.test.mjs"
   }

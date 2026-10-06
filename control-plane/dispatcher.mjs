@@ -12,6 +12,11 @@ export function cezarDispatchPlan({ taskId, executionId, runner = 'codex', workf
   }
 }
 
+export function cezarCancelPlan({ executionId } = {}) {
+  const parameters = { executionId }
+  return { action: 'cezar.cancel', target: executionId, parameters, parametersDigest: parametersDigest(parameters), requiresApproval: true }
+}
+
 export async function dispatchCezar({ store, adapter = new CezarAdapter(), taskId, executionId, approvalId, runner = 'codex', workflow = 'quick-task', worktree = true, idempotencyKey } = {}) {
   if (!store) throw new StoreError('STORE_REQUIRED', 'control-plane store is required', 500)
   if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'dispatch requires an approved approval id', 403)
@@ -36,7 +41,14 @@ export async function dispatchCezar({ store, adapter = new CezarAdapter(), taskI
     throw new StoreError('CEZAR_RUN_ID_MISSING', 'Cezar returned no run id; execution was blocked', 502)
   }
   try {
-    await store.attachExecutionRef(executionId, { engine: 'cezar', id: runId, baseUrl: adapter.baseUrl }, { idempotencyKey: `${idempotencyKey ?? executionId}:attach` })
+    await store.attachExecutionRef(executionId, {
+      engine: 'cezar',
+      id: runId,
+      baseUrl: adapter.baseUrl,
+      projectId: run.projectId,
+      branch: run.branch,
+      worktreePath: run.worktreePath,
+    }, { idempotencyKey: `${idempotencyKey ?? executionId}:attach` })
     const started = await store.updateExecutionStatus(executionId, { status: 'running', outcome: `Cezar run ${runId} started` }, { idempotencyKey: `${idempotencyKey ?? executionId}:running` })
     return { replay: false, execution: started.execution, engineRef: started.execution.engineRef, cezarRun: run }
   } catch (error) {
@@ -55,9 +67,12 @@ export async function reconcileCezarExecution({ store, adapter = new CezarAdapte
   return { changed: true, execution: updated.execution, cezarRun: run }
 }
 
-export async function cancelCezarExecution({ store, adapter = new CezarAdapter(), executionId, idempotencyKey } = {}) {
+export async function cancelCezarExecution({ store, adapter = new CezarAdapter(), executionId, approvalId, idempotencyKey } = {}) {
   const execution = await store.getExecution(executionId)
   if (execution.engineRef?.engine !== 'cezar') throw new StoreError('CEZAR_REF_REQUIRED', 'execution has no Cezar engine reference', 409)
+  if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'cancellation requires an approved approval id', 403)
+  const plan = cezarCancelPlan({ executionId })
+  await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: `${idempotencyKey ?? executionId}:approval` })
   await adapter.cancel(execution.engineRef.id)
   return store.updateExecutionStatus(executionId, { status: 'cancelled', outcome: 'cancelled through Cezar adapter' }, { idempotencyKey: `${idempotencyKey ?? executionId}:cancel` })
 }

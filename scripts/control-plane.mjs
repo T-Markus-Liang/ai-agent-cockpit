@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { indexLocalSessions } from '../control-plane/session-index.mjs'
 import { ControlPlaneStore } from '../control-plane/store.mjs'
-import { cezarDispatchPlan, dispatchCezar, reconcileCezarExecution } from '../control-plane/dispatcher.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution } from '../control-plane/dispatcher.mjs'
+import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 
 const args = process.argv.slice(2)
 const json = args.includes('--json')
@@ -57,6 +58,9 @@ async function main() {
   const command = args[0] ?? 'sessions'
   const subcommand = args[1] ?? 'list'
   if (command === 'sessions' && subcommand === 'list') return sessionsList()
+  if (command === 'sessions' && subcommand === 'native-list') {
+    return output(await listNativeAcpSessions({ source: value('provider', 'codex'), cwd: value('cwd', process.cwd()) }))
+  }
   if (command === 'task' && subcommand === 'create') {
     return output(await store.createTask({
       id: value('id'),
@@ -111,6 +115,10 @@ async function main() {
   }
   if (command === 'cezar' && subcommand === 'reconcile') {
     return output(await reconcileCezarExecution({ store, executionId: required('execution'), idempotencyKey: idempotency() }))
+  }
+  if (command === 'cezar' && subcommand === 'cancel-plan') return output(cezarCancelPlan({ executionId: required('execution') }))
+  if (command === 'cezar' && subcommand === 'cancel') {
+    return output(await cancelCezarExecution({ store, executionId: required('execution'), approvalId: required('approval'), idempotencyKey: idempotency() }))
   }
   if (command === 'session' && subcommand === 'lock') {
     return output(await store.acquireSessionLock(required('id'), { owner: required('owner'), ttlMs: value('ttl') ? Number(value('ttl')) : undefined }, { idempotencyKey: idempotency() }))

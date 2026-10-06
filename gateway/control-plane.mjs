@@ -2,10 +2,11 @@
 import http from 'node:http'
 import { indexLocalSessions } from '../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../control-plane/session-adapters.mjs'
+import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
-import { cezarDispatchPlan, dispatchCezar, reconcileCezarExecution } from '../control-plane/dispatcher.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution } from '../control-plane/dispatcher.mjs'
 import { handleMcpRequest } from '../interfaces/mcp/server.mjs'
 
 const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 4324)
@@ -99,6 +100,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/control-plane/capabilities') {
       return send(res, 200, await probeFeatureMap({ sessionSnapshot: await snapshot(new URLSearchParams('limit=1')) }))
     }
+    if (req.method === 'GET' && url.pathname === '/api/control-plane/native-sessions') {
+      return send(res, 200, await listNativeAcpSessions({ source: url.searchParams.get('provider') ?? 'codex', cwd: url.searchParams.get('cwd') ?? process.cwd() }))
+    }
     const sessionDetail = url.pathname.match(/^\/api\/control-plane\/session\/([^/]+)\/([^/]+)$/)
     if (req.method === 'GET' && sessionDetail) {
       return send(res, 200, await getSessionMetadata({ source: decodeURIComponent(sessionDetail[1]), nativeSessionId: decodeURIComponent(sessionDetail[2]) }))
@@ -150,6 +154,13 @@ const server = http.createServer(async (req, res) => {
     const cezarReconcileExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/reconcile')
     if (cezarReconcileExecutionId && req.method === 'POST') {
       return send(res, 200, await reconcileCezarExecution({ store, adapter: new CezarAdapter(), executionId: cezarReconcileExecutionId, idempotencyKey: idempotencyKey(req) }))
+    }
+    const cezarCancelPlanExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/cancel-plan')
+    if (cezarCancelPlanExecutionId && req.method === 'POST') return send(res, 200, cezarCancelPlan({ executionId: cezarCancelPlanExecutionId }))
+    const cezarCancelExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/cancel')
+    if (cezarCancelExecutionId && req.method === 'POST') {
+      const input = await body(req)
+      return send(res, 200, await cancelCezarExecution({ ...input, store, adapter: new CezarAdapter(), executionId: cezarCancelExecutionId, idempotencyKey: idempotencyKey(req) }))
     }
     const lockSessionId = segment(url.pathname, '/api/control-plane/sessions/', '/lock')
     if (lockSessionId && req.method === 'POST') {

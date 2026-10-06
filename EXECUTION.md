@@ -81,14 +81,15 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 接入 Codex、OpenCode、Kimi 的本机元数据索引；WorkBuddy、Devin、Claude Code、Antigravity 已做入口发现并明确能力缺口。
 - [x] 优先原生元数据；SQLite/JSONL fallback 已验证读取一致性和隐私边界，不写外部库、不读取凭据和消息正文。
 - [x] 验收第一片：同标题不同来源可区分；索引不加载全量正文；不支持能力明确报告；测试通过且未创建控制面状态目录。
-- [ ] 继续验证 Devin/Codex 原生 list/load、历史读取和恢复，不从命令名或 advertised capability 推断成功。
+- [x] 通过显式 Codex ACP probe 实际验证 `initialize`、`session/list`、`loadSession=true`、`sessionCapabilities.resume/list` 和 HTTP MCP capability；probe 不 load、不 prompt、不读取消息正文。
+- [ ] 继续验证 Devin/OpenCode/Kimi 原生 list/load、历史读取和恢复，不从命令名或 advertised capability 推断成功。
 
 ### C：Chief 管理工具层（控制面基础工具已完成，微信 Chief 接入未完成）
 
 - [x] 通过 `gateway/control-plane.mjs` 和 `scripts/control-plane.mjs` 暴露只读来源/会话查询；CLI/HTTP 复用同一索引契约。
 - [x] 通过同一 HTTP/CLI 契约创建 Task、Execution、Evidence，并查询任务关联状态；写操作必须带 Idempotency-Key。
 - [x] 定义 Execution 状态、结果查询、Session lock 和有限状态转移；不允许从控制面直接启动未验证的外部 Agent。
-- [x] 增加 `interfaces/mcp/server.mjs`，暴露 session、task、execution、evidence、approval、lock 和 Cezar plan/dispatch 工具。
+- [x] 增加 `interfaces/mcp/server.mjs`，暴露 session、native session/list、task、execution、evidence、approval、lock 和 Cezar plan/dispatch/cancel 工具。
 - [x] Cezar dispatch 需要 action/target/parametersDigest 精确匹配的未消费 Approval；无审批不会启动外部 Agent。
 - [x] 微信 bridge 已在 Codex ACP 会话配置中注入 `http://127.0.0.1:4324/mcp`；Agent 不支持 HTTP MCP 时安全忽略，不改变 fallback。
 - [ ] 补齐 Chief 的读上下文、恢复、取消和人工处理工具；恢复失败不能静默新建。
@@ -99,9 +100,9 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 
 - [x] 确定 Task/Execution JSON 状态格式、事件所有者和状态映射；状态写入私有目录，原子替换并带文件锁。
 - [x] 实现幂等请求、会话锁、有限状态转移、Evidence 关联和启动恢复保护；重启时遗留 running Execution 进入 blocked，不进入 completed。
-- [x] Cezar adapter 通过 `/api/v1/runs` 创建 run，并把 Cezar run id 关联到 Execution；reconcile 把 Cezar done 映射为控制面 VERIFYING，不直接结案。
-- [ ] Cezar adapter 继续关联 worktree、review gate、取消和 SSE 事件，不复制 Cezar 调度所有权。
-- [ ] 增加受控取消、人工处理状态与 Cezar run/worktree 关联。
+- [x] Cezar adapter 通过 `/api/v1/runs` 创建 run，并把 Cezar run id、branch/worktree 元数据关联到 Execution；reconcile 把 Cezar done 映射为控制面 VERIFYING，不直接结案。
+- [x] Cezar 取消也要求精确 Approval；控制面不会只改本地状态而假装外部 run 已停止。
+- [ ] Cezar adapter 继续关联 review gate、SSE 事件和人工处理状态，不复制 Cezar 调度所有权。
 - [x] 基础验收：重复请求不重复创建；状态非法转移被拒绝；会话锁冲突被拒绝；重启恢复不会把未完成任务标为完成。
 - [ ] 完整验收：转派建立可审计新 Execution；外部会话活跃时不并发恢复；Cezar 重启后关联不丢失。
 
