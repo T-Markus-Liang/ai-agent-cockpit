@@ -92,10 +92,10 @@ Worker 与执行适配器
 | Agent | 会话元数据 | 原生恢复提示 | 目前限制 |
 | --- | --- | --- | --- |
 | Codex | SQLite + 显式 ACP `session/list` 只读索引 | ACP `session/load` / `session/resume` 已被 capability probe 证实存在 | 未执行恢复、prompt 或工具调用 |
-| OpenCode | 已接入本机 SQLite 只读索引 | OpenCode native session | 不读取 `auth.json`，未执行恢复 |
-| Kimi CLI | 已接入 `session_index.jsonl` + `state.json` | `kimi --session <id>` | 不读取 credentials 和消息正文 |
-| WorkBuddy | 已发现 App/`codebuddy --acp` | `codebuddy --resume` | 没有稳定的只读旧会话索引接口 |
-| Devin | 已发现 App/`devin acp` | `devin --resume` / ACP | 旧会话 list/load、真实 prompt 和认证仍待验证 |
+| OpenCode | SQLite + ACP `session/list` 只读索引 | ACP load/resume capability 已实测 | 未执行 load、prompt 或消息读取 |
+| Kimi CLI | `session_index.jsonl` + ACP `session/list` | ACP load/resume capability 已实测 | 本项目 cwd 暂无会话；未执行 load、prompt 或认证验证 |
+| WorkBuddy | 已发现 App/`codebuddy --acp`，ACP initialize 成功 | 声明 loadSession/MCP，但未声明 session/list | 旧会话不能由控制面猜测或静默创建 |
+| Devin | App/ACP `session/list` 已实测 | 声明 loadSession，未声明 resume | 真实 prompt、认证、load 和云端能力仍待验证 |
 | Claude Code | 已发现本地入口 | 原生 session 机制 | 本版本不读取 `~/.claude` 历史 |
 | Antigravity | 已发现 App/本机反代 | GUI-only / proxy | 没有稳定的本地旧会话索引 |
 

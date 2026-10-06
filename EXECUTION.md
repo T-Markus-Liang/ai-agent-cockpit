@@ -83,7 +83,8 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 验收第一片：同标题不同来源可区分；索引不加载全量正文；不支持能力明确报告；测试通过且未创建控制面状态目录。
 - [x] 通过显式 Codex ACP probe 实际验证 `initialize`、`session/list`、`loadSession=true`、`sessionCapabilities.resume/list` 和 HTTP MCP capability；probe 不 load、不 prompt、不读取消息正文。
 - [x] 通过用户显式调用的 CLI `sessions native-load-probe` 实测一个已有 Codex session 的 `session/load` 成功；该动作未暴露给 MCP/自动 Chief 工具，避免无审批恢复外部会话。
-- [ ] 继续验证 Devin/OpenCode/Kimi 原生 list/load、历史读取和恢复，不从命令名或 advertised capability 推断成功。
+- [x] 通过显式 ACP probe 实测 OpenCode、Kimi、Devin 的 initialize/session/list；OpenCode/Kimi 还声明 load/resume，Devin 声明 loadSession 但未声明 resume；WorkBuddy initialize 成功但未声明 session/list。
+- [ ] 继续验证这些 Agent 的 session/load、历史读取、认证和真实 prompt；不从 advertised capability 推断成功。
 
 ### C：Chief 管理工具层（控制面基础工具已完成，微信 Chief 接入未完成）
 
@@ -139,6 +140,20 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 
 行为评估在闭环稳定后另行制定测试输入、rubric 和协议，本文件不新增评估阈值、自动授权或评分配置。当前 Task 存储、原生历史回放和 App 并发检测均有待实现前验证；遇到不支持的接口停止该路径并报告。
 
+### 6.1 原生 ACP 探测证据（2026-10-06）
+
+使用 `npm run sessions -- sessions native-list --provider=<id> --cwd=/Users/markus/ai-agent-cockpit --json` 做显式、无 prompt 的探测：
+
+| Agent | 实际结果 | 当前边界 |
+| --- | --- | --- |
+| Codex ACP 2.1.1 | `initialize`、`session/list`、`loadSession=true`、`sessionCapabilities.list/resume`、HTTP MCP 成功；另用 `native-load-probe` 对一个已有 session 的 `session/load` 成功 | 未做 prompt、工具调用或自动恢复 |
+| OpenCode 1.18.34 | `initialize`、`session/list`、`loadSession=true`、list/resume、HTTP/SSE MCP 成功，返回 3 个本项目会话 | 未做 load、prompt 或消息读取 |
+| Kimi Code 2.0.2 | `initialize`、list、loadSession、list/resume、HTTP/SSE MCP 成功；本项目 cwd 返回 0 个会话 | 未做 load、prompt 或认证路径验证 |
+| Devin ACP | `initialize`、list、`loadSession=true`、HTTP/SSE MCP 成功，返回 1 个本项目会话 | 未做真实 prompt、认证、load 或云端验证 |
+| WorkBuddy ACP | `initialize`、loadSession、HTTP/SSE MCP 成功，但未声明 session/list | 旧会话不能由控制面猜测或静默创建 |
+
+探测只保留规范化元数据和 capability 结果，不把 stderr、消息正文、token 或凭据写入控制面状态。
+
 ## 7. 本次交付边界
 
 本轮已执行并验证：
@@ -151,4 +166,4 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - 更新设计 HTML v1.2 和本执行文档，使研究结论、代码状态和限制一致。
 - 验证 `npm run test:control-plane`、HTTP 临时状态端到端测试、Node 语法检查、plist 校验、`127.0.0.1:4324/health` 与会话/任务 API。
 
-尚未执行：微信 Chief 的真实 prompt/工具调用验收、原生旧会话 list/load/恢复、Cezar worktree/review/SSE 完整关联、GUI 自动化、Devin 登录绑定、正式目录迁移和云端通道。MCP 配置已注入，但不能用“配置存在”冒充 Agent 实际调用证据。
+尚未执行：微信 Chief 的真实 prompt/工具调用验收、原生旧会话的完整恢复/历史读取、Cezar worktree/review 完整关联、GUI 自动化、Devin 登录绑定、正式目录迁移和云端通道。MCP 配置已注入，但不能用“配置存在”冒充 Agent 实际调用证据。

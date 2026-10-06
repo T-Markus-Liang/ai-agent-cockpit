@@ -7,6 +7,10 @@ import { StoreError } from './store.mjs'
 
 const ACP_COMMANDS = Object.freeze({
   codex: { command: '/usr/local/bin/npx', args: ['--yes', '@agentclientprotocol/codex-acp'] },
+  opencode: { command: path.join(os.homedir(), '.opencode/bin/opencode'), args: ['acp'] },
+  kimi: { command: path.join(os.homedir(), '.kimi-code/bin/kimi'), args: ['acp'] },
+  workbuddy: { command: '/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy', args: ['--acp'] },
+  devin: { command: '/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin', args: ['acp'] },
 })
 
 function timeoutError(message) {
@@ -29,6 +33,7 @@ export async function listNativeAcpSessions({ source = 'codex', cwd = path.resol
   })
   const errors = []
   child.stderr.on('data', (chunk) => { if (errors.join('').length < 2000) errors.push(String(chunk)) })
+  const processFailure = new Promise((_, reject) => child.once('error', (error) => reject(new StoreError('NATIVE_ACP_SPAWN_FAILED', `${selected.command} could not start: ${error.message}`, 502))))
   const lines = readline.createInterface({ input: child.stdout })
   const pending = new Map()
   let nextId = 1
@@ -61,7 +66,7 @@ export async function listNativeAcpSessions({ source = 'codex', cwd = path.resol
       pending.set(id, (value) => { clearTimeout(timer); resolve(value) })
     })
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
-    const value = await response
+    const value = await Promise.race([response, processFailure])
     if (value.error) throw new StoreError('NATIVE_ACP_ERROR', `${method} failed: ${value.error.message ?? JSON.stringify(value.error)}`, 502, { source })
     return value.result
   }
