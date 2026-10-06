@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { BotIcon } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { Link as RouterLink } from 'react-router'
 
 import { putConfig } from '@/api/client'
 import {
@@ -28,6 +29,7 @@ import {
 } from '@/components/default-agent-picker'
 import { modelCatalogStatus, modelsForRunner, RUNNERS } from '@/routes/new-task-form'
 import { ProviderSettings } from './provider-settings'
+import { useLocale } from '@/components/locale-provider'
 
 /**
  * Settings → Agents (R6 Step 1.5, spec §"Settings"): today's scattered `PUT /api/config` knobs
@@ -84,6 +86,7 @@ function AgentsForm({
   catalogs: ReturnType<typeof useRunnerModelCatalogs>
   providerStatus: ReturnType<typeof useProviderStatus>
 }) {
+  const { t } = useLocale()
   const repo = useRepo()
   const queryClient = useQueryClient()
 
@@ -122,6 +125,31 @@ function AgentsForm({
       className="mx-auto flex w-full max-w-2xl flex-col gap-7 p-4 pb-[calc(90px+env(safe-area-inset-bottom))] md:p-6 md:pb-6"
     >
       <ProviderSettings />
+
+      <section className="rounded-lg border border-border bg-card p-4" data-slot="agent-connections-summary">
+        <div className="mb-3">
+          <h2 className="text-sm font-semibold">{t('系统连接')}</h2>
+          <p className="text-[13px] text-muted-foreground">{t('本机 Agent、微信入口和模型反代的实际连接状态。')}</p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {[
+            ['微信 Bot', '已连接', 'text-emerald-500'],
+            ['Codex ACP', '主 Agent', 'text-emerald-500'],
+            ['OpenCode ACP', 'fallback', 'text-emerald-500'],
+            ['Kimi ACP', 'fallback', 'text-emerald-500'],
+            ['Antigravity Gemini', '本机反代', 'text-emerald-500'],
+            ['WorkBuddy / Devin', 'GUI / ACP 边界', 'text-amber-500'],
+          ].map(([name, state, tone]) => (
+            <div key={name} className="flex items-center justify-between rounded-md border border-border bg-card-2 px-3 py-2 text-sm">
+              <span>{name}</span><span className={`text-xs ${tone}`}>{state}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-3 text-xs">
+          <RouterLink className="text-violet underline" to="/settings/global/wechat">{t('打开微信连接')}</RouterLink>
+          <RouterLink className="text-violet underline" to="/settings/global/local-agents">{t('查看本机 Agent 通道')}</RouterLink>
+        </div>
+      </section>
 
       <DefaultAgentField
         defaultRunner={config.defaultRunner}

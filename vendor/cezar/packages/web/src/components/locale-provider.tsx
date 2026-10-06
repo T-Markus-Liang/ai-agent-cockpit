@@ -73,6 +73,8 @@ const TRANSLATIONS: Record<string, string> = {
   'Recent results': '最近结果', 'Results source': '结果来源', All: '全部', 'Task results': '任务结果', 'No GitHub repositories configured': '未配置 GitHub 仓库',
   'GitHub needs attention': 'GitHub 需要处理', 'GitHub not configured': '未配置 GitHub', 'GitHub source': 'GitHub 来源',
   'Open tracker settings': '打开跟踪器设置', 'Retry connection': '重试连接', 'Search results could not be loaded.': '无法加载搜索结果。',
+  '系统连接': '系统连接', '本机 Agent、微信入口和模型反代的实际连接状态。': '本机 Agent、微信入口和模型反代的实际连接状态。',
+  '打开微信连接': '打开微信连接', '查看本机 Agent 通道': '查看本机 Agent 通道',
 }
 
 type LocaleContextValue = { locale: Locale; setLocale: (locale: Locale) => void; t: (text: string) => string }
