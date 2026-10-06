@@ -9,6 +9,6 @@
     "control-plane": "node gateway/control-plane.mjs",
     "doctor": "node scripts/doctor.mjs",
     "eval:control-plane": "node evals/control-plane-regression.mjs",
-    "test:control-plane": "node --test tests/control-plane.test.mjs"
+    "test:control-plane": "node --test tests/control-plane.test.mjs tests/control-plane-http.test.mjs"
   }
 }
