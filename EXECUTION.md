@@ -1,6 +1,6 @@
 # Personal AI OS 执行文档
 
-状态：重构进行中。本文与 [设计文档 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 配套；已完成兼容期部署、微信常驻、ACP fallback、首批控制面可视化，以及只读 Task/Session/Execution 契约和本机会话索引，正在进入 Chief 工具层和持久化阶段。
+状态：重构进行中。本文与 [设计文档 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 配套；已完成兼容期部署、微信常驻、ACP fallback、首批控制面可视化、统一契约、只读会话索引，以及第一版 Task/Execution 持久化、幂等、会话锁和重启恢复保护，正在进入原生会话恢复与 Chief 调度阶段。
 
 ## 1. 当前授权与范围
 
@@ -17,9 +17,9 @@
 | 微信入口 | 已运行 | launchd 常驻；微信 ACP 主 Codex，5 分钟 prompt 超时；连接器不直接承担 Chief 路由。 |
 | Cezar cockpit | 已运行 | `127.0.0.1:4321`；负责本身的 run/worktree；不是全机 App 历史控制面。 |
 | Agent fallback | 已实现第一版 | 主 ACP 启动失败/超时可切换 DeepSeek、Kimi、WorkBuddy、Devin/OpenCode 候选；provider 认证和历史恢复仍分别归各 Agent。 |
-| Dashboard / Settings | 已实现第一版 | Dashboard 首屏系统连接卡片；Settings → Agent 可见微信、Codex、OpenCode、Kimi、WorkBuddy、Devin、Antigravity 边界；深层页面仍有英文待翻译。 |
+| Dashboard / Settings | 已实现第二版 | Dashboard 首屏和 Settings → Local agents 读取 4324 Feature Map，区分已连接、已发现/待验证、不可用和 GUI-only；深层页面仍有英文待翻译。 |
 | pstack 方法论 | 已纳入设计 | Skill-first、Chief/Worker/Reviewer、arena/interrogate/tdd、verification-first、顺序降级。尚未完成独立 Eval Harness。 |
-| Task/Session/Execution 控制面 | 已完成第一片 | `control-plane/contracts.mjs` 已提供运行时校验；`session-index.mjs` 和 `gateway/control-plane.mjs` 提供只读索引。尚未持久化 Task/Execution，也未开放写入或派单。 |
+| Task/Session/Execution 控制面 | 已完成第二片 | `contracts.mjs`、`store.mjs` 和 `gateway/control-plane.mjs` 已提供 Task/Execution 持久化、幂等写入、状态转移、Evidence、Approval、Session lock 和重启阻断；Cezar 真实派单已接入但必须经过精确审批。 |
 
 ## 2. 已观察的基线，不等于闭环完成
 
@@ -62,11 +62,11 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 | vendor/cezar、vendor/wechat-acp | vendor/ | 保留上游结构；新增能力优先通过自有适配层接入。 |
 | logs/、.ai/、~/.cezar/、~/.wechat-acp/ | 当前位置保留 | 不移动、清理或复制认证及运行状态。 |
 
-未来新增项目设置与 skills 放在 .devin/。自有运行数据仍规划放在 ~/.local/state/ai-agent-cockpit/；当前第一片只读索引不创建控制面状态目录，外部 Agent 的原生历史与凭据仍由各自管理。Task 存储格式和迁移方案在阶段 D 实现前确定，不按文档目录直接创建第二套运行状态。
+未来新增项目设置与 skills 放在 .devin/。自有运行数据现在写入 `~/.local/state/ai-agent-cockpit/control-plane.json`（目录权限 0700、状态文件权限 0600、原子替换）；外部 Agent 的原生历史与凭据仍由各自管理。当前文件是控制面唯一的 Task/Execution 状态源，不复制外部历史。
 
 ## 5. 分阶段实施与验收
 
-编号 A–G 是工程实施顺序，不替代设计文档中的产品 Phase 1–7。A 已完成，F 已完成兼容期 launchd/路径保留，B 已完成第一片只读索引，C/D 正在启动；权限和可靠恢复边界从首次执行就必须成立，不能等到阶段 E 才补安全。
+编号 A–G 是工程实施顺序，不替代设计文档中的产品 Phase 1–7。A 已完成，F 已完成兼容期 launchd/路径保留，B 已完成元数据索引第一片，C/D 已完成控制面写入第一片，正在进入原生恢复和 Chief 调度；权限和可靠恢复边界从首次执行就必须成立，不能等到阶段 E 才补安全。
 
 ### A：项目导航与方法论归档（首轮完成）
 
@@ -83,25 +83,33 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [x] 验收第一片：同标题不同来源可区分；索引不加载全量正文；不支持能力明确报告；测试通过且未创建控制面状态目录。
 - [ ] 继续验证 Devin/Codex 原生 list/load、历史读取和恢复，不从命令名或 advertised capability 推断成功。
 
-### C：Chief 管理工具层（只读查询已开始）
+### C：Chief 管理工具层（控制面基础工具已完成，微信 Chief 接入未完成）
 
 - [x] 通过 `gateway/control-plane.mjs` 和 `scripts/control-plane.mjs` 暴露只读来源/会话查询；CLI/HTTP 复用同一索引契约。
-- [ ] 通过 interfaces/mcp 暴露读上下文、新建、恢复、状态与取消；在审批和幂等契约完成前不开放写入。
-- [ ] 定义异步 operation/execution 标识与结果查询，限制启动参数、工作目录与权限。
+- [x] 通过同一 HTTP/CLI 契约创建 Task、Execution、Evidence，并查询任务关联状态；写操作必须带 Idempotency-Key。
+- [x] 定义 Execution 状态、结果查询、Session lock 和有限状态转移；不允许从控制面直接启动未验证的外部 Agent。
+- [x] 增加 `interfaces/mcp/server.mjs`，暴露 session、task、execution、evidence、approval、lock 和 Cezar plan/dispatch 工具。
+- [x] Cezar dispatch 需要 action/target/parametersDigest 精确匹配的未消费 Approval；无审批不会启动外部 Agent。
+- [ ] 将 MCP 工具接入微信 Chief，并补齐读上下文、恢复、取消和人工处理工具；恢复失败不能静默新建。
 - [ ] 保持默认 Chief 与微信账号不变，验证 Chief 可以调度两个不同 Worker；任务内容由用户单独授权。
 - [ ] 验收：同一 Chief 能新建和继续指定 Worker 的任务；恢复失败不新建；超时和取消不遗留受控子进程；真实 prompt/工具链验证与模型费用边界有明确证据。
 
-### D：统一任务闭环与 Cezar 接入（未完成）
+### D：统一任务闭环与 Cezar 接入（第一片完成，仍需 UI/事件关联）
 
-- [ ] 确定 Task/Execution 持久化格式、事件所有者和状态映射，再实现任务图及关联存储。
-- [ ] Cezar adapter 关联其原生 run/worktree 与控制面任务，不复制调度所有权。
-- [ ] 实现幂等请求、会话锁、有限重试、明确等待/失败/人工处理状态、重启恢复与状态协调。
-- [ ] 验收：重复请求不重复派单；转派建立可审计新 Execution；进程崩溃或服务重启不会把未完成任务标为完成；外部会话活跃时不并发恢复。
+- [x] 确定 Task/Execution JSON 状态格式、事件所有者和状态映射；状态写入私有目录，原子替换并带文件锁。
+- [x] 实现幂等请求、会话锁、有限状态转移、Evidence 关联和启动恢复保护；重启时遗留 running Execution 进入 blocked，不进入 completed。
+- [x] Cezar adapter 通过 `/api/v1/runs` 创建 run，并把 Cezar run id 关联到 Execution；reconcile 把 Cezar done 映射为控制面 VERIFYING，不直接结案。
+- [ ] Cezar adapter 继续关联 worktree、review gate、取消和 SSE 事件，不复制 Cezar 调度所有权。
+- [ ] 增加受控取消、人工处理状态与 Cezar run/worktree 关联。
+- [x] 基础验收：重复请求不重复创建；状态非法转移被拒绝；会话锁冲突被拒绝；重启恢复不会把未完成任务标为完成。
+- [ ] 完整验收：转派建立可审计新 Execution；外部会话活跃时不并发恢复；Cezar 重启后关联不丢失。
 
 ### E：验证、review、证据与审批闭环
 
-- [ ] 将原有任务验证要求映射到可复现验证与独立 review；证据记录命令、退出状态、结果、来源和执行关联。
-- [ ] 连接微信审批与 Policy，确定具体动作绑定、有效期、拒绝/超时处理及执行前复核。
+- [x] Evidence 已记录 kind、summary、source、capturedAt、exitCode/uri 和执行关联；Worker 成功只进入 VERIFYING。
+- [x] Approval 已绑定 action、target、parametersDigest 和 expiresAt，支持批准/拒绝/过期/单次消费；Cezar dispatch 已接入执行前复核。
+- [ ] 将原有任务验证要求映射到可复现命令、独立 review 和 Evidence Pack。
+- [ ] 连接微信审批与 Policy，确定具体动作绑定、有效期、拒绝/超时处理及执行前复核的用户体验。
 - [ ] 确认可强制权限边界；无法约束的 adapter 不作为自动执行通道，不开启 bypass 或修改安全设置绕过问题。
 - [ ] 验收：Worker 自报完成不能直接进入最终完成；错误、过期或复用审批不能授权新动作；失败证据可追溯；未获授权的外部消息、部署和破坏性操作不执行。
 
@@ -132,9 +140,11 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 本轮已执行并验证：
 
 - 重写 README，产品名称统一为 Personal AI OS，保留旧目录和兼容期 launchd 标签。
-- 新增只读控制面契约、Codex/OpenCode/Kimi 会话索引、WorkBuddy/Devin/Claude Code/Antigravity 能力发现、CLI 和 HTTP 查询入口。
+- 新增控制面契约、Codex/OpenCode/Kimi 会话索引、WorkBuddy/Devin/Claude Code/Antigravity 能力发现、Task/Execution/Evidence API、CLI 和 HTTP 查询入口。
+- 新增私有 Task/Execution 状态存储、幂等键、原子写入、会话锁、Approval 和重启恢复阻断。
+- 新增 MCP 工具层和 Cezar adapter；Cezar 真实派单必须经审批，完成状态先进入 VERIFYING。
 - 新增控制面 launchd 定义，并让 `scripts/start-local.sh` 管理 4324 健康检查。
 - 更新设计 HTML v1.2 和本执行文档，使研究结论、代码状态和限制一致。
-- 验证 `npm run test:control-plane`、Node 语法检查、plist 校验、`127.0.0.1:4324/health` 与会话来源 API。
+- 验证 `npm run test:control-plane`、HTTP 临时状态端到端测试、Node 语法检查、plist 校验、`127.0.0.1:4324/health` 与会话/任务 API。
 
-尚未执行：Task/Execution 持久化、Chief 写入/派单、原生旧会话恢复、GUI 自动化、Devin 登录绑定、正式目录迁移和云端通道。它们仍按 A–G 清单推进，不以本轮只读索引冒充完成。
+尚未执行：微信 Chief 的实际 MCP 接入、原生旧会话 list/load/恢复、Cezar worktree/review/SSE 完整关联、GUI 自动化、Devin 登录绑定、正式目录迁移和云端通道。它们仍按 A–G 清单推进，不以控制面状态记录冒充外部 Agent 已执行。

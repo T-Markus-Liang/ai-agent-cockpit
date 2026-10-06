@@ -17,5 +17,5 @@ fi
 
 if ! curl -fsS http://127.0.0.1:4324/health >/dev/null 2>&1; then
   nohup node "$ROOT/gateway/control-plane.mjs" >"$ROOT/logs/control-plane.log" 2>&1 &
-  echo "Started read-only control plane on http://127.0.0.1:4324"
+  echo "Started Personal AI OS control plane on http://127.0.0.1:4324"
 fi

@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/card'
 import { useLocale } from '@/components/locale-provider'
 
 type Probe = { status: 'connected' | 'available' | 'unavailable' | 'gui-only'; note: string; href?: string }
+type FeatureMapResponse = { capabilities?: Array<{ provider?: string; status?: string; capabilities?: string[]; limitations?: string[] }> }
 
 async function probe(path: string): Promise<Record<string, unknown>> {
   const res = await fetch(path, { cache: 'no-store' })
@@ -25,16 +26,25 @@ export function SystemConnections() {
   const health = useHealth().data
   const wechat = useQuery({ queryKey: ['local-wechat-status'], queryFn: () => probe('http://127.0.0.1:4322/api/wechat/status'), refetchInterval: 15_000 })
   const antigravity = useQuery({ queryKey: ['local-antigravity-health'], queryFn: () => probe('http://127.0.0.1:8080/health'), refetchInterval: 15_000 })
+  const featureMap = useQuery({ queryKey: ['personal-ai-os-feature-map'], queryFn: () => probe('http://127.0.0.1:4324/api/control-plane/capabilities') as Promise<FeatureMapResponse>, refetchInterval: 30_000, retry: false })
   const checks = new Map((health?.checks ?? []).map((check) => [check.name, check]))
+  const capabilities = new Map((featureMap.data?.capabilities ?? []).map((capability) => [capability.provider ?? '', capability]))
+  const controlPlaneProbe = (provider: string, fallback: Probe): Probe => {
+    const capability = capabilities.get(provider)
+    if (!capability) return fallback
+    const status = capability.status === 'ready' ? 'connected' : capability.status === 'unknown' ? 'available' : 'unavailable'
+    const limitation = capability.limitations?.[0]
+    return { ...fallback, status, note: limitation ? `${fallback.note} · ${limitation}` : fallback.note }
+  }
   const agents: Array<[string, Probe]> = [
     ['微信 Bot', { status: wechat.data?.status === 'connected' ? 'connected' : 'unavailable', note: wechat.data?.status === 'connected' ? '本机微信桥正常' : '打开设置重新生成二维码' }],
-    ['Codex', { status: checks.get('codex')?.available ? 'connected' : 'unavailable', note: '主 ACP / app-server' }],
-    ['OpenCode', { status: checks.get('opencode')?.available ? 'available' : 'unavailable', note: 'ACP fallback' }],
-    ['Kimi CLI', { status: 'available', note: 'ACP fallback / 旧会话可用 kimi --session' }],
+    ['Codex', controlPlaneProbe('codex', { status: checks.get('codex')?.available ? 'connected' : 'unavailable', note: '主 ACP / app-server' })],
+    ['OpenCode', controlPlaneProbe('opencode', { status: checks.get('opencode')?.available ? 'available' : 'unavailable', note: 'ACP fallback' })],
+    ['Kimi CLI', controlPlaneProbe('kimi', { status: 'available', note: 'ACP fallback / 旧会话可用 kimi --session' })],
     ['Antigravity Gemini', { status: antigravity.data?.status === 'ok' ? 'connected' : 'unavailable', note: '本机 OpenAI-compatible 反代', href: 'http://127.0.0.1:8080' }],
-    ['WorkBuddy', { status: 'available', note: 'codebuddy --acp；旧会话需显式 resume' }],
-    ['Claude Code', { status: checks.get('claude')?.available ? 'connected' : 'unavailable', note: 'CLI / ACP' }],
-    ['Devin ACP', { status: 'available', note: '已发现 Devin ACP；旧会话需显式恢复' }],
+    ['WorkBuddy', controlPlaneProbe('workbuddy', { status: 'available', note: 'codebuddy --acp；旧会话需显式 resume' })],
+    ['Claude Code', controlPlaneProbe('claude', { status: checks.get('claude')?.available ? 'connected' : 'unavailable', note: 'CLI / ACP' })],
+    ['Devin ACP', controlPlaneProbe('devin', { status: 'available', note: '已发现 Devin ACP；旧会话需显式恢复' })],
   ]
   return <Card data-dashboard-module="connections" className="gap-0 overflow-hidden py-0">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">

@@ -10,15 +10,20 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 | --- | --- | --- |
 | Cezar cockpit | <http://127.0.0.1:4321> | 本地任务、工作树和运行界面 |
 | 微信控制服务 | <http://127.0.0.1:4322> | 二维码、登录状态和 bridge 启动控制 |
-| 只读控制面 | <http://127.0.0.1:4324> | 本机会话元数据索引和 Agent 来源能力边界 |
+| Personal AI OS 控制面 | <http://127.0.0.1:4324> | 本机会话元数据索引、Task/Execution 状态和 Agent 来源能力边界 |
 | 微信 ACP bridge | launchd | 微信 → 默认 Codex，失败/超时按配置顺序 fallback |
 | Provider shim | launchd | Kimi、DeepSeek、GLM、Antigravity 等本机已有反代/配置 |
 
 已完成的第一轮重构包括：
 
 - `control-plane/contracts.mjs`：运行时校验的 Task、SessionRef、Execution、Evidence、Approval、AgentCapability 契约。
+- `control-plane/store.mjs`：私有状态目录中的原子持久化、幂等键、有限状态转移、Evidence、审批、会话锁和重启恢复保护。
 - `control-plane/session-index.mjs`：只读发现 Codex、OpenCode、Kimi 的本地会话元数据；发现 WorkBuddy、Devin、Claude Code、Antigravity 时明确报告“入口已发现、历史索引未支持”。
-- `gateway/control-plane.mjs`：回环地址 HTTP API，不写外部 Agent 历史，不读取认证文件或消息正文。
+- `control-plane/session-adapters.mjs`：按明确来源和原生 ID 查询元数据；恢复只返回未验证计划，不静默启动新会话。
+- `adapters/engines/cezar.mjs` + `control-plane/dispatcher.mjs`：Cezar run/worktree 接入；真实派单必须有精确绑定且未消费的 Approval。
+- `interfaces/mcp/server.mjs`：Chief 可用的 MCP 工具层；默认只创建控制面对象，不直接启动外部 Agent。
+- `gateway/control-plane.mjs`：回环地址 HTTP API，持久化自己的 Task/Execution 状态，但不写外部 Agent 历史，不读取认证文件或消息正文。
+- Cezar Dashboard / Settings 的系统连接和本机 Agent 页面会读取 `4324/api/control-plane/capabilities`，把“已发现”“已连接”“待验证”“不可用”分开显示。
 - `scripts/control-plane.mjs`：CLI 会话索引查询。
 - `launchd/com.markus.ai-agent-cockpit.control-plane.plist`：控制面常驻定义；可按需加载，不改变旧服务。
 - `scripts/start-local.sh`：增加控制面健康检查和启动。
@@ -28,7 +33,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 ```bash
 cd /Users/markus/ai-agent-cockpit
 
-# 启动仍未运行的本地入口（Cezar、微信控制、只读控制面）
+# 启动仍未运行的本地入口（Cezar、微信控制、Personal AI OS 控制面）
 ./scripts/start-local.sh
 
 # 查看本机 Agent 会话元数据（只读）
@@ -45,9 +50,12 @@ npm run test:control-plane
 GET http://127.0.0.1:4324/health
 GET http://127.0.0.1:4324/api/control-plane/sources
 GET http://127.0.0.1:4324/api/control-plane/sessions?provider=opencode&limit=50
+GET http://127.0.0.1:4324/api/control-plane/tasks
+POST http://127.0.0.1:4324/api/control-plane/tasks  # 必须带 Idempotency-Key
+POST http://127.0.0.1:4324/mcp                    # JSON-RPC tools/list / tools/call
 ```
 
-控制面默认只监听 `127.0.0.1`。索引快照会声明 `readOnly=true`、`secretsRead=false`、`messageBodiesRead=false`；任何 Agent 的恢复能力只记录原生命令提示和验证限制，不会因为“发现了可执行文件”就声称旧会话可以安全恢复。
+控制面默认只监听 `127.0.0.1`。索引快照会声明 `readOnly=true`、`secretsRead=false`、`messageBodiesRead=false`；控制面只写自己的状态文件，不写外部 Agent 历史。所有写操作要求幂等键，Cezar 派单还要求动作、目标、参数摘要完全匹配的审批。任何 Agent 的恢复能力只记录原生命令提示和验证限制，不会因为“发现了可执行文件”就声称旧会话可以安全恢复。
 
 ## 架构原则
 
@@ -97,9 +105,8 @@ Worker 与执行适配器
 
 下一步按执行文档推进：
 
-1. 用同一契约接入只读 Session 查询 API，并增加分页、过滤和来源证据。
-2. 建立 Chief 的查询/恢复/派单工具层；恢复失败时明确报错，绝不静默新建。
-3. 增加 Task/Execution 的持久化、幂等键、会话锁、取消和重启恢复。
-4. 把验证、review、审批和审计事件接成闭环，再考虑正式目录迁移与云端/GUI 通道。
+1. 将 MCP/HTTP 工具接入微信 Chief，建立查询/恢复/派单工具层；恢复失败时明确报错，绝不静默新建。
+2. 增加原生 Agent list/load 适配器和外部会话并发检测。
+3. 把验证、review、审批和审计事件接成闭环，再考虑正式目录迁移与云端/GUI 通道。
 
-默认不迁移 `~/.codex`、`~/.kimi-code`、`~/.local/share/opencode`、Devin/WorkBuddy App 数据，也不把 token、API key、二维码登录状态提交到 Git。
+默认不迁移 `~/.codex`、`~/.kimi-code`、`~/.local/share/opencode`、Devin/WorkBuddy App 数据，也不把 token、API key、二维码登录状态提交到 Git。控制面自己的状态位于 `~/.local/state/ai-agent-cockpit/control-plane.json`，只在第一次写入 Task/Execution 时创建。
