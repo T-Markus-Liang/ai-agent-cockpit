@@ -1,6 +1,10 @@
 {
   "controlPlaneUrl": "http://127.0.0.1:4324",
   "controlPlaneAudit": true,
+  "goals": {
+    "url": "http://127.0.0.1:4326",
+    "tokenFile": "/Users/markus/.local/state/personal-ai-os/goals/api-token"
+  },
   "memory": {
     "enabled": true,
     "maxTurns": 16,

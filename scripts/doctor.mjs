@@ -24,18 +24,19 @@ function runEval() {
   })
 }
 
-const [cezar, wechat, controlPlane, capabilities, memory] = await Promise.all([
+const [cezar, wechat, controlPlane, capabilities, memory, goals] = await Promise.all([
   get('http://127.0.0.1:4321/api/v1/health'),
   get('http://127.0.0.1:4322/api/wechat/status'),
   get('http://127.0.0.1:4324/health'),
   get('http://127.0.0.1:4324/api/control-plane/capabilities'),
   get('http://127.0.0.1:4325/health'),
+  get('http://127.0.0.1:4326/health'),
 ])
 const evaluation = await runEval()
 const report = {
   type: 'PersonalAiOsDoctorReport',
-  ok: cezar.ok && wechat.ok && controlPlane.ok && capabilities.ok && memory.ok && evaluation.ok,
-  services: { cezar, wechat, controlPlane, memory },
+  ok: cezar.ok && wechat.ok && controlPlane.ok && capabilities.ok && memory.ok && goals.ok && evaluation.ok,
+  services: { cezar, wechat, controlPlane, memory, goals },
   capabilities: capabilities.body?.capabilities?.map((item) => ({ agentId: item.agentId, provider: item.provider, status: item.status })) ?? [],
   evaluation: evaluation.report ?? evaluation,
   checkedAt: new Date().toISOString(),

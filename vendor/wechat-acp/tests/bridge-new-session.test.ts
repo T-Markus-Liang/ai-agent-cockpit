@@ -228,6 +228,13 @@ test("acp-new and its alias reset without enqueueing an ACP prompt", async () =>
   );
 });
 
+test("goal command is intercepted without handing approvals to the chat model", async () => {
+  const bridge = makeBridge();
+  await bridge.handleMessage(textMessage("/目标", "goal-context"));
+  assert.deepEqual(bridge.enqueued, []);
+  assert.match(bridge.sent[0]!.segment, /持续目标服务还未配置/);
+});
+
 test("wechat approval alias calls the control-plane decision API", async () => {
   const bridge = makeBridge();
   const originalFetch = globalThis.fetch;

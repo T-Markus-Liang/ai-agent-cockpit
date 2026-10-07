@@ -13,6 +13,7 @@ import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar
 import { handleMcpRequest } from '../interfaces/mcp/server.mjs'
 
 const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 4324)
+const TRUSTED_ORIGINS = new Set(['http://127.0.0.1:4321', 'http://localhost:4321'])
 const store = new ControlPlaneStore()
 let cache = null
 let cacheAt = 0
@@ -20,12 +21,13 @@ let startupRecovery = { recovered: false, blockedExecutionIds: [] }
 
 function send(res, status, body) {
   if (status === 204) {
-    res.writeHead(status, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Idempotency-Key,X-Idempotency-Key' })
+    res.writeHead(status, { 'Access-Control-Allow-Origin': res.trustedOrigin ?? 'http://127.0.0.1:4321', 'Vary': 'Origin', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Idempotency-Key,X-Idempotency-Key' })
     return res.end()
   }
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': res.trustedOrigin ?? 'http://127.0.0.1:4321',
+    'Vary': 'Origin',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type,Idempotency-Key,X-Idempotency-Key',
     'Cache-Control': 'no-store',
@@ -84,6 +86,9 @@ async function snapshot(query) {
 }
 
 const server = http.createServer(async (req, res) => {
+  if (!/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(req.headers.host ?? '')) return send(res, 403, { error: 'INVALID_HOST' })
+  if (req.headers.origin && !TRUSTED_ORIGINS.has(req.headers.origin)) return send(res, 403, { error: 'UNTRUSTED_ORIGIN' })
+  res.trustedOrigin = req.headers.origin
   if (req.method === 'OPTIONS') return send(res, 204)
   try {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)

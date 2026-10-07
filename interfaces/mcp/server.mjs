@@ -68,7 +68,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
   {
     name: 'update_execution_status',
     description: '按有限状态机推进 Execution；非法转移会被拒绝。',
-    inputSchema: { type: 'object', required: ['executionId', 'status', 'idempotencyKey'], properties: { executionId: { type: 'string' }, status: { type: 'string' }, outcome: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['executionId', 'status', 'idempotencyKey'], properties: { executionId: { type: 'string' }, status: { type: 'string' }, artifactRef: { type: 'string' }, outcome: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'plan_native_prompt',
@@ -83,7 +83,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
   {
     name: 'add_evidence',
     description: '为 Execution 添加可追溯证据摘要。',
-    inputSchema: { type: 'object', required: ['executionId', 'summary', 'source', 'idempotencyKey'], properties: { executionId: { type: 'string' }, kind: { type: 'string' }, summary: { type: 'string' }, source: { type: 'string' }, uri: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['executionId', 'summary', 'source', 'idempotencyKey'], properties: { executionId: { type: 'string' }, kind: { type: 'string' }, summary: { type: 'string' }, source: { type: 'string' }, uri: { type: 'string' }, exitCode: { type: 'integer' }, artifactRef: { type: 'string' }, verdict: { enum: ['passed', 'failed'] }, reviewOfExecutionId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'create_approval',
@@ -173,7 +173,7 @@ export async function handleMcpRequest(request, deps = {}) {
   const method = request?.method
   if (method === 'notifications/initialized') return null
   if (method === 'initialize') {
-    return { jsonrpc: '2.0', id, result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: { name: 'personal-ai-os-control-plane', version: '0.1.0' } } }
+    return { jsonrpc: '2.0', id, result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: { name: 'personal-ai-os-control-plane', version: '0.2.0' } } }
   }
   if (method === 'tools/list') return { jsonrpc: '2.0', id, result: { tools: TOOL_DEFINITIONS } }
   if (method === 'tools/call') {

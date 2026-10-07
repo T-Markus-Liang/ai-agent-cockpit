@@ -75,7 +75,7 @@ test('HTTP control plane covers task lifecycle, approval, audit and MCP boundari
     const execution = await request(`/api/control-plane/tasks/${taskId}/executions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'http-execution-1' },
-      body: JSON.stringify({ workerId: 'codex' }),
+      body: JSON.stringify({ workerId: 'codex', artifactRef: `git:${'a'.repeat(40)}` }),
     })
     assert.equal(execution.response.status, 201)
     const executionId = execution.body.execution.id
@@ -98,11 +98,19 @@ test('HTTP control plane covers task lifecycle, approval, audit and MCP boundari
       assert.equal(changed.body.execution.status, status)
     }
 
+    const reviewer = await request(`/api/control-plane/tasks/${taskId}/executions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'http-reviewer' },
+      body: JSON.stringify({ workerId: 'kimi', parentExecutionId: executionId, artifactRef: `git:${'a'.repeat(40)}` }),
+    })
+    const reviewerId = reviewer.body.execution.id
+    for (const status of ['running', 'verifying', 'reviewing', 'succeeded']) await request(`/api/control-plane/executions/${reviewerId}/status`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `http-reviewer-${status}` }, body: JSON.stringify({ status }),
+    })
     for (const [index, [kind, summary]] of [['test', 'node:test passed'], ['review', 'independent reviewer passed']].entries()) {
-      const evidence = await request(`/api/control-plane/executions/${executionId}/evidence`, {
+      const evidence = await request(`/api/control-plane/executions/${kind === 'review' ? reviewerId : executionId}/evidence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `http-evidence-${index}` },
-        body: JSON.stringify({ kind, summary, source: 'http-suite' }),
+        body: JSON.stringify({ kind, summary, source: 'http-suite', artifactRef: `git:${'a'.repeat(40)}`, ...(kind === 'test' ? { exitCode: 0 } : { verdict: 'passed', reviewOfExecutionId: executionId }) }),
       })
       assert.equal(evidence.response.status, 201)
     }

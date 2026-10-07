@@ -9,6 +9,7 @@ import {
   createExecution,
   createTask,
   EXECUTION_STATUSES,
+  isValidArtifactRef,
 } from './contracts.mjs'
 
 const STATE_VERSION = 1
@@ -196,20 +197,41 @@ export class ControlPlaneStore {
     const executions = task.executionIds.map((id) => state.executions[id]).filter(Boolean)
     const evidence = executions.flatMap((execution) => (execution.evidenceIds ?? []).map((id) => state.evidence[id]).filter(Boolean))
     const allTerminal = executions.length > 0 && executions.every((execution) => TERMINAL_EXECUTION_STATUSES.has(execution.status))
-    const hasSuccess = executions.some((execution) => execution.status === 'succeeded')
-    const hasReview = evidence.some((item) => item.kind === 'review')
-    const hasVerification = evidence.some((item) => item.kind === 'test' || item.kind === 'command')
+    const succeededById = new Map(executions.filter((execution) => execution.status === 'succeeded').map((execution) => [execution.id, execution]))
+    const rootWorkers = [...succeededById.values()].filter((execution) => !execution.parentExecutionId)
     const parameters = {
       taskId,
-      executionIds: executions.map((execution) => `${execution.id}:${execution.status}`).sort(),
-      evidenceIds: evidence.map((item) => `${item.id}:${item.kind}`).sort(),
+      executionIds: executions.map((execution) => `${execution.id}:${execution.status}:${execution.artifactRef ?? ''}`).sort(),
+      evidenceIds: evidence.map((item) => `${item.id}:${item.kind}:${item.exitCode ?? ''}:${item.artifactRef ?? ''}:${item.verdict ?? ''}:${item.reviewOfExecutionId ?? ''}`).sort(),
     }
     const reasons = []
     if (!allTerminal) reasons.push('所有 Execution 必须先进入终态')
-    if (!hasSuccess) reasons.push('至少需要一个 succeeded Execution')
-    if (!hasVerification) reasons.push('至少需要 test 或 command Evidence')
-    if (!hasReview) reasons.push('至少需要独立 review Evidence')
     if (task.status === 'completed') reasons.push('Task 已经完成')
+    if (rootWorkers.length === 0) reasons.push('至少需要一个 succeeded 的 root worker Execution')
+    for (const worker of rootWorkers) {
+      if (!worker.artifactRef) {
+        reasons.push(`worker ${worker.id} 缺少 artifactRef`)
+        continue
+      }
+      const workerEvidence = (worker.evidenceIds ?? []).map((id) => state.evidence[id]).filter(Boolean)
+      const passingVerification = workerEvidence.some((item) => (
+        (item.kind === 'test' || item.kind === 'command')
+        && item.exitCode === 0
+        && item.artifactRef === worker.artifactRef
+      ))
+      if (!passingVerification) reasons.push(`worker ${worker.id} 缺少 exitCode=0 且 artifactRef 匹配的 test/command Evidence`)
+      if (workerEvidence.some(item => ['test', 'command'].includes(item.kind) && item.artifactRef === worker.artifactRef && item.exitCode !== 0)) reasons.push(`worker ${worker.id} 当前版本仍有失败或未完成的验证`)
+      const independentReview = evidence.some((item) => {
+        if (item.kind !== 'review' || item.verdict !== 'passed') return false
+        if (item.artifactRef !== worker.artifactRef) return false
+        if (item.reviewOfExecutionId !== worker.id) return false
+        const reviewer = succeededById.get(item.executionId)
+        if (!reviewer || reviewer.id === worker.id) return false
+        if (reviewer.parentExecutionId !== worker.id) return false
+        return reviewer.workerId !== worker.workerId && reviewer.artifactRef === worker.artifactRef
+      })
+      if (!independentReview) reasons.push(`worker ${worker.id} 缺少独立 reviewer 的 passed review Evidence`)
+    }
     return {
       action: 'task.complete',
       target: taskId,
@@ -289,6 +311,7 @@ export class ControlPlaneStore {
         const task = state.tasks[taskId]
         task.status = 'completed'
         task.updatedAt = now()
+        task.completionProof = { parametersDigest: plan.parametersDigest, at: now() }
         this.#remember(state, { type: 'task.completed', entityType: 'Task', entityId: taskId, details: { evidenceCount: plan.parameters.evidenceIds.length } })
         return { taskId, approvalId }
       })
@@ -340,13 +363,38 @@ export class ControlPlaneStore {
         if (!execution) throw new StoreError('EXECUTION_NOT_FOUND', `execution ${executionId} was not found`, 404)
         const next = input?.status
         if (!EXECUTION_STATUSES.includes(next)) throw new StoreError('INVALID_STATUS', `invalid execution status ${next}`, 400)
-        if (execution.status !== next && !TRANSITIONS[execution.status]?.has(next)) {
+        let providedArtifactRef
+        if (input?.artifactRef !== undefined && input?.artifactRef !== null) {
+          if (!isValidArtifactRef(input.artifactRef)) {
+            throw new StoreError('INVALID_ARTIFACT_REF', 'artifactRef must match git:<40-64 hex> or sha256:<64 hex>', 400)
+          }
+          providedArtifactRef = String(input.artifactRef).trim()
+        }
+        const artifactChanged = providedArtifactRef !== undefined && providedArtifactRef !== execution.artifactRef
+        if (execution.status === next) {
+          if (artifactChanged) {
+            const fromArtifactRef = execution.artifactRef
+            execution.artifactRef = providedArtifactRef
+            execution.updatedAt = now()
+            delete execution.completionProof
+            const owner = state.tasks[execution.taskId]
+            if (owner) delete owner.completionProof
+            this.#remember(state, { type: 'execution.artifact_changed', entityType: 'Execution', entityId: executionId, details: { from: fromArtifactRef ?? null, to: providedArtifactRef } })
+          }
+          return { executionId }
+        }
+        if (!TRANSITIONS[execution.status]?.has(next)) {
           throw new StoreError('INVALID_TRANSITION', `cannot move execution from ${execution.status} to ${next}`, 409)
         }
-        if (execution.status === next) return { executionId }
         const previousStatus = execution.status
         execution.status = next
         execution.updatedAt = now()
+        if (providedArtifactRef !== undefined) execution.artifactRef = providedArtifactRef
+        if (artifactChanged) {
+          delete execution.completionProof
+          const owner = state.tasks[execution.taskId]
+          if (owner) delete owner.completionProof
+        }
         if (input?.outcome !== undefined) execution.outcome = String(input.outcome)
         if (TERMINAL_EXECUTION_STATUSES.has(next)) execution.finishedAt = now()
         const task = state.tasks[execution.taskId]

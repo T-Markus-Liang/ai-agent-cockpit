@@ -439,6 +439,7 @@ async function main(): Promise<void> {
       configFileSetInjectDir = true;
     }
     Object.assign(config.storage, fileConfig.storage ?? {});
+    if (fileConfig.goals !== undefined) config.goals = fileConfig.goals;
     configFileSetMemoryFile = fileConfig.storage?.memoryFile !== undefined;
   }
 

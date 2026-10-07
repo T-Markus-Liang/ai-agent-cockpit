@@ -47,6 +47,7 @@ import {
   updatePersistedSession,
 } from "./storage/state.js";
 import { ConversationMemoryStore } from "./storage/memory.js";
+import { WeChatGoalClient } from "./goals.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 
 const ACP_CONFIG_COMMAND = BRIDGE_COMMANDS.acpConfig;
@@ -462,6 +463,18 @@ export class WeChatAcpBridge {
       kind: this.messageKind(msg),
     });
 
+    const textItem = msg.item_list?.length === 1 && msg.item_list[0]?.type === 1 ? msg.item_list[0].text_item?.text?.trim() : undefined;
+    if (textItem && /^\/目标(?:\s|$)/.test(textItem)) {
+      await this.conversationMemory.append(userId, "user", textItem);
+      let reply: string;
+      try { reply = this.config.goals ? await new WeChatGoalClient(this.config.goals).command(userId, textItem) : '持续目标服务还未配置，请从本机仪表盘查看。'; }
+      catch { reply = '这次没能连接或执行目标操作。可能是目标服务未就绪、权限不匹配或预算已到上限；请在仪表盘查看具体状态。'; }
+      if (this.isMessageGenerationCurrent(userId, generation)) {
+        await this.conversationMemory.append(userId, "assistant", reply);
+        if (this.isMessageGenerationCurrent(userId, generation)) await this.sendReply(userId, contextToken, reply);
+      }
+      return;
+    }
     const approvalApproveCommand = this.extractBridgeCommand(msg, APPROVAL_APPROVE_COMMAND);
     const approvalRejectCommand = this.extractBridgeCommand(msg, APPROVAL_REJECT_COMMAND);
     if (approvalApproveCommand || approvalRejectCommand) {

@@ -55,12 +55,15 @@ const cases = [
     id: 'completion.requires_review_and_verification',
     run: async (store) => {
       const task = await store.createTask({ goal: 'eval' }, { idempotencyKey: 'complete-task' })
-      const execution = await store.createExecution(task.task.id, { workerId: 'eval' }, { idempotencyKey: 'complete-execution' })
+      const artifactRef = `git:${'a'.repeat(40)}`
+      const execution = await store.createExecution(task.task.id, { workerId: 'eval', artifactRef }, { idempotencyKey: 'complete-execution' })
       for (const [index, status] of ['running', 'verifying', 'reviewing', 'succeeded'].entries()) await store.updateExecutionStatus(execution.execution.id, { status }, { idempotencyKey: `complete-status-${index}` })
-      await store.addEvidence(execution.execution.id, { kind: 'test', summary: 'passed', source: 'eval' }, { idempotencyKey: 'complete-test' })
+      await store.addEvidence(execution.execution.id, { kind: 'test', summary: 'passed', source: 'eval', artifactRef, exitCode: 0 }, { idempotencyKey: 'complete-test' })
       const notReady = await store.completionPlan(task.task.id)
       assert.equal(notReady.ready, false)
-      await store.addEvidence(execution.execution.id, { kind: 'review', summary: 'approved', source: 'eval-reviewer' }, { idempotencyKey: 'complete-review' })
+      const reviewer = await store.createExecution(task.task.id, { workerId: 'eval-reviewer', parentExecutionId: execution.execution.id, artifactRef }, { idempotencyKey: 'eval-reviewer' })
+      for (const status of ['running', 'verifying', 'reviewing', 'succeeded']) await store.updateExecutionStatus(reviewer.execution.id, { status }, { idempotencyKey: `eval-reviewer-${status}` })
+      await store.addEvidence(reviewer.execution.id, { kind: 'review', summary: 'approved', source: 'eval-reviewer', artifactRef, verdict: 'passed', reviewOfExecutionId: execution.execution.id }, { idempotencyKey: 'complete-review' })
       const ready = await store.completionPlan(task.task.id)
       assert.equal(ready.ready, true)
       const approval = await store.createApproval({ action: ready.action, target: ready.target, parametersDigest: ready.parametersDigest }, { idempotencyKey: 'complete-approval' })
@@ -97,4 +100,3 @@ for (const item of cases) {
 const report = { type: 'PersonalAiOsRegressionReport', version: 1, passed: results.filter((item) => item.status === 'passed').length, failed: results.filter((item) => item.status === 'failed').length, cases: results }
 console.log(JSON.stringify(report, null, 2))
 if (report.failed > 0) process.exitCode = 1
-

@@ -1,5 +1,7 @@
 # Personal AI OS
 
+当前版本：**0.2.0 持续目标预览版**。已部署一次确认范围后的自主修复、真实验收、独立复核和自动返工路线；它在私有工作副本里执行，不自动覆盖原项目或恢复原生 App 旧会话。详见 [版本说明](docs/releases/0.2.0.md)。
+
 Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移动入口，Cezar 是本地 cockpit，Codex / OpenCode / Kimi / WorkBuddy / Devin / Claude Code / Antigravity 是可插拔的 Agent 或 Provider。项目当前仍使用 `ai-agent-cockpit` 目录和既有 launchd 标签，以保证旧服务、微信身份和原生会话不被迁移或破坏。
 
 它不是把所有 App 历史复制到一个新数据库，也不是给每个 GUI App 强行套一个“已支持”的标签。Personal AI OS 先建立可审计的 Task、SessionRef、Execution 和 Evidence 边界，再逐步增加 Chief 调度、审批和验证闭环。
@@ -13,6 +15,7 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移
 | Personal AI OS 控制面 | <http://127.0.0.1:4324> | 本机会话元数据索引、Task/Execution 状态和 Agent 来源能力边界 |
 | 微信 ACP bridge | launchd | 微信 → 默认 Kimi，失败/超时按配置顺序 fallback；各模型使用同一共享记忆 |
 | Mem0 OSS 记忆服务 | <http://127.0.0.1:4325/health> | 本地多语言向量检索、持久入库队列；用户事实由现有 Kimi API 提炼 |
+| 持续目标服务 | <http://127.0.0.1:4326/health> | 版本绑定的范围授权、租约/心跳、检查点、预算、自动返工；默认一条目标运行 |
 | Provider shim | launchd | Kimi、DeepSeek、GLM、Antigravity 等本机已有反代/配置 |
 
 已完成的第一轮重构包括：
@@ -82,6 +85,22 @@ npm run test:memory-recovery # macOS：短暂停止 Mem0，验证降级/恢复�
 ```
 
 部署时回填了旧快照尚存的 9 条对话正文，并生成私有备份；此前已被截断/删除的历史无法重建。本轮测试结论和未验证边界见 [执行记录](EXECUTION.md#62-mem0-部署与验收2026-10-06)。
+
+## 持续目标怎么用
+
+在仪表盘“持续目标 · 自主验证”创建草稿，查看文件范围、不可修改的验收和 token 上限，再点击“确认范围并启动”。默认示例是非生产加法函数修复。Kimi 负责规划/复核，官方 DeepSeek V4.1 Flash 提出修改；修改只应用到私有副本，真实 Node 测试在 macOS Seatbelt 下运行。
+
+微信发送 `/目标` 抽查进度；支持查看、暂停、恢复、取消及暂停全部。确认目标需完整 scope digest，聊天模型不能替你批准。暂不支持从一句任意需求直接无人值守操作所有 App。
+
+```bash
+npm run test:goals       # 范围、租约、预算、验收、真实隔离与返工
+npm run test:goals-live  # 真实 Kimi/DeepSeek 合成修复试运行，会产生少量模型费用
+GOAL_LIVE_RETRY=1 npm run test:goals-live # 真实模型遇到一次验收故障后自行继续
+npm run goal-status
+npm run goal-status -- get goal_ID
+```
+
+`~/.local/state/personal-ai-os/goals/` 保存 0700 私有目录、0600 token/状态、结果副本和单独的 Task/Evidence 存储。获批文件内容会发送给既有 provider；不是全离线。首版只支持已有文本文件、固定不可修改的 Node 验收；源码合并、任意原生 App 自动执行、外部反馈订阅和全天耐久仍需后续验收。
 
 `native-load-probe` 是显式的本机验证命令，会调用指定 Codex `session/load`；它没有暴露给 MCP/自动 Chief，避免无审批恢复外部会话。
 

@@ -47,6 +47,7 @@ import { useLocale } from '@/components/locale-provider'
 import { SystemConnections } from './system-connections'
 import { ControlPlaneTasks } from './control-plane-tasks'
 import { ControlPlaneApprovals } from './control-plane-approvals'
+import { ContinuousGoals } from './continuous-goals'
 
 const views = [
   ['overview', 'Overview'],
@@ -334,6 +335,7 @@ function DashboardView({ entryKey }: { entryKey: string }) {
             })}
           </nav>
           <SystemConnections />
+          <ContinuousGoals />
           <ControlPlaneTasks />
           <ControlPlaneApprovals />
           {preferences.failed && (

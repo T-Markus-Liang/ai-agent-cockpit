@@ -1,12 +1,16 @@
 {
   "name": "personal-ai-os",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Personal AI OS control plane for local agent sessions, WeChat entry and Cezar cockpit",
   "scripts": {
     "sessions": "node scripts/control-plane.mjs",
     "control-plane": "node gateway/control-plane.mjs",
+    "goals": "node gateway/goals.mjs",
+    "goal-status": "node scripts/goals.mjs",
+    "test:goals": "node --test tests/goal-*.test.mjs tests/verification-gate.test.mjs",
+    "test:goals-live": "node scripts/test-goals-live.mjs",
     "doctor": "node scripts/doctor.mjs",
     "test:memory-service": ".venv-memory/bin/python -m unittest discover -s tests -p 'memory_service_test.py' -v",
     "test:memory-live": "node scripts/test-memory-live.mjs",

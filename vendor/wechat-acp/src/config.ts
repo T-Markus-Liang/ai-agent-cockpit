@@ -135,6 +135,7 @@ export interface WeChatAcpConfig {
     mem0?: { url: string; tokenFile: string; timeoutMs?: number; topK?: number };
     personaFile?: string;
   };
+  goals?: { url: string; tokenFile: string };
   /**
    * Optional user-defined aliases for bridge slash commands. Maps a
    * canonical command (e.g. `"/acp-cancel"`) to one or more custom

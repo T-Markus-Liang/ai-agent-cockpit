@@ -71,6 +71,23 @@ function capabilityState(value, field) {
   return enumValue(value ?? 'unknown', field, CAPABILITY_STATES)
 }
 
+const ARTIFACT_REF_PATTERNS = Object.freeze([
+  /^git:[0-9a-f]{40,64}$/,
+  /^sha256:[0-9a-f]{64}$/,
+])
+
+export function isValidArtifactRef(value) {
+  return typeof value === 'string' && ARTIFACT_REF_PATTERNS.some((pattern) => pattern.test(value.trim()))
+}
+
+function optionalArtifactRef(value, field) {
+  if (value === undefined || value === null) return undefined
+  if (!isValidArtifactRef(value)) {
+    throw new ContractError('must match git:<40-64 hex> or sha256:<64 hex>', [field])
+  }
+  return value.trim()
+}
+
 function base(idValue, prefix) {
   return string(idValue ?? id(prefix), 'id')
 }
@@ -132,11 +149,18 @@ export function createExecution(input = {}) {
     startedAt: timestamp(input.startedAt, 'startedAt', { optional: true }),
     finishedAt: timestamp(input.finishedAt, 'finishedAt', { optional: true }),
     outcome: string(input.outcome, 'outcome', { optional: true }),
+    artifactRef: optionalArtifactRef(input.artifactRef, 'artifactRef'),
   }
 }
 
 export function createEvidence(input = {}) {
   const kind = enumValue(input.kind ?? 'message', 'kind', ['command', 'test', 'diff', 'log', 'screenshot', 'review', 'message'])
+  if (input.exitCode !== undefined && (typeof input.exitCode !== 'number' || !Number.isInteger(input.exitCode))) {
+    throw new ContractError('exitCode must be an integer number', ['exitCode'])
+  }
+  const verdict = input.verdict === undefined || input.verdict === null
+    ? undefined
+    : enumValue(input.verdict, 'verdict', ['passed', 'failed'])
   return {
     contractVersion: CONTRACT_VERSION,
     type: 'Evidence',
@@ -149,6 +173,9 @@ export function createEvidence(input = {}) {
     exitCode: input.exitCode === undefined ? undefined : Number(input.exitCode),
     uri: string(input.uri, 'uri', { optional: true }),
     redacted: input.redacted !== false,
+    artifactRef: optionalArtifactRef(input.artifactRef, 'artifactRef'),
+    verdict,
+    reviewOfExecutionId: string(input.reviewOfExecutionId, 'reviewOfExecutionId', { optional: true }),
   }
 }
 
@@ -182,4 +209,3 @@ export function createAgentCapability(input = {}) {
     limitations: list(input.limitations, 'limitations'),
   }
 }
-
