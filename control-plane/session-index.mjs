@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { createReadStream, existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -7,6 +7,8 @@ import { createSessionRef } from './contracts.mjs'
 
 const DEFAULT_LIMIT = 500
 const CODEX_DB_GLOB = /^state_\d+\.sqlite$/
+const CLAUDE_SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const CLAUDE_HEAD_BYTES = 128 * 1024
 
 function within(candidate, root) {
   const resolved = path.resolve(candidate)
@@ -74,6 +76,44 @@ async function querySqlite(db, sql) {
   } catch {
     return []
   }
+}
+
+function extractClaudeCwd(head) {
+  const match = /"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(head)
+  if (!match) return undefined
+  try {
+    return JSON.parse(`"${match[1]}"`)
+  } catch {
+    return match[1]
+  }
+}
+
+// 只统计 JSONL 行数并从文件头部取出 cwd 字段，不解析、不保留任何消息正文。
+function analyzeClaudeTranscript(file) {
+  return new Promise((resolve) => {
+    let head = ''
+    let messageCount = 0
+    let settled = false
+    const stream = createReadStream(file)
+    const done = (result) => {
+      if (settled) return
+      settled = true
+      stream.destroy()
+      resolve(result)
+    }
+    stream.on('data', (chunk) => {
+      if (head.length < CLAUDE_HEAD_BYTES) {
+        head += chunk.toString('utf8', 0, Math.min(chunk.length, CLAUDE_HEAD_BYTES - head.length))
+      }
+      let index = chunk.indexOf(10)
+      while (index !== -1) {
+        messageCount += 1
+        index = chunk.indexOf(10, index + 1)
+      }
+    })
+    stream.on('end', () => done({ cwd: extractClaudeCwd(head), messageCount }))
+    stream.on('error', () => done({ cwd: undefined, messageCount: undefined }))
+  })
 }
 
 function sessionLimit(limit) {
@@ -195,6 +235,137 @@ async function indexKimi(home, limit) {
   }
 }
 
+async function indexDevin(home, limit) {
+  const db = path.join(home, '.local/share/devin/cli/sessions.db')
+  const detected = existsSync(db)
+  // created_at / last_activity_at 存的是 epoch 秒；hidden=1 表示在 CLI 列表里隐藏。
+  const rows = await querySqlite(db, `SELECT id, title, working_directory AS cwd,
+    created_at * 1000 AS createdAt, last_activity_at * 1000 AS lastActivityAt, hidden
+    FROM sessions ORDER BY last_activity_at DESC LIMIT ${sessionLimit(limit)}`)
+  const sessions = rows.map((row) => createSessionRef({
+    id: `session:devin:${row.id}`,
+    source: 'devin',
+    nativeSessionId: row.id,
+    title: displayTitle(row.title, row.id),
+    cwd: row.cwd || home,
+    createdAt: row.createdAt,
+    lastActivityAt: row.lastActivityAt,
+    archived: Boolean(row.hidden),
+    capabilities: { metadata: 'available', history: 'unknown', resume: 'unknown', write: 'unavailable' },
+    resumeHint: 'devin --resume / devin acp (not invoked by read-only index)',
+    limitations: ['只读 sessions.db 的会话元数据；不读取凭据或消息正文；resume/ACP 恢复未验证'],
+  }))
+  return {
+    source: sourceDescriptor({
+      provider: 'devin', label: 'Devin', detected, metadata: sessions.length > 0,
+      resumeHint: 'devin --resume / devin acp', root: db,
+      limitations: !detected
+        ? ['未发现 ~/.local/share/devin/cli/sessions.db']
+        : sessions.length
+          ? []
+          : ['检测到 ~/.local/share/devin/cli/sessions.db 但未读出会话行（可能是 schema 变更或权限）'],
+    }),
+    sessions,
+  }
+}
+
+async function indexWorkBuddy(home, limit) {
+  const db = path.join(home, '.workbuddy-ai/workbuddy.db')
+  const detected = existsSync(db)
+  // deleted_at 非空表示已删除（用 archived 标记）；时间戳都是 epoch 毫秒。
+  const rows = await querySqlite(db, `SELECT id, title, custom_title AS customTitle, cwd,
+    created_at AS createdAt, COALESCE(last_activity_at, updated_at) AS lastActivityAt,
+    CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END AS archived
+    FROM sessions ORDER BY COALESCE(last_activity_at, updated_at) DESC LIMIT ${sessionLimit(limit)}`)
+  const sessions = rows.map((row) => createSessionRef({
+    id: `session:workbuddy:${row.id}`,
+    source: 'workbuddy',
+    nativeSessionId: row.id,
+    title: displayTitle(row.customTitle || row.title, row.id),
+    cwd: row.cwd || home,
+    createdAt: row.createdAt,
+    lastActivityAt: row.lastActivityAt,
+    archived: Boolean(row.archived),
+    capabilities: { metadata: 'available', history: 'unknown', resume: 'unknown', write: 'unavailable' },
+    resumeHint: 'codebuddy --resume / codebuddy --acp (not invoked by read-only index)',
+    limitations: ['只读 workbuddy.db 的 sessions 表；不读取凭据或消息正文；resume/ACP 恢复未验证'],
+  }))
+  return {
+    source: sourceDescriptor({
+      provider: 'workbuddy', label: 'WorkBuddy', detected, metadata: sessions.length > 0,
+      resumeHint: 'codebuddy --resume / codebuddy --acp', root: db,
+      limitations: !detected
+        ? ['未发现 ~/.workbuddy-ai/workbuddy.db']
+        : sessions.length
+          ? []
+          : ['检测到 ~/.workbuddy-ai/workbuddy.db 但未读出会话行（可能是 schema 变更或权限）'],
+    }),
+    sessions,
+  }
+}
+
+async function indexClaude(home, limit) {
+  const root = path.join(home, '.claude/projects')
+  const detected = existsSync(root)
+  const sessions = []
+  if (detected) {
+    let projects = []
+    try {
+      projects = await fs.readdir(root, { withFileTypes: true })
+    } catch {
+      projects = []
+    }
+    for (const project of projects) {
+      if (!project.isDirectory()) continue
+      const projectDir = path.join(root, project.name)
+      let files = []
+      try {
+        files = await fs.readdir(projectDir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const file of files) {
+        if (!file.isFile() || !file.name.endsWith('.jsonl')) continue
+        const nativeSessionId = file.name.slice(0, -'.jsonl'.length)
+        if (!CLAUDE_SESSION_ID_PATTERN.test(nativeSessionId)) continue
+        const transcript = path.join(projectDir, file.name)
+        const stat = await fs.stat(transcript).catch(() => undefined)
+        if (!stat) continue
+        const analysis = await analyzeClaudeTranscript(transcript)
+        const cwd = analysis.cwd || home
+        const projectName = analysis.cwd ? path.basename(analysis.cwd) : project.name
+        const title = Number.isInteger(analysis.messageCount) ? `${projectName} · ${analysis.messageCount} msgs` : projectName
+        sessions.push(createSessionRef({
+          id: `session:claude:${nativeSessionId}`,
+          source: 'claude',
+          nativeSessionId,
+          title: displayTitle(title, nativeSessionId),
+          cwd,
+          createdAt: stat.birthtimeMs,
+          lastActivityAt: stat.mtimeMs,
+          archived: false,
+          capabilities: { metadata: 'available', history: 'unknown', resume: 'unknown', write: 'unavailable' },
+          resumeHint: `claude --resume ${nativeSessionId} (not invoked by read-only index)`,
+          limitations: ['只读 ~/.claude/projects/<project>/<session>.jsonl 的文件元信息与行数；不读取消息正文或凭据；title 取自项目名而非首条消息'],
+        }))
+      }
+    }
+  }
+  sessions.sort((a, b) => String(b.lastActivityAt || '').localeCompare(String(a.lastActivityAt || '')))
+  return {
+    source: sourceDescriptor({
+      provider: 'claude', label: 'Claude Code', detected, metadata: sessions.length > 0,
+      resumeHint: 'claude --resume <id>', root,
+      limitations: !detected
+        ? ['未发现 ~/.claude/projects']
+        : sessions.length
+          ? []
+          : ['检测到 ~/.claude/projects 但未发现可索引的 <sessionId>.jsonl'],
+    }),
+    sessions: sessions.slice(0, sessionLimit(limit)),
+  }
+}
+
 function appSource({ home, provider, label, appRoot, executable, resumeHint, limitations }) {
   const root = path.join(home, appRoot)
   const detected = existsSync(root) || existsSync(executable)
@@ -212,23 +383,9 @@ export async function indexLocalSessions({ home = os.homedir(), limit = DEFAULT_
   if (include('codex')) results.push(await indexCodex(home, limit))
   if (include('opencode')) results.push(await indexOpenCode(home, limit))
   if (include('kimi')) results.push(await indexKimi(home, limit))
-  if (include('workbuddy')) results.push(appSource({
-    home, provider: 'workbuddy', label: 'WorkBuddy', appRoot: 'Library/Application Support/WorkBuddy AI',
-    executable: '/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
-    resumeHint: 'codebuddy --resume / codebuddy --acp',
-    limitations: ['当前只确认 ACP/CLI 入口；未发现稳定的只读旧会话索引接口，不能猜测或静默创建新会话'],
-  }))
-  if (include('devin')) results.push(appSource({
-    home, provider: 'devin', label: 'Devin', appRoot: 'Library/Application Support/Devin',
-    executable: '/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin',
-    resumeHint: 'devin --resume / devin acp',
-    limitations: ['当前只验证 ACP 握手/建会话；旧会话 list/load、认证与 prompt 尚未验证'],
-  }))
-  if (include('claude')) results.push(appSource({
-    home, provider: 'claude', label: 'Claude Code', appRoot: '.claude', executable: '/opt/homebrew/bin/claude',
-    resumeHint: 'Claude Code 原生 session 机制',
-    limitations: ['本版本只做入口发现，不读取 ~/.claude 内部历史'],
-  }))
+  if (include('workbuddy')) results.push(await indexWorkBuddy(home, limit))
+  if (include('devin')) results.push(await indexDevin(home, limit))
+  if (include('claude')) results.push(await indexClaude(home, limit))
   if (include('antigravity')) results.push(appSource({
     home, provider: 'antigravity', label: 'Antigravity', appRoot: 'Library/Application Support/Antigravity',
     executable: '/Applications/Antigravity.app/Contents/MacOS/Antigravity',

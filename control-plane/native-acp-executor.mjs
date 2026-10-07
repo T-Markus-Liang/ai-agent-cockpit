@@ -99,7 +99,10 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
   try {
     const result = await runNativeAcpPrompt({ source, nativeSessionId, cwd, prompt, command, args })
     await store.attachExecutionRef(executionId, { engine: 'native-acp', id: `${source}:${nativeSessionId}`, source, nativeSessionId, cwd }, { idempotencyKey: `${idempotencyKey ?? executionId}:attach` })
-    const summary = result.text.length > 4000 ? `${result.text.slice(0, 3997)}...` : result.text
+    const text = result.text ?? ''
+    const summary = text.trim().length > 0
+      ? (text.length > 4000 ? `${text.slice(0, 3997)}...` : text)
+      : `native ACP prompt returned no text (stopReason=${result.stopReason ?? 'unknown'})`
     await store.addEvidence(executionId, { kind: 'message', summary, source: `${source}:acp`, redacted: true }, { idempotencyKey: `${idempotencyKey ?? executionId}:evidence` })
     const updated = await store.updateExecutionStatus(executionId, { status: 'verifying', outcome: `native ACP prompt completed (${result.stopReason ?? 'unknown'})` }, { idempotencyKey: `${idempotencyKey ?? executionId}:verifying` })
     return { execution: updated.execution, reply: result.text, stopReason: result.stopReason, agentInfo: result.agentInfo }

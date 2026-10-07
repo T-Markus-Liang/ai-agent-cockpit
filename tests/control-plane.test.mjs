@@ -297,6 +297,33 @@ test('native ACP resume+prompt executor is approval-bound and ends in VERIFYING'
   }
 })
 
+test('native ACP resume+prompt executor records non-empty evidence when the model refuses', async () => {
+  const script = `
+    const readline = require('node:readline'); const rl = readline.createInterface({input:process.stdin}); const send = m => process.stdout.write(JSON.stringify(m)+'\\n');
+    rl.on('line', line => { const m=JSON.parse(line); if(m.method==='initialize') send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'fake'},agentCapabilities:{loadSession:true}}}); if(m.method==='session/load') send({jsonrpc:'2.0',id:m.id,result:{configOptions:[]}}); if(m.method==='session/prompt') send({jsonrpc:'2.0',id:m.id,result:{stopReason:'refusal'}}); });
+  `
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'personal-ai-os-native-refusal-'))
+  try {
+    const store = new ControlPlaneStore({ stateDir })
+    const task = await store.createTask({ goal: '继续原生会话（拒答）' }, { idempotencyKey: 'native-refusal-task' })
+    const execution = await store.createExecution(task.task.id, { workerId: 'workbuddy:native', sessionRefId: 'session:workbuddy:native-refusal' }, { idempotencyKey: 'native-refusal-execution' })
+    const plan = nativePromptPlan({ taskId: task.task.id, executionId: execution.execution.id, source: 'fake', nativeSessionId: 'native-refusal', cwd: '/tmp', prompt: '继续' })
+    const approval = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: 'native-refusal-approval' })
+    await store.decideApproval(approval.approval.id, { decision: 'approved', approvedBy: 'test' }, { idempotencyKey: 'native-refusal-decision' })
+    const result = await executeNativeSessionPrompt({ store, taskId: task.task.id, executionId: execution.execution.id, approvalId: approval.approval.id, source: 'fake', nativeSessionId: 'native-refusal', cwd: '/tmp', prompt: '继续', command: process.execPath, args: ['-e', script], idempotencyKey: 'native-refusal-run' })
+    assert.equal(result.reply, '')
+    assert.equal(result.stopReason, 'refusal')
+    assert.equal(result.execution.status, 'verifying')
+    const evidence = (await store.getTask(task.task.id)).evidence
+    assert.equal(evidence.length, 1)
+    assert.equal(typeof evidence[0].summary, 'string')
+    assert.ok(evidence[0].summary.trim().length > 0)
+    assert.equal(evidence[0].summary, 'native ACP prompt returned no text (stopReason=refusal)')
+  } finally {
+    await fs.rm(stateDir, { recursive: true, force: true })
+  }
+})
+
 test('route plan applies capability and policy gates without side effects', async () => {
   const plan = await buildRoutePlan({
     goal: '继续旧代码会话并运行测试',
