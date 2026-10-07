@@ -33,7 +33,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
   {
     name: 'create_task',
     description: '创建控制面 Task；只写入 Personal AI OS 自己的状态。',
-    inputSchema: { type: 'object', required: ['goal', 'idempotencyKey'], properties: { goal: { type: 'string' }, chief: { type: 'string' }, constraints: { type: 'array', items: { type: 'string' } }, acceptanceCriteria: { type: 'array', items: { type: 'string' } }, idempotencyKey: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['goal', 'idempotencyKey'], properties: { goal: { type: 'string' }, chief: { type: 'string' }, sourceRequestId: { type: 'string', pattern: '^[a-f0-9]{64}$' }, constraints: { type: 'array', items: { type: 'string' } }, acceptanceCriteria: { type: 'array', items: { type: 'string' } }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'get_task',

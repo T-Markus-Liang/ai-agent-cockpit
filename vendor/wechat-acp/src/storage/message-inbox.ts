@@ -29,6 +29,8 @@ export const MESSAGE_INBOX_STATUSES = [
   'uncertain',
   'cancelled',
   'failed',
+  'retry_wait',
+  'reply_pending',
 ] as const;
 
 export type MessageInboxStatus = (typeof MESSAGE_INBOX_STATUSES)[number];
@@ -39,6 +41,23 @@ export interface MessageInboxRecord {
   status: MessageInboxStatus;
   receivedAt: number;
   errorKind?: string;
+  execution?: ExecutionCheckpoint;
+}
+
+export interface ExecutionCheckpoint {
+  attempt: number;
+  phase: 'preparing' | 'dispatched' | 'tool_activity' | 'result_ready';
+  sessionId?: string;
+  usedTools?: boolean;
+  resultText?: string;
+  stopReason?: string;
+  retryAt?: number;
+  noticeQueued?: boolean;
+  retryCount?: number;
+  sourceTaskId?: string;
+  processId?: number;
+  groupIds?: string[];
+  resultArchived?: boolean;
 }
 
 interface StoredRecord extends MessageInboxRecord {
@@ -71,6 +90,8 @@ const STATUS_RANK: Record<MessageInboxStatus, number> = {
   done: 4,
   cancelled: 4,
   failed: 4,
+  retry_wait: 1,
+  reply_pending: 3,
 };
 
 const ID_PATTERN = /^[0-9a-f]{64}$/;
@@ -200,6 +221,11 @@ export class MessageInbox {
     if (typeof record.receivedAt !== 'number' || !Number.isFinite(record.receivedAt)) {
       throw new Error(`MessageInbox: corrupt receipt ${id} (receivedAt)`);
     }
+    if (record.execution !== undefined) {
+      const execution = record.execution as ExecutionCheckpoint;
+      if (!execution || !Number.isSafeInteger(execution.attempt) || execution.attempt < 0 || !['preparing', 'dispatched', 'tool_activity', 'result_ready'].includes(execution.phase) || (execution.retryCount !== undefined && (!Number.isSafeInteger(execution.retryCount) || execution.retryCount < 0))) throw new Error('MessageInbox: corrupt execution checkpoint');
+      if ((execution.processId !== undefined && (!Number.isSafeInteger(execution.processId) || execution.processId < 1)) || (execution.usedTools !== undefined && typeof execution.usedTools !== 'boolean') || (execution.retryAt !== undefined && (!Number.isFinite(execution.retryAt) || execution.retryAt < 0)) || (execution.resultText !== undefined && typeof execution.resultText !== 'string') || (execution.groupIds !== undefined && (!Array.isArray(execution.groupIds) || execution.groupIds.length > 50 || !execution.groupIds.includes(id) || execution.groupIds.some(groupId => !ID_PATTERN.test(groupId))))) throw new Error('MessageInbox: corrupt execution evidence');
+    }
   }
 
   async _readRecord(id: string): Promise<StoredRecord | null> {
@@ -223,6 +249,7 @@ export class MessageInbox {
   }
 
   async _writeRecord(record: StoredRecord): Promise<void> {
+    this._validateRecord(record, record.id);
     await this._ready();
     const finalPath = this._recordPath(record.id);
     const tmpPath = join(this.dir, '.tmp-' + randomUUID());
@@ -299,6 +326,7 @@ export class MessageInbox {
     if (record.errorKind !== undefined) {
       out.errorKind = record.errorKind;
     }
+    if (record.execution) out.execution = structuredClone(record.execution);
     return out;
   }
 
@@ -350,7 +378,7 @@ export class MessageInbox {
           return { isNew: false, record: this._toPublic(existing) };
         }
 
-        const pending = existing.status === 'received' || existing.status === 'queued';
+        const pending = ['received', 'queued', 'retry_wait', 'reply_pending'].includes(existing.status);
         if (incomingToken !== null && pending) {
           existing.message = { ...existing.message, context_token: incomingToken };
           existing.updatedAt = Date.now();
@@ -406,6 +434,87 @@ export class MessageInbox {
     });
   }
 
+  /** Journal transitions precede dispatch. Terminal requests cannot be replayed. */
+  checkpoint(id: string, patch: Partial<ExecutionCheckpoint>, beginAttempt = false): Promise<MessageInboxRecord> {
+    return this._enqueue(async () => {
+      await this._ready();
+      if (!ID_PATTERN.test(id)) throw new Error('MessageInbox: invalid receipt id');
+      const lock = await this._acquireLock(id);
+      try {
+        const record = await this._readRecord(id);
+        if (!record) throw new Error('MessageInbox: unknown receipt');
+        if (beginAttempt && TERMINAL_STATUSES.has(record.status)) throw new Error('MessageInbox: cannot restart terminal receipt');
+        const old = record.execution;
+        record.execution = beginAttempt
+          ? { ...patch, attempt: (old?.attempt ?? 0) + 1, phase: 'preparing', retryCount: old?.retryCount ?? 0 }
+          : { attempt: old?.attempt ?? 1, phase: old?.phase ?? 'preparing', ...old, ...patch };
+        if (beginAttempt) record.status = 'running';
+        record.updatedAt = Date.now();
+        await this._writeRecord(record);
+        return this._toPublic(record);
+      } finally { await this._releaseLock(lock); }
+    });
+  }
+
+  /** Only a checkpoint proving no ACP dispatch permits automatic admission retry. */
+  scheduleRetry(id: string, { maxAttempts, delayMs, errorKind }: { maxAttempts: number; delayMs: number; errorKind: string }): Promise<boolean> {
+    return this._enqueue(async () => {
+      await this._ready();
+      if (!ID_PATTERN.test(id)) throw new Error('MessageInbox: invalid receipt id');
+      const lock = await this._acquireLock(id);
+      try {
+        const record = await this._readRecord(id);
+        if (!record) throw new Error('MessageInbox: unknown receipt');
+        if (TERMINAL_STATUSES.has(record.status) || record.status === 'buffered' || record.execution?.phase === 'result_ready') return false;
+        const safe = !record.execution || record.execution.phase === 'preparing';
+        if (!safe || record.execution?.usedTools) return false;
+        const attempt = record.execution?.attempt ?? 0, retryCount = (record.execution?.retryCount ?? 0) + 1;
+        if (retryCount >= maxAttempts) { record.status = 'failed'; }
+        else {
+          record.status = 'retry_wait';
+          record.execution = { attempt, retryCount, phase: 'preparing', retryAt: Date.now() + delayMs };
+        }
+        record.errorKind = errorKind; record.updatedAt = Date.now();
+        await this._writeRecord(record);
+        return record.status === 'retry_wait';
+      } finally { await this._releaseLock(lock); }
+    });
+  }
+
+  async cancelForUser(userId: string, exceptId?: string): Promise<void> {
+    return this._enqueue(async () => {
+      await this._ready();
+      for (const id of await this._listIds()) {
+        if (id === exceptId) continue;
+        const lock = await this._acquireLock(id);
+        try {
+          const record = await this._readRecord(id);
+          if (!record || record.message.from_user_id !== userId || ['done', 'cancelled'].includes(record.status)) continue;
+          record.status = 'cancelled'; record.updatedAt = Date.now(); await this._writeRecord(record);
+        } finally { await this._releaseLock(lock); }
+      }
+    });
+  }
+
+  /** Reconciliation only accepts a matching, completed control-plane result.
+   * It changes delivery state, never dispatches or authorizes an execution. */
+  acceptTaskResult(id: string, proof: { sourceRequestId: string; taskId: string; completed: boolean; text: string }): Promise<void> {
+    return this._enqueue(async () => {
+      await this._ready();
+      if (!ID_PATTERN.test(id) || !ID_PATTERN.test(proof.sourceRequestId) || !proof.completed || !/^task_[A-Za-z0-9-]+$/.test(proof.taskId) || !proof.text.trim()) throw new Error('MessageInbox: invalid result reconciliation');
+      const lock = await this._acquireLock(id);
+      try {
+        const record = await this._readRecord(id); if (!record) throw new Error('MessageInbox: unknown receipt');
+        const primary = record.execution?.groupIds?.[0] ?? id;
+        const root = await this._readRecord(primary);
+        if (proof.sourceRequestId !== primary || !root || root.message.from_user_id !== record.message.from_user_id) throw new Error('MessageInbox: mismatched result ownership');
+        if (['cancelled', 'done'].includes(record.status)) return;
+        record.execution = { ...record.execution, attempt: record.execution?.attempt ?? 0, phase: 'result_ready', resultText: proof.text, stopReason: 'verified_task', sourceTaskId: proof.taskId };
+        record.status = 'reply_pending'; record.updatedAt = Date.now(); await this._writeRecord(record);
+      } finally { await this._releaseLock(lock); }
+    });
+  }
+
   /** List receipts sorted by arrival, optionally filtered by status. */
   async list(options?: { statuses?: readonly MessageInboxStatus[] }): Promise<MessageInboxRecord[]> {
     await this._tail;
@@ -443,11 +552,12 @@ export class MessageInbox {
           const record = await this._readRecord(id);
           if (record === null) continue;
           if (record.status === 'running' || record.status === 'buffered') {
-            record.status = 'uncertain';
+            record.status = record.execution?.phase === 'result_ready' ? 'reply_pending'
+              : record.execution?.phase === 'preparing' && !record.execution.usedTools ? 'queued' : 'uncertain';
             record.updatedAt = Date.now();
             await this._writeRecord(record);
           }
-          if (record.status === 'received' || record.status === 'queued') {
+          if (record.status === 'received' || record.status === 'queued' || (record.status === 'retry_wait' && (record.execution?.retryAt ?? 0) <= Date.now())) {
             pending.push(record);
           }
           if (record.status === 'uncertain') {

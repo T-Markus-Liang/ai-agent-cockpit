@@ -3,8 +3,8 @@ import { useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 
-type Goal = { id: string; specDigest: string; status: string; iterations: number; tokensUsed: number; workspaceDir: string; reason?: string; summary?: string; phase?: string;
-  spec: { title: string; objective: string; sourceDir: string; readPaths: string[]; writePaths: string[]; checks: Array<{ name: string; args: string[] }>; limits: { maxTokens: number; maxIterations: number } };
+type Goal = { id: string; specDigest: string; status: string; iterations: number; tokensUsed: number; workspaceDir: string; reason?: string; summary?: string; phase?: string; recoveryCount?: number;
+  spec: { title: string; objective: string; sourceDir: string; readPaths: string[]; writePaths: string[]; checks: Array<{ name: string; args: string[] }>; limits: { maxTokens: number; maxIterations: number }; recovery?: { enabled: boolean; maxAttempts: number } };
   lastChecks?: Array<{ name: string; exitCode: number | null }>; history?: Array<{ summary: string; artifactRef?: string; review?: { verdict: string; identity?: string }; checks?: Array<{ name: string; exitCode: number | null }> }> }
 const API = 'http://127.0.0.1:4326'
 async function request(endpoint: string, body?: unknown, key?: string) {
@@ -53,13 +53,14 @@ export function ContinuousGoals() {
       <label className="text-xs">批准修改文件（工作副本）<input className="mt-1 w-full rounded border p-2" value={writes} onChange={event => setWrites(event.target.value)} /></label>
       <label className="text-xs">不可修改的验收文件<input className="mt-1 w-full rounded border p-2" value={check} onChange={event => setCheck(event.target.value)} /></label>
       <label className="text-xs">token 上限<input className="mt-1 w-full rounded border p-2" type="number" min={1000} max={1000000} value={tokens} onChange={event => setTokens(Number(event.target.value))} /></label>
-      <p className="text-xs text-muted-foreground sm:col-span-2">默认最多 10 轮、24 小时、连续 3 轮无进展停止。Kimi 规划与复核，官方 DeepSeek V4.1 Flash 提出修改。获批文件内容会发送给这些现有 provider。</p>
+      <p className="text-xs text-muted-foreground sm:col-span-2">默认最多 10 轮、24 小时、连续 3 轮无进展停止；安全检查点支持中断后自动接续，最多 3 次，不提高原预算或权限。Kimi 规划与复核，官方 DeepSeek V4.1 Flash 提出修改。获批文件内容会发送给这些现有 provider。</p>
       <Button disabled={mutate.isPending} onClick={create}>{editingId ? '更新草稿，重新确认范围' : '创建草稿，先查看范围'}</Button>
     </div> : null}
     {mutate.isError || editError ? <p role="alert" className="p-4 text-xs text-danger">{mutate.error?.message ?? editError}</p> : null}
     {query.isError ? <p className="p-4 text-xs text-warning">持续目标服务暂不可用；微信聊天与 Cezar 原生任务不受影响。</p> : !query.data?.goals?.length ? <p className="p-4 text-xs text-muted-foreground">暂无持续目标。新建后确认范围即可启动。</p> : <div className="divide-y">{query.data.goals.map(goal => <div key={goal.id} className="space-y-2 p-4">
       <div className="flex flex-wrap justify-between gap-2"><span className="text-sm font-medium">{goal.spec.title}</span><span className="text-xs">{LABELS[goal.status] ?? goal.status}{goal.status === 'running' ? ` · ${PHASES[goal.phase ?? ''] ?? goal.phase ?? ''}` : ''}</span></div>
       <p className="text-xs text-muted-foreground">{goal.spec.objective}</p><p className="text-xs">第 {goal.iterations} / {goal.spec.limits.maxIterations} 轮 · token {goal.tokensUsed} / {goal.spec.limits.maxTokens}</p>
+      <p className="text-xs text-muted-foreground">{goal.spec.recovery?.enabled ? `中断自恢复：已接续 ${goal.recoveryCount ?? 0} / ${goal.spec.recovery.maxAttempts} 次；先核对范围和检查点` : '旧目标或未开启自恢复：中断后需核对，不自动重跑'}</p>
       {goal.summary ? <p className="text-xs">{goal.summary}</p> : null}{goal.reason ? <p className="text-xs text-warning">{goal.reason}</p> : null}
       <div className="flex flex-wrap gap-2">{goal.status === 'draft' ? <Button size="sm" disabled={mutate.isPending} onClick={() => mutate.mutate({ endpoint: `/api/goals/${goal.id}/grant`, body: { digest: goal.specDigest } })}>确认范围并启动</Button> : null}
         {['ready', 'running'].includes(goal.status) ? <Button size="sm" variant="outline" onClick={() => mutate.mutate({ endpoint: `/api/goals/${goal.id}/pause`, body: {} })}>暂停</Button> : null}

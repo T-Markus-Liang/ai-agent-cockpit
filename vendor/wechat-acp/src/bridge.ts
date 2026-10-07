@@ -21,6 +21,7 @@ import {
   type ResetSessionResult,
   type RuntimeBridgeSetting,
   type PendingMessage,
+  type ReplyMetadata,
   QueuedMessageDeferredError,
   SessionResetError,
 } from "./acp/session.js";
@@ -51,6 +52,8 @@ import {
 } from "./storage/state.js";
 import { ConversationMemoryStore } from "./storage/memory.js";
 import { MessageInbox, type MessageInboxStatus } from './storage/message-inbox.js';
+import { ReplyOutbox } from './storage/reply-outbox.js';
+import { RecoveryLease } from './storage/recovery-lease.js';
 import { WeChatGoalClient } from "./goals.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 
@@ -133,13 +136,27 @@ export class WeChatAcpBridge {
   private log: (msg: string) => void;
   private readonly conversationMemory: ConversationMemoryStore;
   private readonly messageInbox?: MessageInbox;
+  private readonly replyOutbox?: ReplyOutbox;
+  private readonly recoveryLease?: RecoveryLease;
+  private recoveryTimer?: ReturnType<typeof setInterval>;
+  private recoverySweep?: Promise<void>;
+  private readonly incomingInFlight = new Set<string>();
+  private readonly receiptTasks = new Set<Promise<void>>();
+  private readonly outboxDrains = new Map<string, Promise<void>>();
+  private readonly commandReplyIds = new Map<string, string[]>();
+  private readonly acknowledgedReceipts = new Set<string>();
+  private readonly latestContexts = new Map<string, string>();
   private readonly receiptIds = new WeakMap<WeixinMessage, string>();
   private readonly incomingGenerations = new WeakMap<WeixinMessage, number>();
 
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
     this.config = config;
     this.log = log ?? ((msg: string) => console.log(`[wechat-acp] ${msg}`));
-    if (config.inbound?.enabled) this.messageInbox = new MessageInbox({ dir: config.inbound.dir ?? path.join(config.storage.dir, 'incoming-receipts') });
+    if (config.inbound?.enabled || config.recovery?.enabled) this.messageInbox = new MessageInbox({ dir: config.inbound?.dir ?? path.join(config.storage.dir, 'incoming-receipts') });
+    if (config.recovery?.enabled) {
+      this.replyOutbox = new ReplyOutbox({ dir: path.join(config.storage.dir, 'reply-outbox'), maxAttempts: config.recovery.replyMaxAttempts, maxDelayMs: config.recovery.replyMaxDelayMs });
+      this.recoveryLease = new RecoveryLease(config.storage.dir);
+    }
     this.pendingText = new PendingTextRegistry({
       ttlMs: PENDING_TEXT_TTL_MS,
       maxUsers: Math.max(1, config.session.maxConcurrentUsers),
@@ -160,6 +177,12 @@ export class WeChatAcpBridge {
     forceLogin?: boolean;
     renderQrUrl?: (url: string) => void;
   }): Promise<void> {
+    await this.recoveryLease?.acquire();
+    try { await this.startOwned(opts); }
+    finally { await this.recoveryLease?.close(); }
+  }
+
+  private async startOwned(opts?: { forceLogin?: boolean; renderQrUrl?: (url: string) => void }): Promise<void> {
     const { forceLogin, renderQrUrl } = opts ?? {};
 
     // 1. Login or load token
@@ -230,9 +253,13 @@ export class WeChatAcpBridge {
         progressNoticeMs: 10000,
         preparePrompt: async (userId, prompt, pending) => {
           await this.setReceiptStatus(pending?.receiptIds ?? [], 'running');
-          return this.enrichPromptWithMemory(userId, prompt);
+          const enriched = await this.enrichPromptWithMemory(userId, prompt);
+          return this.config.recovery?.enabled && pending?.receiptIds?.[0] ? [...enriched, { type: 'text', text: `[可靠请求关联]\n本请求 sourceRequestId=${pending.receiptIds[0]}。如需创建控制面 Task，请在 create_task 中填写此 sourceRequestId，并以本标识作为幂等键的一部分。先查询已有关联任务，不重复派单；该标识不是执行授权，审批与任务验收门槛仍须满足。` } as const] : enriched;
         },
-        onNotice: (userId, token, text, generation, current) => this.sendAgentReply(userId, token, text, this.requireReplyGeneration(generation), current),
+        onNotice: (userId, token, text, generation, current, metadata) => this.sendAgentReply(userId, token, text, this.requireReplyGeneration(generation), current, metadata),
+        onTurnEvent: this.config.recovery?.enabled ? async (_userId, pending, event) => {
+          for (const id of pending.receiptIds ?? []) await this.messageInbox!.checkpoint(id, { ...event, groupIds: pending.receiptIds, ...(event.phase === 'tool_activity' ? { usedTools: true } : {}) }, event.phase === 'preparing');
+        } : undefined,
         resumePolicy,
         getPersistedSessionId:
           resumePolicy !== "off" && stateFile
@@ -272,6 +299,7 @@ export class WeChatAcpBridge {
           text,
           replyGeneration,
           isSessionCurrent,
+          metadata,
         ) =>
           this.sendAgentReply(
             userId,
@@ -279,6 +307,7 @@ export class WeChatAcpBridge {
             text,
             this.requireReplyGeneration(replyGeneration),
             isSessionCurrent,
+            metadata,
           ),
         onReplyImage: (
           userId,
@@ -339,7 +368,14 @@ export class WeChatAcpBridge {
           ),
       });
       this.sessionManager.start();
+      await this.replyOutbox?.recover();
       await this.recoverIncoming();
+      if (this.replyOutbox) {
+        const sweepMs = Math.max(1000, this.config.recovery?.sweepMs ?? 5000);
+        this.recoveryTimer = setInterval(() => { void this.runRecoverySweep().catch(() => this.log('Recovery sweep deferred; private state retained')); }, sweepMs);
+        this.recoveryTimer.unref();
+        await this.runRecoverySweep();
+      }
 
       if (this.config.storage.injectDir && this.config.storage.stateFile) {
         this.injectionMonitor = new InjectionMonitor({
@@ -383,6 +419,7 @@ export class WeChatAcpBridge {
   async stop(): Promise<void> {
     this.log("Stopping bridge...");
     this.abortController.abort();
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
     const cleanupErrors: unknown[] = [];
     try {
       await this.injectionMonitor?.stop();
@@ -407,7 +444,11 @@ export class WeChatAcpBridge {
     });
     this.log("Bridge stopped");
     await Promise.allSettled([...this.messageHandlingChains.values()]);
+    while (this.receiptTasks.size) await Promise.allSettled([...this.receiptTasks]);
+    await Promise.allSettled([...this.sendChains.values()]);
     await this.messageInbox?.close();
+    await this.replyOutbox?.close();
+    await this.recoveryLease?.close();
     await this.conversationMemory.close();
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, "Bridge cleanup failed");
@@ -418,15 +459,27 @@ export class WeChatAcpBridge {
     if (!this.validIncoming(msg) || !await this.admitIncoming(msg)) return;
     const ids = this.receiptIds.get(msg) ? [this.receiptIds.get(msg)!] : [];
     const command = this.isNativeCommand(msg);
+    const commandKey = JSON.stringify([msg.from_user_id, msg.context_token]);
+    if (command) this.commandReplyIds.set(commandKey, ids);
     const generation = this.incomingGenerations.get(msg);
-    await this.setReceiptStatus(ids, command ? 'running' : 'queued');
+    for (const id of ids) this.incomingInFlight.add(id);
     try {
+      await this.setReceiptStatus(ids, command ? 'running' : 'queued');
       await this.handleAdmittedMessage(msg);
-      if (command) await this.setReceiptStatus(ids, 'done');
+      if (command && this.replyOutbox) {
+        for (const id of ids) await this.messageInbox!.checkpoint(id, { phase: 'result_ready', stopReason: 'control_command' });
+        await this.reconcileResults(ids);
+      } else if (command) await this.setReceiptStatus(ids, 'done');
       else if (generation !== undefined && !this.isMessageGenerationCurrent(msg.from_user_id!, generation)) await this.setReceiptStatus(ids, 'cancelled');
     } catch (error) {
-      await this.setReceiptStatus(ids, command ? 'uncertain' : 'failed', error instanceof Error ? error.name : 'Error');
+      const errorKind = error instanceof Error ? error.name : 'Error';
+      if (this.config.recovery?.enabled && !command && !(error instanceof SessionResetError)) {
+        await this.retainFailedRequest(ids, errorKind);
+      } else await this.setReceiptStatus(ids, error instanceof SessionResetError ? 'cancelled' : command ? 'uncertain' : 'failed', errorKind);
       throw error;
+    } finally {
+      if (this.commandReplyIds.get(commandKey) === ids) this.commandReplyIds.delete(commandKey);
+      for (const id of ids) this.incomingInFlight.delete(id);
     }
   }
 
@@ -500,9 +553,11 @@ export class WeChatAcpBridge {
     const textItem = msg.item_list?.length === 1 ? (msg.item_list[0]?.text_item?.text ?? msg.item_list[0]?.voice_item?.text)?.trim() : undefined;
     if (textItem && /^\/消息(?:\s|$)/.test(textItem)) {
       const records = (await this.messageInbox?.list() ?? []).filter(record => record.message.from_user_id === userId);
-      const labels: Record<string, string> = { received: '已保存', queued: '排队', running: '处理中', uncertain: '未完成/需核对', done: '已处理', buffered: '缓冲', cancelled: '已取消', failed: '未能处理' };
+      const labels: Record<string, string> = { received: '已保存', queued: '排队', retry_wait: '等待自动重试', running: '处理中', uncertain: '中断/待核对', done: '对话已结束', reply_pending: '对话已结束/回复待补发', buffered: '缓冲', cancelled: '已取消', failed: '未能处理/待核对' };
       const latest = records.slice(-5).map(record => `${new Date(record.receivedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}：${labels[record.status] ?? record.status}`);
-      await this.sendReply(userId, contextToken, latest.length ? latest.join('\n') : '暂时还没有新的可靠收件记录。');
+      const outgoing = await this.replyOutbox?.list({ userId, statuses: ['pending', 'sending', 'blocked'] }) ?? [];
+      const blocked = outgoing.filter(row => row.status === 'blocked').length;
+      await this.sendReply(userId, contextToken, (latest.length ? latest.join('\n') : '暂时还没有新的可靠收件记录。') + (outgoing.length ? `\n待补发文本 ${outgoing.length} 段${blocked ? `，其中 ${blocked} 段已到重试上限；发 /acp-more 可重试补发` : '，会自动补发'}` : ''));
       return;
     }
     if (textItem && /^\/目标(?:\s|$)/.test(textItem)) {
@@ -531,6 +586,10 @@ export class WeChatAcpBridge {
 
     const acpNewCommand = this.extractAcpNewCommand(msg);
     if (acpNewCommand) {
+      if (acpNewCommand.trim().split(/\s+/).length === 1 && this.replyOutbox) {
+        await this.replyOutbox.cancelForUser(userId);
+        await this.messageInbox!.cancelForUser(userId, this.receiptIds.get(msg));
+      }
       await this.handleAcpNewCommand(
         acpNewCommand,
         userId,
@@ -621,8 +680,13 @@ export class WeChatAcpBridge {
       await this.setReceiptStatus(ids, 'failed', 'MissingVoiceTranscription');
       return;
     }
-    const busy = this.sessionManager?.getSession(userId)?.processing === true;
-    if (ids.length && (busy || (voice && this.config.inbound?.acknowledgeVoice))) await this.sendAgentReply(userId, contextToken, busy ? '这条消息已保存。上一条还在处理，我会按顺序继续，不会把后发的消息丢掉。' : '语音已转成文字并保存，我来处理。', replyGeneration ?? this.messageGenerationForUser(userId), isCurrent);
+    const capacityBusy = this.config.recovery?.enabled && this.sessionManager?.canEnqueue?.(userId) === false;
+    const busy = capacityBusy || this.sessionManager?.getSession(userId)?.processing === true;
+    if (ids.length && !ids.every(id => this.acknowledgedReceipts.has(id)) && (busy || (voice && this.config.inbound?.acknowledgeVoice))) {
+      for (const id of ids) this.acknowledgedReceipts.add(id);
+      await this.sendAgentReply(userId, contextToken, busy ? '这条消息已保存。上一条还在处理，我会按顺序继续，不会把后发的消息丢掉。' : '语音已转成文字并保存，我来处理。', replyGeneration ?? this.messageGenerationForUser(userId), isCurrent, { kind: 'progress' });
+    }
+    if (capacityBusy || await this.hasUnconfirmedOldProcess(userId)) return;
     const prompt = await weixinMessageToPrompt(
       msg,
       this.config.wechat.cdnBaseUrl,
@@ -648,6 +712,8 @@ export class WeChatAcpBridge {
     if (!this.incomingGenerations.has(msg)) this.incomingGenerations.set(msg, this.messageGenerationForUser(msg.from_user_id!));
     if (!this.messageInbox || this.receiptIds.has(msg)) return true;
     const result = await this.messageInbox.put(msg);
+    this.latestContexts.set(msg.from_user_id!, msg.context_token!);
+    await this.replyOutbox?.refreshContext(msg.from_user_id!, msg.context_token!);
     if (!result.isNew) return false;
     this.receiptIds.set(msg, result.record.id);
     return true;
@@ -670,7 +736,168 @@ export class WeChatAcpBridge {
     const update = (status: MessageInboxStatus, errorKind?: string) => {
       void this.setReceiptStatus(ids, status, errorKind).catch(() => this.log('Receipt final status not confirmed; original retained, never assumed complete'));
     };
+    if (this.config.recovery?.enabled) return {
+      resolve: () => this.trackReceiptTask(this.reconcileResults(ids, true)),
+      reject: error => this.trackReceiptTask(error instanceof QueuedMessageDeferredError
+        ? this.setReceiptStatus(ids, 'queued')
+        : error instanceof SessionResetError || /Cancelled before queued/.test(String(error))
+          ? this.setReceiptStatus(ids, 'cancelled') : this.retainFailedRequest(ids, error instanceof Error ? error.name : 'Error')),
+    };
     return { resolve: () => update('done'), reject: error => update(error instanceof QueuedMessageDeferredError ? 'queued' : error instanceof SessionResetError || /Cancelled before queued/.test(String(error)) ? 'cancelled' : 'uncertain', error instanceof Error ? error.name : 'Error') };
+  }
+
+  private trackReceiptTask(task: Promise<void>): void {
+    this.receiptTasks.add(task);
+    void task.catch(() => this.log('Recovery journal update deferred; request is never assumed completed')).finally(() => this.receiptTasks.delete(task));
+  }
+
+  private async retainFailedRequest(ids: string[], errorKind: string): Promise<void> {
+    if (!this.messageInbox) return;
+    for (const id of ids) {
+      const record = (await this.messageInbox.list()).find(row => row.id === id);
+      if (!record || ['done', 'cancelled', 'failed', 'uncertain'].includes(record.status)) continue;
+      if (record.execution?.phase === 'result_ready') { await this.reconcileResults([id]); continue; }
+      const retryCount = record.execution?.retryCount ?? 0;
+      const retry = await this.messageInbox.scheduleRetry(id, { maxAttempts: this.config.recovery?.maxAttempts ?? 3,
+        delayMs: Math.min(120000, (this.config.recovery?.baseDelayMs ?? 15000) * 2 ** retryCount), errorKind });
+      if (!retry && record.execution && record.execution.phase !== 'preparing') await this.setReceiptStatus([id], 'uncertain', errorKind);
+    }
+  }
+
+  /** A recorded ACP result proves the turn ended: recover output, never rerun tools. */
+  private async reconcileResults(ids: string[], requireResult = false): Promise<void> {
+    if (!this.messageInbox || !this.replyOutbox) return;
+    for (const id of ids) {
+      let record = (await this.messageInbox.list()).find(row => row.id === id);
+      if (!record || ['done', 'cancelled', 'failed', 'uncertain'].includes(record.status)) continue;
+      if (this.sessionManager?.getSession(record.message.from_user_id!)?.activeMessage?.receiptIds?.includes(id)) continue;
+      if (record.execution?.phase !== 'result_ready') { if (requireResult) await this.setReceiptStatus([id], 'uncertain', 'MissingResultCheckpoint'); continue; }
+      if (record.execution.stopReason === 'cancelled') { await this.setReceiptStatus([id], 'cancelled'); continue; }
+      let replies = (await this.replyOutbox.list()).filter(row => row.kind === 'reply' && row.receiptIds.includes(id));
+      const group = record.execution.groupIds?.length ? record.execution.groupIds : [id], primary = group[0]!;
+      const full = record.execution.resultText?.trim() ?? '';
+      const saved = replies.map(row => row.text).join('');
+      const normal = (value: string) => value.replace(/\s+/gu, '');
+      const recoveredId = crypto.createHash('sha256').update(JSON.stringify([record.message.from_user_id, `${primary}:recovered-result:0`])).digest('hex');
+      if (full && normal(full) !== normal(saved) && !replies.some(row => row.id === recoveredId)) {
+        let missing = full;
+        if (normal(full).startsWith(normal(saved))) {
+          let consumed = 0, cut = 0; const length = normal(saved).length;
+          while (cut < full.length && consumed < length) { if (!/\s/u.test(full[cut]!)) consumed++; cut++; }
+          missing = full.slice(cut).trim();
+        } else missing = `补发已结束对话的留存回答（可能包含先前已发部分）：\n${full}`;
+        for (const [index, text] of splitText(missing, TEXT_CHUNK_LIMIT).entries()) if (text.trim()) await this.replyOutbox.put({ userId: record.message.from_user_id!, contextToken: record.message.context_token!, text,
+          receiptIds: group, kind: 'reply', dedupeKey: `${primary}:recovered-result:${index}` });
+        replies = (await this.replyOutbox.list()).filter(row => row.kind === 'reply' && row.receiptIds.includes(id));
+      }
+      if (!replies.length) await this.replyOutbox.put({ userId: record.message.from_user_id!, contextToken: record.message.context_token!, text: '这轮对话已经结束，但没有可确认的文字结果。我保留了请求，暂不重跑已可能执行的操作。', receiptIds: group, kind: 'reply', dedupeKey: `${primary}:empty-result` });
+      replies = (await this.replyOutbox.list()).filter(row => row.kind === 'reply' && row.receiptIds.includes(id));
+      if (full && replies.some(row => row.id === recoveredId) && !record.execution.resultArchived) {
+        await this.conversationMemory.append(record.message.from_user_id!, 'assistant', full);
+        for (const groupId of group) await this.messageInbox.checkpoint(groupId, { resultArchived: true });
+      }
+      record = (await this.messageInbox.list()).find(row => row.id === id);
+      if (!record || ['done', 'cancelled', 'failed', 'uncertain'].includes(record.status)) continue;
+      await this.setReceiptStatus([id], replies.every(row => row.status === 'sent') ? 'done' : 'reply_pending');
+    }
+  }
+
+  private runRecoverySweep(): Promise<void> {
+    if (this.recoverySweep) return this.recoverySweep;
+    const task = this.sweepRecovery(); this.recoverySweep = task;
+    void task.finally(() => { if (this.recoverySweep === task) this.recoverySweep = undefined; }).catch(() => {});
+    return task;
+  }
+
+  private async sweepRecovery(): Promise<void> {
+    if (!this.messageInbox || !this.replyOutbox || this.abortController.signal.aborted) return;
+    const records = await this.messageInbox.list();
+    for (const record of records) {
+      const user = record.message.from_user_id!;
+      const session = this.sessionManager?.getSession(user);
+      const liveIds = [session?.activeMessage, ...(session?.queue ?? [])].flatMap(message => message?.receiptIds ?? []);
+      if (this.incomingInFlight.has(record.id) || liveIds.includes(record.id)) continue;
+      if (record.status === 'reply_pending' || (record.status === 'running' && record.execution?.phase === 'result_ready')) { await this.reconcileResults([record.id]); continue; }
+      if (['received', 'queued', 'retry_wait'].includes(record.status) && (record.execution?.retryAt ?? 0) <= Date.now()) {
+        if (await this.hasUnconfirmedOldProcess(user)) {
+          if (!record.execution?.noticeQueued) {
+            await this.replyOutbox.put({ userId: user, contextToken: record.message.context_token!, text: '这条请求已保存，正在等待旧 Agent 的进程退出，暂不启动重复执行；确认清理后会自动接续。', kind: 'notice', receiptIds: [record.id], dedupeKey: `${record.id}:waiting-old-process` });
+            await this.messageInbox.checkpoint(record.id, { noticeQueued: true });
+          }
+          continue;
+        }
+        if (!this.validIncoming(record.message) || this.isNativeCommand(record.message)) continue;
+        this.receiptIds.set(record.message, record.id); this.incomingGenerations.set(record.message, this.messageGenerationForUser(user));
+        await this.handleMessage(record.message).catch(() => this.log('Admission retry deferred; checkpoint retained'));
+      } else if (['uncertain', 'failed'].includes(record.status)) {
+        if (await this.reconcileLinkedTask(record.id)) { await this.reconcileResults([record.id]); continue; }
+        if (record.execution?.noticeQueued) continue;
+        await this.replyOutbox.put({ userId: user, contextToken: record.message.context_token!, text: '有一条请求中断或未能完成，原文已保留。无法确认已执行到哪一步，我不会整条重跑；已列入待核对，请发 /消息 查看。', receiptIds: [record.id], kind: 'notice', dedupeKey: `${record.id}:needs-review` });
+        await this.messageInbox.checkpoint(record.id, { noticeQueued: true });
+      }
+    }
+    const users = new Set((await this.replyOutbox.list({ statuses: ['pending'] })).map(row => row.userId));
+    // Sending occurs on its own per-user chain; network loss cannot block task admission.
+    for (const user of users) void this.flushReplyOutbox(user).catch(() => this.log('Reply delivery deferred; original text retained'));
+  }
+
+  private async reconcileLinkedTask(receiptId: string): Promise<boolean> {
+    if (!this.config.controlPlaneUrl || !this.messageInbox) return false;
+    try {
+      const record = (await this.messageInbox.list()).find(row => row.id === receiptId);
+      if (!record || ['done', 'cancelled'].includes(record.status)) return false;
+      const sourceRequestId = record?.execution?.groupIds?.[0] ?? receiptId;
+      const base = new URL(this.config.controlPlaneUrl); if (!['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) return false;
+      const query = new URL('/api/control-plane/tasks', base); query.searchParams.set('sourceRequestId', sourceRequestId); query.searchParams.set('limit', '500');
+      const response = await fetch(query, { signal: AbortSignal.timeout(3000) });
+      if (!response.ok) return false;
+      const body = await response.json() as { tasks?: Array<{ id: string; sourceRequestId?: string; status: string; goal: string }> };
+      const matching = body.tasks?.filter(task => task.sourceRequestId === sourceRequestId) ?? [];
+      if (!matching.length || matching.length >= 500 || matching.some(task => task.status !== 'completed')) return false;
+      for (const task of matching) {
+        const detailResponse = await fetch(new URL(`/api/control-plane/tasks/${encodeURIComponent(task.id)}`, base), { signal: AbortSignal.timeout(3000) });
+        if (!detailResponse.ok) return false;
+        const detail = await detailResponse.json() as { task?: typeof task & { completionProof?: { parametersDigest: string; at: string } }; evidence?: Array<{ kind: string; exitCode?: number; verdict?: string }> };
+        if (detail.task?.id !== task.id || detail.task.status !== 'completed' || detail.task.sourceRequestId !== sourceRequestId || !/^sha256:[a-f0-9]{64}$/.test(detail.task.completionProof?.parametersDigest ?? '') || !Number.isFinite(Date.parse(detail.task.completionProof?.at ?? '')) || !detail.evidence?.some(row => row.kind === 'test' && row.exitCode === 0) || !detail.evidence.some(row => row.kind === 'review' && row.verdict === 'passed')) return false;
+      }
+      await this.messageInbox.acceptTaskResult(receiptId, { sourceRequestId, taskId: matching[0]!.id, completed: true,
+        text: `中断后的关联任务已有完成、测试和复核记录，我不再重复执行，现补发结果：\n${matching.map(task => task.goal.slice(0, 600)).join('\n')}` });
+      return true;
+    } catch { return false; }
+  }
+
+  private flushReplyOutbox(userId: string, force = false): Promise<void> {
+    const existing = this.outboxDrains.get(userId); if (existing) return existing;
+    const task = this.queueSendTask(userId, async () => {
+      if (!this.replyOutbox || this.abortController.signal.aborted) return;
+      for (let count = 0; count < 50; count++) {
+        const [record] = await this.replyOutbox.claimDue({ userId, limit: 1, force }); if (!record) break;
+        const receipts = await this.messageInbox?.list() ?? [];
+        if (record.receiptIds.some(id => receipts.some(row => row.id === id && row.status === 'cancelled'))) {
+          await this.replyOutbox.cancelForReceipts(record.receiptIds); continue;
+        }
+        let sent = false;
+        try { sent = await this.sendTextSegment(userId, record.contextToken, record.text, () => !this.abortController.signal.aborted, record.clientId); }
+        catch { /* Only a sanitized kind is recorded, never a credential-bearing body. */ }
+        await this.replyOutbox.settle(record.id, { sent, errorKind: sent ? undefined : 'WeChatDeliveryFailed' });
+        await this.reconcileResults(record.receiptIds);
+        if (!sent) break;
+      }
+    });
+    this.outboxDrains.set(userId, task);
+    void task.finally(() => { if (this.outboxDrains.get(userId) === task) this.outboxDrains.delete(userId); }).catch(() => {});
+    return task;
+  }
+
+  private async hasUnconfirmedOldProcess(userId: string): Promise<boolean> {
+    if (!this.replyOutbox || !this.messageInbox) return false;
+    const owned = this.sessionManager?.getSession(userId)?.agentInfo?.process.pid;
+    for (const record of await this.messageInbox.list()) {
+      const pid = record.execution?.processId;
+      if (record.message.from_user_id !== userId || !['received', 'queued', 'retry_wait', 'running'].includes(record.status) || record.execution?.phase !== 'preparing' || !pid || pid === owned) continue;
+      try { process.kill(pid, 0); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return true; }
+    }
+    return false;
   }
 
   private async recoverIncoming(): Promise<void> {
@@ -679,6 +906,7 @@ export class WeChatAcpBridge {
     this.log(`Durable inbox recovery: pending=${result.pending.length}, uncertain=${result.uncertainCount}`);
     for (const record of result.pending) {
       if (!this.validIncoming(record.message)) continue;
+      if (await this.hasUnconfirmedOldProcess(record.message.from_user_id!)) continue;
       this.receiptIds.set(record.message, record.id);
       this.incomingGenerations.set(record.message, this.messageGenerationForUser(record.message.from_user_id!));
       await this.handleMessage(record.message);
@@ -1268,6 +1496,12 @@ export class WeChatAcpBridge {
     replyGeneration?: number,
     ids: string[] = [],
   ): Promise<void> {
+    if (this.replyOutbox) {
+      await this.replyOutbox.retryBlockedForUser(userId);
+      await this.replyOutbox.refreshContext(userId, contextToken);
+      await this.flushReplyOutbox(userId, true);
+      return;
+    }
     await this.sessionManager!.enqueue(userId, {
       receiptIds: ids,
       completion: this.receiptCompletion(ids),
@@ -1368,6 +1602,7 @@ export class WeChatAcpBridge {
   }
 
   private async sendReply(userId: string, contextToken: string, text: string): Promise<void> {
+    const ids = this.commandReplyIds.get(JSON.stringify([userId, contextToken]));
     // Serialize all replies to the same user behind a per-user promise chain so
     // that segments from separate sendReply calls cannot interleave (issue #38).
     // The stored link swallows errors so one failed reply doesn't break the
@@ -1377,6 +1612,7 @@ export class WeChatAcpBridge {
       this.isMessageGenerationCurrent(userId, generation);
     return this.queueSendTask(userId, () => {
       if (!isCurrent()) return Promise.resolve();
+      if (this.replyOutbox) return this.persistTextReply(userId, contextToken, text, { receiptIds: ids });
       return this.deliverReply(
         userId,
         contextToken,
@@ -1397,6 +1633,7 @@ export class WeChatAcpBridge {
     text: string,
     replyGeneration: number,
     isSessionCurrent: () => boolean = () => true,
+    metadata?: ReplyMetadata,
   ): Promise<void> {
     const generation = this.pendingText.generationForContext(userId, contextToken);
     return this.queueAgentSendTask(
@@ -1406,6 +1643,9 @@ export class WeChatAcpBridge {
         if (!isCurrent()) return;
         await this.conversationMemory.append(userId, "assistant", text);
         if (!isCurrent()) return;
+        if (this.replyOutbox && metadata?.kind !== 'progress') {
+          return this.persistTextReply(userId, contextToken, text, metadata);
+        }
         return this.deliverReply(
           userId,
           contextToken,
@@ -1416,6 +1656,13 @@ export class WeChatAcpBridge {
       },
       isSessionCurrent,
     );
+  }
+
+  private async persistTextReply(userId: string, contextToken: string, text: string, metadata?: ReplyMetadata): Promise<void> {
+    contextToken = this.latestContexts.get(userId) ?? contextToken;
+    for (const [index, segment] of splitText(text, TEXT_CHUNK_LIMIT).entries()) if (segment.trim()) await this.replyOutbox!.put({ userId, contextToken, text: segment,
+      receiptIds: metadata?.receiptIds ?? [], kind: metadata?.kind === 'notice' ? 'notice' : 'reply', dedupeKey: metadata?.dedupeKey ? `${metadata.dedupeKey}:segment:${index}` : undefined });
+    void this.flushReplyOutbox(userId).catch(() => this.log('Reply queued for durable retry'));
   }
 
   private queueAgentSendTask(
@@ -1511,8 +1758,9 @@ export class WeChatAcpBridge {
     contextToken: string,
     segment: string,
     isCurrent: () => boolean = () => true,
+    persistentClientId?: string,
   ): Promise<boolean> {
-    const segmentClientId = `wechat-acp-${crypto.randomUUID()}`;
+    const segmentClientId = persistentClientId ?? `wechat-acp-${crypto.randomUUID()}`;
     for (let attempt = 1; attempt <= SEGMENT_SEND_MAX_ATTEMPTS; attempt++) {
       if (!isCurrent()) return false;
       try {

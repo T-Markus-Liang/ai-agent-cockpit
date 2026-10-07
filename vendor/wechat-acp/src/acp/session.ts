@@ -50,6 +50,7 @@ export interface PendingMessage {
   preparedPrompt?: acp.ContentBlock[];
   receiptIds?: string[];
   automaticRetryCount?: number;
+  replySequence?: number;
   contextToken: string;
   replyGeneration?: number;
   completion?: {
@@ -121,6 +122,7 @@ export interface SessionManagerOpts {
   progressNoticeMs?: number;
   preparePrompt?: (userId: string, prompt: acp.ContentBlock[], pending?: PendingMessage) => Promise<acp.ContentBlock[]>;
   onNotice?: SessionManagerOpts['onReply'];
+  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'dispatched' | 'tool_activity' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string }) => Promise<void>;
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -145,6 +147,7 @@ export interface SessionManagerOpts {
     text: string,
     replyGeneration?: number,
     isSessionCurrent?: () => boolean,
+    metadata?: ReplyMetadata,
   ) => Promise<void>;
   onReplyImage?: (
     userId: string,
@@ -175,6 +178,8 @@ export interface SessionManagerOpts {
     isSessionCurrent?: () => boolean,
   ) => Promise<void>;
 }
+
+export interface ReplyMetadata { receiptIds?: string[]; kind?: 'reply' | 'notice' | 'progress'; dedupeKey?: string }
 
 interface PendingSessionCreation {
   promise: Promise<UserSession>;
@@ -1180,8 +1185,13 @@ export class SessionManager {
                   text,
                   pending.replyGeneration,
                   isSessionCurrent,
+                  this.replyMetadata(pending),
                 ),
               ),
+            onToolActivity: async () => {
+              if (!this.isCurrentSession(session)) throw new SessionResetError();
+              await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'tool_activity', sessionId: session.agentInfo.sessionId });
+            },
             ...(this.opts.onReplyImage
               ? {
                   onImageFlush: (image: AgentImage) =>
@@ -1253,12 +1263,14 @@ export class SessionManager {
           ).catch(() => {});
 
           // Send ACP prompt
+          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'preparing', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid });
           pending.preparedPrompt ??= this.opts.preparePrompt
             ? await this.opts.preparePrompt(session.userId, pending.prompt, pending)
             : pending.prompt;
           if (!this.isCurrentSession(session)) continue;
           this.opts.log(`[${session.userId}] Sending prompt to agent...`);
           session.promptDispatched = true;
+          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'dispatched', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid });
           const result = await this.awaitAgentOperation(
             session,
             session.agentInfo.connection.prompt({
@@ -1273,6 +1285,8 @@ export class SessionManager {
             continue;
           }
           await this.persistSessionId(session);
+
+          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'result_ready', sessionId: session.agentInfo.sessionId, resultText: session.client.agentResponseText, stopReason: result.stopReason });
 
           // Collect accumulated text
           let replyText = await session.client.flush();
@@ -1310,6 +1324,7 @@ export class SessionManager {
               replyText,
               pending.replyGeneration,
               isSessionCurrent,
+              this.replyMetadata(pending),
             );
           } else if (!session.client.hasProducedMessage) {
             // The turn ended without the agent ever producing a textual reply
@@ -1324,6 +1339,7 @@ export class SessionManager {
               emptyTurnNotice(result.stopReason),
               pending.replyGeneration,
               isSessionCurrent,
+              this.replyMetadata(pending),
             );
           }
 
@@ -1533,6 +1549,10 @@ export class SessionManager {
     }
   }
 
+  canEnqueue(userId: string): boolean {
+    return this.sessions.has(userId) || this.pendingSessions.has(userId) || this.hasSessionCapacity(userId) || [...this.sessions.values()].some(session => !session.processing);
+  }
+
   private drainRetained(session: UserSession): void {
     const retained = this.retainedMessages.get(session.userId);
     if (!retained) return;
@@ -1561,7 +1581,12 @@ export class SessionManager {
     if (!current()) return Promise.resolve();
     const retained = this.retainedMessages.get(session.userId)?.messages;
     const context = this.sessions.get(session.userId)?.contextToken ?? retained?.[retained.length - 1]?.contextToken ?? session.contextToken;
-    return (this.opts.onNotice ?? this.opts.onReply)(session.userId, context, text, pending.replyGeneration, current);
+    return (this.opts.onNotice ?? this.opts.onReply)(session.userId, context, text, pending.replyGeneration, current, this.replyMetadata(pending, activeOnly ? 'progress' : 'notice'));
+  }
+
+  private replyMetadata(pending: PendingMessage, kind: ReplyMetadata['kind'] = 'reply'): ReplyMetadata {
+    const sequence = pending.replySequence ?? 0; pending.replySequence = sequence + 1;
+    return { receiptIds: pending.receiptIds, kind, dedupeKey: pending.receiptIds?.length ? `${pending.receiptIds.join(':')}:${kind}:${sequence}` : undefined };
   }
 
   private isCurrentSession(session: UserSession): boolean {

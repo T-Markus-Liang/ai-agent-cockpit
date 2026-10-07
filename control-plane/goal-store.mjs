@@ -39,7 +39,9 @@ export function validateGoalSpec(input) {
     if (!bounds[key] || !Number.isInteger(value) || value < bounds[key][0] || value > bounds[key][1]) fail('INVALID_LIMITS', `invalid ${key}`, 400)
     limits[key] = value
   }
-  return { title, objective, sourceDir: path.resolve(sourceDir), readPaths, writePaths, checks, limits }
+  const recovery = input.recovery ?? { enabled: true, maxAttempts: 3 }
+  if (!recovery || Object.keys(recovery).some(key => !['enabled', 'maxAttempts'].includes(key)) || typeof recovery.enabled !== 'boolean' || !Number.isInteger(recovery.maxAttempts) || recovery.maxAttempts < 1 || recovery.maxAttempts > 10) fail('INVALID_RECOVERY', 'recovery requires enabled and maxAttempts 1..10', 400)
+  return { title, objective, sourceDir: path.resolve(sourceDir), readPaths, writePaths, checks, limits, recovery: { enabled: recovery.enabled, maxAttempts: recovery.maxAttempts } }
 }
 
 export class GoalStore {
@@ -154,7 +156,7 @@ export class GoalStore {
       goal.archives = [...(goal.archives ?? []), { generation: goal.generation, spec: goal.spec, history: goal.history, artifactRef: goal.artifactRef }].slice(-10)
       goal.generation++; goal.spec = spec; goal.specDigest = digest(spec); goal.workspaceDir = path.join(this.stateDir, 'workspaces', `${id}-v${goal.generation}`)
       goal.status = 'draft'; goal.iterations = 0; goal.tokensUsed = 0; goal.noProgress = 0; delete goal.grant; delete goal.lease
-      goal.history = []; for (const field of ['summary', 'reason', 'lastChecks', 'artifactRef', 'taskId', 'phase']) delete goal[field]
+      goal.history = []; for (const field of ['summary', 'reason', 'lastChecks', 'artifactRef', 'taskId', 'phase', 'resumeCheckpoint', 'recoveryCount', 'needsRecovery']) delete goal[field]
       this.event(state, goal, 'revised'); return goal
     })
   }
@@ -175,9 +177,10 @@ export class GoalStore {
     })
   }
   async heartbeat(id, token) { return this.mutate(state => { const goal = this.item(state, id); this.lease(goal, token); goal.lease.expiresAt = Date.now() + 15000; goal.heartbeatAt = new Date().toISOString(); return goal }) }
-  async interrupt(id, token, reason) { return this.mutate(state => { const goal = this.item(state, id); if (goal.status !== 'running' || goal.lease?.token !== token) fail('STALE_LEASE', 'goal no longer belongs to this iteration'); goal.status = 'waiting'; goal.reason = String(reason).slice(0, 500); delete goal.lease; this.event(state, goal, 'interrupted'); return goal }) }
+  async interrupt(id, token, reason) { return this.mutate(state => { const goal = this.item(state, id); if (goal.status !== 'running' || goal.lease?.token !== token) fail('STALE_LEASE', 'goal no longer belongs to this iteration'); goal.status = 'waiting'; goal.needsRecovery = true; goal.reason = String(reason).slice(0, 500); delete goal.lease; this.event(state, goal, 'interrupted'); return goal }) }
   async checkpoint(id, token, patch) {
-    if (Object.keys(patch).some(key => !['phase', 'artifactRef', 'summary', 'taskId', 'lastChecks'].includes(key))) fail('CHECKPOINT_SCOPE', 'checkpoint cannot change permissions or budget', 403)
+    if (Object.keys(patch).some(key => !['phase', 'artifactRef', 'summary', 'taskId', 'lastChecks', 'resumeCheckpoint'].includes(key))) fail('CHECKPOINT_SCOPE', 'checkpoint cannot change permissions or budget', 403)
+    if (patch.resumeCheckpoint && JSON.stringify(patch.resumeCheckpoint).length > 2500000) fail('CHECKPOINT_SIZE', 'checkpoint exceeds allowed size')
     return this.mutate(state => { const goal = this.item(state, id); this.lease(goal, token); Object.assign(goal, copy(patch)); this.event(state, goal, 'checkpoint'); return goal })
   }
   async withLease(id, token, callback) { return this.mutate(async state => { const goal = this.item(state, id); this.lease(goal, token); return callback(copy(goal)) }) }
@@ -194,6 +197,8 @@ export class GoalStore {
     return this.mutate(state => {
       const goal = this.item(state, id); this.lease(goal, token)
       goal.summary = String(result.summary ?? '').slice(0, 1500)
+      if (!result.retainCheckpoint) delete goal.resumeCheckpoint
+      delete goal.needsRecovery
       if (result.artifactRef) goal.artifactRef = result.artifactRef
       if (result.checks) goal.lastChecks = copy(result.checks)
       goal.noProgress = result.progress ? 0 : goal.noProgress + 1
@@ -205,5 +210,33 @@ export class GoalStore {
       this.event(state, goal, 'settled'); return goal
     })
   }
-  async recover() { return this.mutate(state => { let count = 0; for (const goal of Object.values(state.goals)) { if (goal.status === 'running') { goal.status = 'waiting'; goal.reason = '服务重启，未完成执行需要核对后恢复'; delete goal.lease; this.event(state, goal, 'recovered'); count++ } } return { recovered: count } }) }
+  async recover() {
+    return this.mutate(state => {
+      let count = 0, resumed = 0
+      for (const goal of Object.values(state.goals)) {
+        if (goal.status === 'running') {
+          const ownerPid = Number(/^daemon:(\d+)(?::|$)/.exec(goal.lease?.owner ?? '')?.[1])
+          if (ownerPid > 0) { try { process.kill(ownerPid, 0); continue } catch (error) { if (error.code !== 'ESRCH') continue } }
+          goal.status = 'waiting'; goal.needsRecovery = true; goal.reason = '执行中断，正在核对检查点'; delete goal.lease; count++
+        }
+        if (goal.status !== 'waiting' || !goal.needsRecovery) continue
+        const cp = goal.resumeCheckpoint
+        const safePhase = ['planning', 'planner', 'worker'].includes(goal.phase)
+          || (['applying', 'reviewer'].includes(goal.phase) && cp?.proposal && cp.specDigest === goal.specDigest && cp.generation === goal.generation)
+          || (goal.phase === 'verifying' && cp?.checks && cp.afterArtifactRef && cp.specDigest === goal.specDigest && cp.generation === goal.generation)
+        const allowed = goal.spec.recovery?.enabled && !state.globalPaused && !this.permitted(goal) && (goal.recoveryCount ?? 0) < goal.spec.recovery.maxAttempts && safePhase
+        if (allowed) { goal.status = 'ready'; goal.nextWakeAt = Date.now(); goal.recoveryCount = (goal.recoveryCount ?? 0) + 1; goal.reason = ''; delete goal.needsRecovery; resumed++; this.event(state, goal, 'auto-recovery-ready') }
+        else { goal.reason = '中断已保存：范围、预算、暂停或执行证据不满足安全恢复条件'; delete goal.needsRecovery; this.event(state, goal, 'recovery-needs-review') }
+      }
+      return { recovered: count, resumed }
+    })
+  }
+
+  async reconcileCompleted(id, proof) {
+    return this.mutate(state => {
+      const goal = this.item(state, id)
+      if (!goal.spec.recovery?.enabled || !['running', 'waiting', 'ready'].includes(goal.status) || state.globalPaused || proof.generation !== goal.generation || proof.specDigest !== goal.specDigest || proof.taskId !== goal.taskId || !proof.completed || goal.artifactRef !== proof.artifactRef || !goal.grant || goal.grant.digest !== goal.specDigest || goal.grant.generation !== goal.generation || !Number.isFinite(Date.parse(proof.completedAt)) || Date.parse(proof.completedAt) > Date.parse(goal.grant.expiresAt)) fail('RECOVERY_PROOF', 'completed task does not match the current goal grant')
+      goal.status = 'complete'; goal.summary = '已核对中断前的任务完成记录与当前副本指纹；没有重复执行'; delete goal.lease; delete goal.needsRecovery; delete goal.resumeCheckpoint; this.event(state, goal, 'completed-reconciled'); return goal
+    })
+  }
 }

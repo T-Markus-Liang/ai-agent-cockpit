@@ -5,6 +5,14 @@
     "enabled": true,
     "acknowledgeVoice": true
   },
+  "recovery": {
+    "enabled": true,
+    "sweepMs": 5000,
+    "maxAttempts": 3,
+    "baseDelayMs": 15000,
+    "replyMaxAttempts": 96,
+    "replyMaxDelayMs": 900000
+  },
   "goals": {
     "url": "http://127.0.0.1:4326",
     "tokenFile": "/Users/markus/.local/state/personal-ai-os/goals/api-token"

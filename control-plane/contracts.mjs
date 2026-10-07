@@ -94,6 +94,8 @@ function base(idValue, prefix) {
 
 export function createTask(input = {}) {
   const now = new Date().toISOString()
+  const sourceRequestId = string(input.sourceRequestId, 'sourceRequestId', { optional: true })
+  if (sourceRequestId !== undefined && !/^[a-f0-9]{64}$/.test(sourceRequestId)) throw new ContractError('must be an opaque receipt id', ['sourceRequestId'])
   const task = {
     contractVersion: CONTRACT_VERSION,
     type: 'Task',
@@ -106,6 +108,7 @@ export function createTask(input = {}) {
     executionIds: list(input.executionIds, 'executionIds'),
     createdAt: timestamp(input.createdAt ?? now, 'createdAt'),
     updatedAt: timestamp(input.updatedAt ?? now, 'updatedAt'),
+    ...(sourceRequestId ? { sourceRequestId } : {}),
   }
   return task
 }

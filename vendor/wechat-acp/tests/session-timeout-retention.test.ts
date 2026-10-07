@@ -137,14 +137,15 @@ test('explicit reset during timeout cleanup discards retained work and suppresse
 
 test('hung ACP cancellation is bounded so later queued work can resume', { timeout: 5000 }, async () => {
   let completed = false;
+  let finish!: () => void; const secondDone = new Promise<void>(resolve => { finish = resolve; });
   const manager = new SessionManager({ agentCommand: 'unused', agentArgs: [], agentCwd: process.cwd(), maxConcurrentUsers: 1, idleTimeoutMs: 0,
     promptTimeoutMs: 15, showThoughts: false, killAgentProcess: async () => {}, sendTyping: async () => {}, log: () => {}, onReply: async () => {} });
   const first = session('first', async () => new Promise(() => {})); first.processing = true;
   first.agentInfo.connection.cancel = async () => new Promise(() => {});
-  first.queue = [{ prompt: [], contextToken: 'first' }, { prompt: [], contextToken: 'second', completion: { resolve: () => { completed = true; }, reject: () => assert.fail() } }];
+  first.queue = [{ prompt: [], contextToken: 'first' }, { prompt: [], contextToken: 'second', completion: { resolve: () => { completed = true; finish(); }, reject: () => assert.fail() } }];
   const internal = manager as unknown as { sessions: Map<string, UserSession>; createSession: () => Promise<UserSession>; processQueue: (s: UserSession) => Promise<void> };
   internal.sessions.set(first.userId, first); internal.createSession = async () => session('replacement', async () => ({ stopReason: 'end_turn' }));
-  try { await within(internal.processQueue(first), 3500); assert.ok(completed); } finally { await manager.stop(); }
+  try { await within(internal.processQueue(first), 3500); await within(secondDone); assert.ok(completed); } finally { await manager.stop(); }
 });
 
 test('a delayed progress notice becomes invalid as soon as its active turn finishes', async () => {

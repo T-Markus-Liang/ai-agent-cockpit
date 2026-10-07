@@ -283,6 +283,7 @@ export interface WeChatAcpClientOpts {
   onFileFlush?: (file: AgentFile) => Promise<void>;
   resolveResourceLink?: (link: AgentResourceLink) => Promise<AgentFile | null>;
   onConfigOptionsUpdate?: (configOptions: acp.SessionConfigOption[]) => void;
+  onToolActivity?: () => Promise<void>;
   log: (msg: string) => void;
   showThoughts: boolean;
   showDiffs?: boolean;
@@ -306,6 +307,7 @@ interface TurnState {
   thoughtChunks: string[];
   producedMessage: boolean;
   usedTools: boolean;
+  nativeText: string[];
   lastTypingAt: number;
   deliveredResourceLinks: Set<string>;
 }
@@ -317,6 +319,7 @@ function freshTurn(opts: WeChatAcpClientOpts): TurnState {
     thoughtChunks: [],
     producedMessage: false,
     usedTools: false,
+    nativeText: [],
     lastTypingAt: 0,
     deliveredResourceLinks: new Set(),
   };
@@ -343,12 +346,14 @@ export class WeChatAcpClient implements acp.Client {
     return this.turn.producedMessage;
   }
   get hasUsedTools(): boolean { return this.turn.usedTools; }
+  get agentResponseText(): string { return this.turn.nativeText.join(''); }
 
   /** Reset the produced-message flag on the current turn. Exposed for tests;
    * production code starts turns via beginTurn, which creates fresh state. */
   newTurn(): void {
     this.turn.producedMessage = false;
     this.turn.usedTools = false;
+    this.turn.nativeText = [];
   }
 
   constructor(opts: WeChatAcpClientOpts) {
@@ -372,6 +377,7 @@ export class WeChatAcpClient implements acp.Client {
       sendTyping: () => Promise<void>;
       onThoughtFlush: (text: string) => Promise<void>;
       onMessageFlush: (text: string) => Promise<void>;
+      onToolActivity?: () => Promise<void>;
       onImageFlush?: (image: AgentImage) => Promise<void>;
       onAudioFlush?: (audio: AgentAudio) => Promise<void>;
       onFileFlush?: (file: AgentFile) => Promise<void>;
@@ -392,6 +398,7 @@ export class WeChatAcpClient implements acp.Client {
         sendTyping: callbacks.sendTyping,
         onThoughtFlush: callbacks.onThoughtFlush,
         onMessageFlush: callbacks.onMessageFlush,
+        onToolActivity: callbacks.onToolActivity,
         ...(callbacks.onImageFlush ? { onImageFlush: callbacks.onImageFlush } : {}),
         ...(callbacks.onAudioFlush ? { onAudioFlush: callbacks.onAudioFlush } : {}),
         ...(callbacks.onFileFlush ? { onFileFlush: callbacks.onFileFlush } : {}),
@@ -427,6 +434,8 @@ export class WeChatAcpClient implements acp.Client {
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
     this.turn.usedTools = true;
+    try { await this.turn.opts.onToolActivity?.(); }
+    catch { return { outcome: { outcome: 'cancelled' } }; }
     // Auto-allow: find first "allow" option
     const allowOpt = params.options.find(
       (o) => o.kind === "allow_once" || o.kind === "allow_always",
@@ -467,9 +476,12 @@ export class WeChatAcpClient implements acp.Client {
     const turn = this.turn;
     const suppressed = this.suppressSessionUpdates;
     if (!suppressed && ['tool_call', 'tool_call_update'].includes(params.update.sessionUpdate)) turn.usedTools = true;
-    return this.enqueue(() =>
-      suppressed ? Promise.resolve() : this.handleSessionUpdate(params, turn),
-    );
+    if (!suppressed && params.update.sessionUpdate === 'agent_message_chunk' && params.update.content.type === 'text') turn.nativeText.push(params.update.content.text);
+    return this.enqueue(async () => {
+      if (suppressed) return;
+      if (['tool_call', 'tool_call_update'].includes(params.update.sessionUpdate)) await turn.opts.onToolActivity?.();
+      await this.handleSessionUpdate(params, turn);
+    });
   }
 
   private async handleSessionUpdate(

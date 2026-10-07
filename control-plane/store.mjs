@@ -274,10 +274,11 @@ export class ControlPlaneStore {
     })
   }
 
-  async listTasks({ status, limit } = {}) {
+  async listTasks({ status, limit, sourceRequestId } = {}) {
     const state = await this.read()
     const tasks = Object.values(state.tasks)
       .filter((task) => !status || task.status === status)
+      .filter((task) => !sourceRequestId || task.sourceRequestId === sourceRequestId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, safeLimit(limit))
     return tasks

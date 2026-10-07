@@ -1,6 +1,6 @@
 {
   "name": "personal-ai-os",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "Personal AI OS control plane for local agent sessions, WeChat entry and Cezar cockpit",
@@ -16,6 +16,7 @@
     "test:memory-live": "node scripts/test-memory-live.mjs",
     "test:memory-kimi": "node scripts/test-memory-kimi.mjs",
     "test:voice-live": "node scripts/test-wechat-voice-live.mjs",
+    "test:goal-recovery-live": "node scripts/test-goal-recovery-live.mjs",
     "test:memory-recovery": "MEMORY_RECOVERY_TEST=1 node scripts/test-memory-recovery.mjs",
     "eval:control-plane": "node evals/control-plane-regression.mjs",
     "test:control-plane": "node --test tests/control-plane.test.mjs tests/control-plane-http.test.mjs"

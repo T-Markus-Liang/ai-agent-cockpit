@@ -51,7 +51,7 @@ export async function createGoalServer({ stateDir, goals = new GoalStore({ state
       const url = new URL(req.url, 'http://127.0.0.1')
       if (req.method === 'GET' && url.pathname === '/health') {
         const items = await goals.list()
-        return respond(res, 200, { status: 'ok', service: 'personal-ai-os-goals', version: '0.2.0', active: engine.active.size,
+        return respond(res, 200, { status: 'ok', service: 'personal-ai-os-goals', version: '0.2.2', active: engine.active.size,
           goalCount: items.length, sandbox: 'macOS-seatbelt', mode: 'isolated-proposal-workspace', wechatOwnerBound: Boolean(owner) }, origin)
       }
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
@@ -63,7 +63,7 @@ export async function createGoalServer({ stateDir, goals = new GoalStore({ state
       if (Buffer.byteLength(supplied) !== Buffer.byteLength(expected) || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) throw new GoalError('AUTH_REQUIRED', 'goal API authentication required', 401)
       const actor = req.headers['x-goal-actor'] ?? 'local'
       if (actor !== 'local' && (!owner || actor !== owner)) throw new GoalError('OWNER_REQUIRED', 'only the bound WeChat owner may manage goals', 403)
-      if (req.method === 'GET' && url.pathname === '/api/goals') return respond(res, 200, { goals: await goals.list(), paused: await goals.isPaused(), version: '0.2.0' }, origin)
+      if (req.method === 'GET' && url.pathname === '/api/goals') return respond(res, 200, { goals: await goals.list(), paused: await goals.isPaused(), version: '0.2.2' }, origin)
       if (req.method === 'POST' && ['/api/goals/pause-all', '/api/goals/resume-all'].includes(url.pathname)) {
         const action = url.pathname.endsWith('pause-all') ? 'pause' : 'resume'
         const result = await goals.controlAll(action)

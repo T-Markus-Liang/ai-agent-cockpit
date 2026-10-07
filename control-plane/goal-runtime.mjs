@@ -1,13 +1,16 @@
 import { GoalAI } from './goal-ai.mjs'
 import { workspaceState, applyProposal, runChecks } from './goal-workspace.mjs'
+import crypto from 'node:crypto'
 
 /** Persistent scheduler. Agents propose; this process owns file and evidence writes. */
 export class GoalRuntime {
   constructor({ goals, tasks, ai = new GoalAI(), checks = runChecks, tickMs = 1000 } = {}) {
     this.goals = goals; this.tasks = tasks; this.ai = ai; this.checks = checks; this.tickMs = tickMs
     this.active = new Map(); this.closed = false; this.ticking = false
+    this.owner = `daemon:${process.pid}:${crypto.randomUUID()}`
   }
   async start() {
+    await this.reconcileCompleted()
     await this.goals.recover()
     this.timer = setInterval(() => { void this.tick() }, this.tickMs)
     await this.tick()
@@ -17,9 +20,11 @@ export class GoalRuntime {
     this.ticking = true
     try {
       if (await this.goals.isPaused()) return
+      await this.reconcileCompleted()
+      if ((await this.goals.list()).some(goal => goal.status === 'running' || (goal.status === 'waiting' && goal.needsRecovery))) await this.goals.recover()
       const next = (await this.goals.list()).find(goal => goal.status === 'ready' && Number(goal.nextWakeAt ?? 0) <= Date.now())
       if (!next) return
-      const goal = await this.goals.claim(next.id, { owner: `daemon:${process.pid}`, leaseMs: 15000 })
+      const goal = await this.goals.claim(next.id, { owner: this.owner, leaseMs: 15000 })
       if (!goal || goal.status !== 'running') return
       const controller = new AbortController()
       const job = this.run(goal, controller).finally(() => this.active.delete(goal.id))
@@ -32,6 +37,18 @@ export class GoalRuntime {
     this.closed = true; clearInterval(this.timer)
     for (const { controller } of this.active.values()) controller.abort(new Error('goal runtime stopping'))
     await Promise.allSettled([...this.active.values()].map(item => item.job))
+  }
+  async reconcileCompleted() {
+    for (const goal of await this.goals.list()) {
+      if (!goal.spec.recovery?.enabled || !goal.taskId || !goal.artifactRef || !['running', 'waiting', 'ready'].includes(goal.status)) continue
+      try {
+        const { task } = await this.tasks.getTask(goal.taskId)
+        if (task.status !== 'completed' || !/^sha256:[a-f0-9]{64}$/.test(task.completionProof?.parametersDigest ?? '') || !task.completionProof?.at) continue
+        const current = await workspaceState(goal)
+        if (current.artifactRef !== goal.artifactRef) continue
+        await this.goals.reconcileCompleted(goal.id, { generation: goal.generation, specDigest: goal.specDigest, taskId: task.id, artifactRef: current.artifactRef, completed: true, completedAt: task.completionProof.at })
+      } catch { /* Missing or mismatched evidence never causes execution or completion. */ }
+    }
   }
   async run(goal, controller) {
     const token = goal.lease.token
@@ -48,26 +65,41 @@ export class GoalRuntime {
     }
     try {
       const before = await workspaceState(goal)
+      const saved = goal.resumeCheckpoint
+      const restoring = saved?.proposal && saved.generation === goal.generation && saved.specDigest === goal.specDigest
+      if (restoring) {
+        if (!Array.isArray(saved.beforeFiles) || !Array.isArray(saved.proposal.files) || typeof saved.writerIdentity !== 'string') throw new Error('CHECKPOINT_CONFLICT: invalid saved proposal provenance')
+        for (const file of before.files) {
+          const original = saved.beforeFiles?.find(item => item.path === file.path)
+          const proposed = saved.proposal.files?.find(item => item.path === file.path)
+          if (!original || (file.content !== original.content && (!file.writable || file.content !== proposed?.content))) throw new Error('CHECKPOINT_CONFLICT: workspace changed outside the saved proposal')
+        }
+      }
+      let checkpoint = restoring ? saved : { generation: goal.generation, specDigest: goal.specDigest, beforeFiles: before.files }
       const common = { objective: goal.spec.objective, writePaths: goal.spec.writePaths, checks: goal.spec.checks, files: before.files,
         priorSummary: goal.summary, priorChecks: goal.lastChecks, constraints: 'Only approved files in this isolated workspace; acceptance files cannot change. No external messages, deployment or credentials.' }
       const { task } = await this.tasks.createTask({ goal: goal.spec.objective, chief: 'kimi/planner', acceptanceCriteria: goal.spec.checks.map(check => check.name) }, { idempotencyKey: key('task') })
       taskId = task.id
       await this.goals.checkpoint(goal.id, token, { taskId })
-      const plan = await call('planner', common)
+      const plan = restoring ? { result: { instruction: '接续已保存且范围匹配的提案，不再次派发 Worker' } } : await call('planner', common)
       if (typeof plan.result.instruction !== 'string' || !plan.result.instruction.trim()) throw new Error('chief returned no usable next step')
-      const { execution } = await this.tasks.createExecution(taskId, { workerId: 'deepseek-official/deepseek-flash', artifactRef: before.artifactRef }, { idempotencyKey: key('worker') })
+      const { execution } = await this.tasks.createExecution(taskId, { workerId: restoring ? 'checkpoint-recovery/controller' : 'deepseek-official/deepseek-flash', artifactRef: before.artifactRef }, { idempotencyKey: key('worker') })
       workerId = execution.id
       await this.tasks.updateExecutionStatus(workerId, { status: 'running' }, { idempotencyKey: key('working') })
-      const proposal = await call('worker', { ...common, instruction: plan.result.instruction })
-      await phase('applying')
-      await this.goals.withLease(goal.id, token, () => applyProposal(goal, proposal.result))
+      const proposal = restoring ? { result: saved.proposal, identity: saved.writerIdentity } : await call('worker', { ...common, instruction: plan.result.instruction })
+      checkpoint = { ...checkpoint, proposal: proposal.result, writerIdentity: proposal.identity }
+      await this.goals.checkpoint(goal.id, token, { phase: 'applying', resumeCheckpoint: checkpoint })
+      const pendingProposal = restoring ? { ...proposal.result, files: proposal.result.files.filter(file => before.files.find(current => current.path === file.path)?.content !== file.content) } : proposal.result
+      await this.goals.withLease(goal.id, token, () => applyProposal(goal, pendingProposal))
       const after = await workspaceState(goal)
       await this.tasks.updateExecutionStatus(workerId, { status: 'verifying', artifactRef: after.artifactRef }, { idempotencyKey: key('verifying') })
-      await this.goals.checkpoint(goal.id, token, { phase: 'verifying', artifactRef: after.artifactRef })
+      checkpoint = { ...checkpoint, afterArtifactRef: after.artifactRef }; delete checkpoint.checks
+      await this.goals.checkpoint(goal.id, token, { phase: 'verifying', artifactRef: after.artifactRef, resumeCheckpoint: checkpoint })
       const checks = await this.checks(goal, { signal: controller.signal })
       const checked = await workspaceState(goal)
       const allPassed = checks.length === goal.spec.checks.length && checks.every(check => check.exitCode === 0 && !check.timedOut) && checked.artifactRef === after.artifactRef
-      await this.goals.checkpoint(goal.id, token, { lastChecks: checks })
+      checkpoint = { ...checkpoint, checks, checkedArtifactRef: checked.artifactRef }
+      await this.goals.checkpoint(goal.id, token, { lastChecks: checks, resumeCheckpoint: checkpoint })
       for (const [index, check] of checks.entries()) {
         await this.tasks.addEvidence(workerId, { kind: 'test', summary: check.output.slice(0, 2000) || check.name, source: 'seatbelt/node-test', exitCode: check.exitCode ?? 1, artifactRef: after.artifactRef }, { idempotencyKey: key(`check:${index}`) })
       }
@@ -107,7 +139,11 @@ export class GoalRuntime {
         const execution = await this.tasks.getExecution(id).catch(() => null)
         if (execution && ['queued', 'running', 'verifying', 'reviewing'].includes(execution.status)) await this.tasks.updateExecutionStatus(id, { status: 'blocked', outcome: 'iteration interrupted; private goal audit has the reason' }, { idempotencyKey: key(`blocked:${id}`) }).catch(() => {})
       }
-      if (!controller.signal.aborted) await this.goals.settle(goal.id, token, { outcome: 'retry', summary: String(error.message).slice(0, 500), progress: false, taskId }).catch(() => {})
+      if (!controller.signal.aborted) {
+        const current = await this.goals.get(goal.id).catch(() => null)
+        const retainCheckpoint = Boolean(current?.resumeCheckpoint?.checks && current.resumeCheckpoint.checkedArtifactRef === current.resumeCheckpoint.afterArtifactRef)
+        await this.goals.settle(goal.id, token, { outcome: String(error.message).startsWith('CHECKPOINT_CONFLICT') ? 'wait' : 'retry', summary: String(error.message).slice(0, 500), progress: false, taskId, retainCheckpoint }).catch(() => {})
+      }
       else await this.goals.interrupt(goal.id, token, String(controller.signal.reason?.message ?? '执行中断，需要核对后恢复')).catch(() => {})
     } finally { clearInterval(heartbeat); clearTimeout(deadline) }
   }

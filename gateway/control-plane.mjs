@@ -119,7 +119,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, await getSessionMetadata({ source: decodeURIComponent(sessionDetail[1]), nativeSessionId: decodeURIComponent(sessionDetail[2]) }))
     }
     if (req.method === 'GET' && url.pathname === '/api/control-plane/tasks') {
-      return send(res, 200, { tasks: await store.listTasks({ status: url.searchParams.get('status') ?? undefined, limit: url.searchParams.get('limit') ?? undefined }) })
+      return send(res, 200, { tasks: await store.listTasks({ status: url.searchParams.get('status') ?? undefined, limit: url.searchParams.get('limit') ?? undefined, sourceRequestId: url.searchParams.get('sourceRequestId') ?? undefined }) })
     }
     if (req.method === 'GET' && url.pathname === '/api/control-plane/audit') {
       return send(res, 200, { events: await store.listEvents({ entityId: url.searchParams.get('entityId') ?? undefined, limit: url.searchParams.get('limit') ?? undefined }) })
