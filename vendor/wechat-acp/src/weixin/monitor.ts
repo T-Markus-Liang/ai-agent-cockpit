@@ -22,7 +22,12 @@ export interface MonitorOpts {
   abortSignal?: AbortSignal;
   longPollTimeoutMs?: number;
   log: (msg: string) => void;
-  onMessage: (msg: WeixinMessage) => void;
+  onMessage: (msg: WeixinMessage) => Promise<void> | void;
+}
+
+export async function admitUpdateBatch(resp: GetUpdatesResp, onMessage: MonitorOpts['onMessage'], commitCursor: (cursor: string) => void): Promise<void> {
+  for (const msg of resp.msgs ?? []) await onMessage(msg);
+  if (resp.get_updates_buf != null && resp.get_updates_buf !== '') commitCursor(resp.get_updates_buf);
 }
 
 function getSyncBufPath(storageDir: string): string {
@@ -42,7 +47,11 @@ function loadSyncBuf(storageDir: string): string {
 
 function saveSyncBuf(storageDir: string, buf: string): void {
   fs.mkdirSync(storageDir, { recursive: true });
-  fs.writeFileSync(getSyncBufPath(storageDir), JSON.stringify({ get_updates_buf: buf }), "utf-8");
+  const target = getSyncBufPath(storageDir);
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ get_updates_buf: buf }), { encoding: 'utf-8', mode: 0o600 });
+  fs.renameSync(temporary, target);
+  fs.chmodSync(target, 0o600);
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -109,14 +118,10 @@ export async function startMonitor(opts: MonitorOpts): Promise<void> {
 
       consecutiveFailures = 0;
 
-      if (resp.get_updates_buf != null && resp.get_updates_buf !== "") {
-        saveSyncBuf(storageDir, resp.get_updates_buf);
-        getUpdatesBuf = resp.get_updates_buf;
-      }
-
-      for (const msg of resp.msgs ?? []) {
-        onMessage(msg);
-      }
+      await admitUpdateBatch(resp, onMessage, cursor => {
+        saveSyncBuf(storageDir, cursor);
+        getUpdatesBuf = cursor;
+      });
     } catch (err) {
       if (abortSignal?.aborted) return;
 

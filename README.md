@@ -1,6 +1,8 @@
 # Personal AI OS
 
-当前版本：**0.2.0 持续目标预览版**。已部署一次确认范围后的自主修复、真实验收、独立复核和自动返工路线；它在私有工作副本里执行，不自动覆盖原项目或恢复原生 App 旧会话。详见 [版本说明](docs/releases/0.2.0.md)。
+当前版本：**0.2.1 微信语音可靠性修复版**。新增私有持久收件箱，修复前一轮超时后丢弃排队消息与超时提示被拦截的问题；完整转写先保存，后续消息继续排队。详见 [修复与验证](docs/releases/0.2.1.md)。
+
+0.2.0 的持续目标预览功能保留：确认范围后在私有工作副本里自主修复、验证、复核和返工，不自动覆盖原项目或恢复原生 App 旧会话。详见 [持续目标说明](docs/releases/0.2.0.md)。
 
 Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面：微信是移动入口，Cezar 是本地 cockpit，Codex / OpenCode / Kimi / WorkBuddy / Devin / Claude Code / Antigravity 是可插拔的 Agent 或 Provider。项目当前仍使用 `ai-agent-cockpit` 目录和既有 launchd 标签，以保证旧服务、微信身份和原生会话不被迁移或破坏。
 
@@ -63,6 +65,20 @@ npm run eval:control-plane
 
 # 一次性诊断 Cezar、微信、控制面、Mem0、Feature Map 和回归评估
 npm run doctor
+```
+
+## 微信语音与可靠收件（0.2.1）
+
+`config/wechat-acp.json` 已启用 `inbound.enabled` 和 `inbound.acknowledgeVoice`。桥接器先把完整服务器转写和消息元数据写入实例的私有 `incoming-receipts/`，再推进轮询游标；文件名不包含用户名，目录为 0700，回执为 0600，不提交 Git。语音先收到保存确认，长处理约 10 秒后给出进度提示。
+
+前一轮超时后，尚未开始的消息保留并按顺序继续；清理未确认时只保留队列，不启动重叠进程。服务重启只恢复未开始的消息；已经执行或缓冲中的消息标记为结果不确定，不盲目重放。微信发送 `/消息` 可查看最近 5 条收件状态，`/取消` 中止当前处理。`done` 表示对话轮次结束，不是控制面任务验收通过或外部投递成功的证明。
+
+本版依赖微信返回的语音转写；没有转写时明确提示重发或使用文字，未实现原始音频下载和 ASR。前台仍有 5 分钟处理上限，不代表任意长任务已经独立后台运行。旧版本已经丢失且仅剩日志预览的语音需要重发。
+
+```bash
+npm --prefix vendor/wechat-acp run build
+npm --prefix vendor/wechat-acp test
+npm run test:voice-live  # 真实 Kimi ACP 隔离验证；不发真实微信消息
 ```
 
 ## 微信共享记忆（已部署 Mem0 OSS）

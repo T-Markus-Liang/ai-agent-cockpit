@@ -440,6 +440,7 @@ async function main(): Promise<void> {
     }
     Object.assign(config.storage, fileConfig.storage ?? {});
     if (fileConfig.goals !== undefined) config.goals = fileConfig.goals;
+    if (fileConfig.inbound !== undefined) config.inbound = fileConfig.inbound;
     configFileSetMemoryFile = fileConfig.storage?.memoryFile !== undefined;
   }
 

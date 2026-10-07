@@ -48,6 +48,8 @@ export interface PendingMessage {
   prompt: acp.ContentBlock[];
   /** Prepared once immediately before dispatch; reused by a safe fallback retry. */
   preparedPrompt?: acp.ContentBlock[];
+  receiptIds?: string[];
+  automaticRetryCount?: number;
   contextToken: string;
   replyGeneration?: number;
   completion?: {
@@ -116,7 +118,9 @@ export interface SessionManagerOpts {
   /** Hard cap for one prompt turn; prevents a hung provider blocking later messages forever. */
   promptTimeoutMs?: number;
   startupTimeoutMs?: number;
-  preparePrompt?: (userId: string, prompt: acp.ContentBlock[]) => Promise<acp.ContentBlock[]>;
+  progressNoticeMs?: number;
+  preparePrompt?: (userId: string, prompt: acp.ContentBlock[], pending?: PendingMessage) => Promise<acp.ContentBlock[]>;
+  onNotice?: SessionManagerOpts['onReply'];
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -184,11 +188,15 @@ interface SessionCleanupState {
   removePersistedSessionId: boolean;
 }
 
-class SessionResetError extends Error {
+export class SessionResetError extends Error {
   constructor() {
     super("ACP session reset before the message was processed");
     this.name = "SessionResetError";
   }
+}
+
+export class QueuedMessageDeferredError extends Error {
+  constructor() { super('Queued message preserved for safe recovery'); this.name = 'QueuedMessageDeferredError'; }
 }
 
 class PromptTimeoutError extends Error {
@@ -239,6 +247,7 @@ export class SessionManager {
   private aborted = false;
   /** Users switched to a fallback after a primary provider failure. */
   private fallbackUsers = new Set<string>();
+  private retainedMessages = new Map<string, { generation: number; messages: PendingMessage[] }>();
 
   constructor(opts: SessionManagerOpts) {
     this.opts = opts;
@@ -252,6 +261,8 @@ export class SessionManager {
 
   async stop(): Promise<void> {
     this.aborted = true;
+    for (const retained of this.retainedMessages.values()) for (const message of retained.messages) message.completion?.reject(new QueuedMessageDeferredError());
+    this.retainedMessages.clear();
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
@@ -315,6 +326,16 @@ export class SessionManager {
       throw new SessionResetError();
     }
 
+    // Admission must remain available while a timed-out process is being
+    // cleaned up. Keep new work behind the retained backlog, without spawning
+    // a replacement until cleanup is confirmed.
+    const retained = this.retainedMessages.get(userId);
+    if (retained && this.cleanupStates.has(userId)) {
+      if (retained.generation !== generation) throw new SessionResetError();
+      retained.messages.push(message);
+      return;
+    }
+
     let session: UserSession;
     try {
       session =
@@ -356,7 +377,8 @@ export class SessionManager {
     // Always update contextToken to the latest
     session.contextToken = message.contextToken;
     session.lastActivity = Date.now();
-    session.queue.push(message);
+    if ((message.automaticRetryCount ?? 0) > 0) { session.queue.push(message); this.drainRetained(session); }
+    else { this.drainRetained(session); session.queue.push(message); }
 
     if (!session.processing) {
       // Fire-and-forget processing loop for this user
@@ -491,6 +513,9 @@ export class SessionManager {
       userId,
       (this.userGenerations.get(userId) ?? 0) + 1,
     );
+    const retained = this.retainedMessages.get(userId);
+    this.retainedMessages.delete(userId);
+    for (const pending of retained?.messages ?? []) pending.completion?.reject(new SessionResetError());
     const existingReset = this.resetOperations.get(userId);
     if (existingReset) return existingReset;
 
@@ -1115,6 +1140,9 @@ export class SessionManager {
         let completionError: unknown;
         const promptStartedAt = Date.now();
         const isSessionCurrent = () => this.isCurrentSession(session);
+        const progressTimer = this.opts.progressNoticeMs && this.opts.progressNoticeMs > 0
+          ? setTimeout(() => { if (this.isCurrentSession(session) && !session.client.hasProducedMessage) void this.notice(session, pending, '这条消息已保存，我还在处理。后续消息也会排队保留；你可以发 /取消 中止当前处理。', true).catch(() => {}); }, this.opts.progressNoticeMs)
+          : undefined;
 
         try {
           // Keep the ACP client instance stable because the connection is bound
@@ -1226,7 +1254,7 @@ export class SessionManager {
 
           // Send ACP prompt
           pending.preparedPrompt ??= this.opts.preparePrompt
-            ? await this.opts.preparePrompt(session.userId, pending.prompt)
+            ? await this.opts.preparePrompt(session.userId, pending.prompt, pending)
             : pending.prompt;
           if (!this.isCurrentSession(session)) continue;
           this.opts.log(`[${session.userId}] Sending prompt to agent...`);
@@ -1331,51 +1359,48 @@ export class SessionManager {
             this.opts.log(
               `[${session.userId}] Prompt timed out after ${err.timeoutMs}ms; resetting the ACP session`,
             );
-            try {
-              await session.agentInfo.connection.cancel({
-                sessionId: session.agentInfo.sessionId,
-              });
-            } catch {
-              // The process is cleaned up below even when ACP cancellation cannot be delivered.
-            }
+            const generation = session.lifecycleGeneration ?? (this.userGenerations.get(session.userId) ?? 0);
+            const kept = session.queue.splice(0);
+            const existing = this.retainedMessages.get(session.userId);
+            this.retainedMessages.set(session.userId, { generation, messages: [...(existing?.generation === generation ? existing.messages : []), ...kept] });
             session.closedError = err;
-            this.rejectQueuedCompletions(session, err);
-            session.queue.splice(0);
             this.sessions.delete(session.userId);
             session.cleanupRegistered = true;
             this.registerSessionCleanup(session, true);
             if (this.opts.removePersistedSessionId) {
               this.getOrCreateCleanupState(session.userId).removePersistedSessionId = true;
             }
+            const cancelled = Promise.resolve().then(() => session.agentInfo.connection.cancel({ sessionId: session.agentInfo.sessionId })).catch(() => {});
+            let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([cancelled, new Promise<void>(resolve => { cancelTimer = setTimeout(resolve, 2000); })]);
+            if (cancelTimer) clearTimeout(cancelTimer);
+            let cleaned = true;
             await this.retryCleanupState(session.userId).catch((cleanupErr) => {
+              cleaned = false;
               this.opts.log(
                 `[${session.userId}] Timed-out ACP cleanup deferred: ${String(cleanupErr)}`,
               );
             });
-            if (!session.client.hasProducedMessage && !this.fallbackUsers.has(session.userId) && (this.opts.fallbackAgents?.length ?? 0) > 0) {
+            if (cleaned && !session.client.hasProducedMessage && !session.client.hasUsedTools && (pending.automaticRetryCount ?? 0) < 1 && !this.fallbackUsers.has(session.userId) && (this.opts.fallbackAgents?.length ?? 0) > 0 && this.isUserGenerationCurrent(session.userId, generation)) {
               // Retry the same user prompt once through the first configured fallback agent.
               // The primary session has been fully torn down above, so this cannot overlap
               // provider processes or reuse the stale persisted ACP session.
               this.fallbackUsers.add(session.userId);
-              void this.enqueue(session.userId, {
-                ...pending,
-                completion: undefined,
-              }).catch((retryErr) => {
+              const retry = { ...pending, automaticRetryCount: 1 };
+              pending.completion = undefined;
+              void this.enqueue(session.userId, retry).then(() => this.resumeRetained(session.userId)).catch((retryErr) => {
                 this.opts.log(`[${session.userId}] Fallback retry failed: ${String(retryErr)}`);
+                retry.completion?.reject(retryErr);
               });
               return;
             }
             try {
-              await this.opts.onReply(
-                session.userId,
-                pending.contextToken,
-                "⚠️ 这轮响应超过 5 分钟没有完成，我已重启连接。请再发一次刚才的消息。",
-                pending.replyGeneration,
-                isSessionCurrent,
-              );
+              const queueCount = this.retainedMessages.get(session.userId)?.messages.length ?? kept.length;
+              await this.notice(session, pending, `上一条处理超时，未能完成，不能算作已处理。${queueCount ? `你后发的 ${queueCount} 条消息已保留，会继续处理。` : '原文已保留；已可能执行过的操作不会自动重放。'}${cleaned ? '' : '连接清理尚未确认，暂不启动新的执行。'}`);
             } catch {
               // Best effort: the provider timeout must not leave the queue blocked.
             }
+            if (cleaned) await this.resumeRetained(session.userId).catch(error => { this.opts.log(`[${session.userId}] Retained queue waiting for recovery: ${String(error)}`); });
             return;
           }
 
@@ -1424,6 +1449,7 @@ export class SessionManager {
             // best effort
           }
         } finally {
+          if (progressTimer) clearTimeout(progressTimer);
           session.promptDispatched = false;
           if (pending.completion) {
             const finalError = session.closedError ?? completionError;
@@ -1503,8 +1529,39 @@ export class SessionManager {
 
   private rejectQueuedCompletions(session: UserSession, err: unknown): void {
     for (const pending of session.queue.splice(0)) {
-      pending.completion?.reject(err);
+      pending.completion?.reject(err instanceof SessionResetError ? err : new QueuedMessageDeferredError());
     }
+  }
+
+  private drainRetained(session: UserSession): void {
+    const retained = this.retainedMessages.get(session.userId);
+    if (!retained) return;
+    this.retainedMessages.delete(session.userId);
+    if (!this.isUserGenerationCurrent(session.userId, retained.generation)) {
+      for (const message of retained.messages) message.completion?.reject(new SessionResetError());
+      return;
+    }
+    session.queue.push(...retained.messages);
+  }
+
+  private async resumeRetained(userId: string): Promise<void> {
+    await this.withUserLifecycle(userId, async () => {
+      const retained = this.retainedMessages.get(userId);
+      if (!retained?.messages.length || this.aborted || !this.isUserGenerationCurrent(userId, retained.generation)) return;
+      const last = retained.messages[retained.messages.length - 1]!;
+      const session = this.sessions.get(userId) ?? await this.getOrCreateSession(userId, last.contextToken, () => this.isUserGenerationCurrent(userId, retained.generation), retained.generation, last.replyGeneration);
+      this.drainRetained(session);
+      if (session.queue.length && !session.processing) { session.processing = true; void this.processQueue(session).catch(error => this.opts.log(`Retained queue error: ${String(error)}`)); }
+    });
+  }
+
+  private notice(session: UserSession, pending: PendingMessage, text: string, activeOnly = false): Promise<void> {
+    const generation = session.lifecycleGeneration ?? (this.userGenerations.get(session.userId) ?? 0);
+    const current = () => !this.aborted && this.isUserGenerationCurrent(session.userId, generation) && (!activeOnly || (session.activeMessage === pending && this.isCurrentSession(session)));
+    if (!current()) return Promise.resolve();
+    const retained = this.retainedMessages.get(session.userId)?.messages;
+    const context = this.sessions.get(session.userId)?.contextToken ?? retained?.[retained.length - 1]?.contextToken ?? session.contextToken;
+    return (this.opts.onNotice ?? this.opts.onReply)(session.userId, context, text, pending.replyGeneration, current);
   }
 
   private isCurrentSession(session: UserSession): boolean {

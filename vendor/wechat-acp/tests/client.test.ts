@@ -89,6 +89,35 @@ async function emitThoughtChunk(client: WeChatAcpClient, text = "thinking…"): 
 const PNG_BASE64 = Buffer.from("fake-png-bytes").toString("base64");
 const MP3_BASE64 = Buffer.from("fake-mp3-bytes").toString("base64");
 
+test('tool activity is recorded immediately even when notification delivery stalls', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const client = makeClient({ onMessageFlush: async () => { await gate; } });
+  await emitMessageChunk(client, 'synthetic reply');
+  const update = emitToolCall(client);
+  try {
+    assert.equal(client.hasUsedTools, true);
+    release(); await update;
+    await client.beginTurn({ sendTyping: async () => {}, onThoughtFlush: async () => {}, onMessageFlush: async () => {} });
+    assert.equal(client.hasUsedTools, false, 'the next turn must start with fresh retry safety state');
+  } finally { release(); }
+});
+
+test('permission requests disable automatic timeout replay before the response is awaited', async () => {
+  const client = makeClient({});
+  const permission = client.requestPermission({ sessionId: 'synthetic', toolCall: { toolCallId: 'tool', title: 'synthetic tool' }, options: [{ optionId: 'once', kind: 'allow_once', name: 'once' }] });
+  assert.equal(client.hasUsedTools, true); await permission;
+  client.newTurn(); assert.equal(client.hasUsedTools, false);
+});
+
+test('history replay does not count old tool events as new active-turn side effects', async () => {
+  const client = makeClient({}); client.beginSessionReplay();
+  await emitToolCall(client); assert.equal(client.hasUsedTools, false);
+  await client.endSessionReplay();
+  const update = client.sessionUpdate({ update: { sessionUpdate: 'tool_call_update', toolCallId: 'live', status: 'in_progress' } } as never);
+  assert.equal(client.hasUsedTools, true); await update;
+});
+
 async function emitToolCallAudio(
   client: WeChatAcpClient,
   audio: { data: string; mimeType: string },

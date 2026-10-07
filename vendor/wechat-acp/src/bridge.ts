@@ -20,6 +20,9 @@ import {
   SessionManager,
   type ResetSessionResult,
   type RuntimeBridgeSetting,
+  type PendingMessage,
+  QueuedMessageDeferredError,
+  SessionResetError,
 } from "./acp/session.js";
 import { AUDIO_MIME_EXTENSIONS } from "./acp/client.js";
 import type { AgentImage, AgentAudio, AgentFile } from "./acp/client.js";
@@ -47,6 +50,7 @@ import {
   updatePersistedSession,
 } from "./storage/state.js";
 import { ConversationMemoryStore } from "./storage/memory.js";
+import { MessageInbox, type MessageInboxStatus } from './storage/message-inbox.js';
 import { WeChatGoalClient } from "./goals.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 
@@ -77,6 +81,7 @@ const RUNTIME_BRIDGE_CONFIG_OPTIONS: ReadonlyArray<{
 ];
 
 interface MessageBuffer {
+  receiptIds?: string[];
   blocks: acp.ContentBlock[];
   contextToken: string;
   pending: Promise<void>;
@@ -127,10 +132,14 @@ export class WeChatAcpBridge {
   private bufferFlushing = new Map<string, Promise<void>>();
   private log: (msg: string) => void;
   private readonly conversationMemory: ConversationMemoryStore;
+  private readonly messageInbox?: MessageInbox;
+  private readonly receiptIds = new WeakMap<WeixinMessage, string>();
+  private readonly incomingGenerations = new WeakMap<WeixinMessage, number>();
 
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
     this.config = config;
     this.log = log ?? ((msg: string) => console.log(`[wechat-acp] ${msg}`));
+    if (config.inbound?.enabled) this.messageInbox = new MessageInbox({ dir: config.inbound.dir ?? path.join(config.storage.dir, 'incoming-receipts') });
     this.pendingText = new PendingTextRegistry({
       ttlMs: PENDING_TEXT_TTL_MS,
       maxUsers: Math.max(1, config.session.maxConcurrentUsers),
@@ -218,7 +227,12 @@ export class WeChatAcpBridge {
         maxConcurrentUsers: this.config.session.maxConcurrentUsers,
         promptTimeoutMs: this.config.session.promptTimeoutMs,
         startupTimeoutMs: this.config.session.startupTimeoutMs,
-        preparePrompt: (userId, prompt) => this.enrichPromptWithMemory(userId, prompt),
+        progressNoticeMs: 10000,
+        preparePrompt: async (userId, prompt, pending) => {
+          await this.setReceiptStatus(pending?.receiptIds ?? [], 'running');
+          return this.enrichPromptWithMemory(userId, prompt);
+        },
+        onNotice: (userId, token, text, generation, current) => this.sendAgentReply(userId, token, text, this.requireReplyGeneration(generation), current),
         resumePolicy,
         getPersistedSessionId:
           resumePolicy !== "off" && stateFile
@@ -325,6 +339,7 @@ export class WeChatAcpBridge {
           ),
       });
       this.sessionManager.start();
+      await this.recoverIncoming();
 
       if (this.config.storage.injectDir && this.config.storage.stateFile) {
         this.injectionMonitor = new InjectionMonitor({
@@ -344,8 +359,9 @@ export class WeChatAcpBridge {
         storageDir: this.config.storage.dir,
         abortSignal: this.abortController.signal,
         log: this.log,
-        onMessage: (msg) => {
-          this.handleMessage(msg).catch((err) => {
+        onMessage: async (msg) => {
+          if (!this.validIncoming(msg) || !await this.admitIncoming(msg)) return;
+          void this.handleMessage(msg).catch((err) => {
             this.log(`Failed to handle message: ${String(err)}`);
             trackException(err, "message");
           });
@@ -390,6 +406,8 @@ export class WeChatAcpBridge {
       trackException(sanitizeStateError(err), "state");
     });
     this.log("Bridge stopped");
+    await Promise.allSettled([...this.messageHandlingChains.values()]);
+    await this.messageInbox?.close();
     await this.conversationMemory.close();
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, "Bridge cleanup failed");
@@ -397,6 +415,22 @@ export class WeChatAcpBridge {
   }
 
   async handleMessage(msg: WeixinMessage): Promise<void> {
+    if (!this.validIncoming(msg) || !await this.admitIncoming(msg)) return;
+    const ids = this.receiptIds.get(msg) ? [this.receiptIds.get(msg)!] : [];
+    const command = this.isNativeCommand(msg);
+    const generation = this.incomingGenerations.get(msg);
+    await this.setReceiptStatus(ids, command ? 'running' : 'queued');
+    try {
+      await this.handleAdmittedMessage(msg);
+      if (command) await this.setReceiptStatus(ids, 'done');
+      else if (generation !== undefined && !this.isMessageGenerationCurrent(msg.from_user_id!, generation)) await this.setReceiptStatus(ids, 'cancelled');
+    } catch (error) {
+      await this.setReceiptStatus(ids, command ? 'uncertain' : 'failed', error instanceof Error ? error.name : 'Error');
+      throw error;
+    }
+  }
+
+  private async handleAdmittedMessage(msg: WeixinMessage): Promise<void> {
     // Only process user messages (not bot's own messages)
     if (msg.message_type !== MessageType.USER) return;
 
@@ -417,7 +451,7 @@ export class WeChatAcpBridge {
       );
     }
 
-    const generation = this.messageGenerationForUser(userId);
+    const generation = this.incomingGenerations.get(msg) ?? this.messageGenerationForUser(userId);
     const previous = this.messageHandlingChains.get(userId) ?? Promise.resolve();
     const current = previous
       .catch(() => {})
@@ -463,7 +497,14 @@ export class WeChatAcpBridge {
       kind: this.messageKind(msg),
     });
 
-    const textItem = msg.item_list?.length === 1 && msg.item_list[0]?.type === 1 ? msg.item_list[0].text_item?.text?.trim() : undefined;
+    const textItem = msg.item_list?.length === 1 ? (msg.item_list[0]?.text_item?.text ?? msg.item_list[0]?.voice_item?.text)?.trim() : undefined;
+    if (textItem && /^\/消息(?:\s|$)/.test(textItem)) {
+      const records = (await this.messageInbox?.list() ?? []).filter(record => record.message.from_user_id === userId);
+      const labels: Record<string, string> = { received: '已保存', queued: '排队', running: '处理中', uncertain: '未完成/需核对', done: '已处理', buffered: '缓冲', cancelled: '已取消', failed: '未能处理' };
+      const latest = records.slice(-5).map(record => `${new Date(record.receivedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}：${labels[record.status] ?? record.status}`);
+      await this.sendReply(userId, contextToken, latest.length ? latest.join('\n') : '暂时还没有新的可靠收件记录。');
+      return;
+    }
     if (textItem && /^\/目标(?:\s|$)/.test(textItem)) {
       await this.conversationMemory.append(userId, "user", textItem);
       let reply: string;
@@ -572,6 +613,16 @@ export class WeChatAcpBridge {
     isCurrent: () => boolean = () => true,
     replyGeneration?: number,
   ): Promise<void> {
+    const ids = this.receiptIds.get(msg) ? [this.receiptIds.get(msg)!] : [];
+    const voice = msg.item_list?.find(item => item.type === 3);
+    if (!isCurrent()) { await this.setReceiptStatus(ids, 'cancelled'); return; }
+    if (voice && !voice.voice_item?.text?.trim() && !msg.item_list?.some(item => item.text_item?.text?.trim())) {
+      await this.sendAgentReply(userId, contextToken, '收到语音了，但这次没有转写文字，我还不能执行内容。请重发或发文字；消息记录已保留。', replyGeneration ?? this.messageGenerationForUser(userId), isCurrent);
+      await this.setReceiptStatus(ids, 'failed', 'MissingVoiceTranscription');
+      return;
+    }
+    const busy = this.sessionManager?.getSession(userId)?.processing === true;
+    if (ids.length && (busy || (voice && this.config.inbound?.acknowledgeVoice))) await this.sendAgentReply(userId, contextToken, busy ? '这条消息已保存。上一条还在处理，我会按顺序继续，不会把后发的消息丢掉。' : '语音已转成文字并保存，我来处理。', replyGeneration ?? this.messageGenerationForUser(userId), isCurrent);
     const prompt = await weixinMessageToPrompt(
       msg,
       this.config.wechat.cdnBaseUrl,
@@ -581,10 +632,57 @@ export class WeChatAcpBridge {
 
     if (!isCurrent()) return;
     await this.sessionManager!.enqueue(userId, {
+      receiptIds: ids,
+      completion: this.receiptCompletion(ids),
       prompt,
       contextToken,
       replyGeneration,
     });
+  }
+
+  private validIncoming(msg: WeixinMessage): boolean {
+    return msg.message_type === MessageType.USER && !msg.group_id && Boolean(msg.from_user_id && msg.context_token);
+  }
+
+  private async admitIncoming(msg: WeixinMessage): Promise<boolean> {
+    if (!this.incomingGenerations.has(msg)) this.incomingGenerations.set(msg, this.messageGenerationForUser(msg.from_user_id!));
+    if (!this.messageInbox || this.receiptIds.has(msg)) return true;
+    const result = await this.messageInbox.put(msg);
+    if (!result.isNew) return false;
+    this.receiptIds.set(msg, result.record.id);
+    return true;
+  }
+
+  private isNativeCommand(msg: WeixinMessage): boolean {
+    if (Object.values(BRIDGE_COMMANDS).some(command => this.extractBridgeCommand(msg, command) !== null)) return true;
+    const item = msg.item_list?.length === 1 ? msg.item_list[0] : undefined;
+    const text = (item?.text_item?.text ?? item?.voice_item?.text ?? '').trim();
+    return /^\/(目标|消息)(?:\s|$)/.test(text);
+  }
+
+  private async setReceiptStatus(ids: string[], status: MessageInboxStatus, errorKind?: string): Promise<void> {
+    if (!this.messageInbox) return;
+    for (const id of ids) await this.messageInbox.setStatus(id, status, errorKind ? { errorKind } : undefined);
+  }
+
+  private receiptCompletion(ids: string[]): PendingMessage['completion'] {
+    if (!this.messageInbox || !ids.length) return undefined;
+    const update = (status: MessageInboxStatus, errorKind?: string) => {
+      void this.setReceiptStatus(ids, status, errorKind).catch(() => this.log('Receipt final status not confirmed; original retained, never assumed complete'));
+    };
+    return { resolve: () => update('done'), reject: error => update(error instanceof QueuedMessageDeferredError ? 'queued' : error instanceof SessionResetError || /Cancelled before queued/.test(String(error)) ? 'cancelled' : 'uncertain', error instanceof Error ? error.name : 'Error') };
+  }
+
+  private async recoverIncoming(): Promise<void> {
+    if (!this.messageInbox) return;
+    const result = await this.messageInbox.recover();
+    this.log(`Durable inbox recovery: pending=${result.pending.length}, uncertain=${result.uncertainCount}`);
+    for (const record of result.pending) {
+      if (!this.validIncoming(record.message)) continue;
+      this.receiptIds.set(record.message, record.id);
+      this.incomingGenerations.set(record.message, this.messageGenerationForUser(record.message.from_user_id!));
+      await this.handleMessage(record.message);
+    }
   }
 
   private async enrichPromptWithMemory(
@@ -1159,6 +1257,7 @@ export class WeChatAcpBridge {
       contextToken,
       buffer.blocks,
       replyGeneration,
+      buffer.receiptIds,
     );
   }
 
@@ -1167,8 +1266,11 @@ export class WeChatAcpBridge {
     contextToken: string,
     prompt: acp.ContentBlock[],
     replyGeneration?: number,
+    ids: string[] = [],
   ): Promise<void> {
     await this.sessionManager!.enqueue(userId, {
+      receiptIds: ids,
+      completion: this.receiptCompletion(ids),
       prompt,
       contextToken,
       replyGeneration,
@@ -1182,6 +1284,8 @@ export class WeChatAcpBridge {
   ): void {
     const buffer = this.messageBuffers.get(userId);
     if (!buffer) return;
+    const id = this.receiptIds.get(msg);
+    if (id) { (buffer.receiptIds ??= []).push(id); void this.setReceiptStatus([id], 'buffered').catch(() => this.log('Buffered receipt update failed; original remains on disk')); }
     const isCurrentBuffer = () =>
       this.messageBuffers.get(userId) === buffer &&
       this.isMessageGenerationCurrent(userId, buffer.generation);
@@ -1822,9 +1926,9 @@ export class WeChatAcpBridge {
     if (items.length !== 1) return null;
 
     const item = items[0];
-    if (item?.type !== 1 || !item.text_item?.text) return null;
-
-    return matchBridgeCommand(item.text_item.text, canonical, this.config.commandAliases);
+    const text = item?.type === 1 ? item.text_item?.text : item?.type === 3 ? item.voice_item?.text : undefined;
+    if (!text) return null;
+    return matchBridgeCommand(text, canonical, this.config.commandAliases);
   }
 
   /**

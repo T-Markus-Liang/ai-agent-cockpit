@@ -305,6 +305,7 @@ interface TurnState {
   chunks: string[];
   thoughtChunks: string[];
   producedMessage: boolean;
+  usedTools: boolean;
   lastTypingAt: number;
   deliveredResourceLinks: Set<string>;
 }
@@ -315,6 +316,7 @@ function freshTurn(opts: WeChatAcpClientOpts): TurnState {
     chunks: [],
     thoughtChunks: [],
     producedMessage: false,
+    usedTools: false,
     lastTypingAt: 0,
     deliveredResourceLinks: new Set(),
   };
@@ -340,11 +342,13 @@ export class WeChatAcpClient implements acp.Client {
   get hasProducedMessage(): boolean {
     return this.turn.producedMessage;
   }
+  get hasUsedTools(): boolean { return this.turn.usedTools; }
 
   /** Reset the produced-message flag on the current turn. Exposed for tests;
    * production code starts turns via beginTurn, which creates fresh state. */
   newTurn(): void {
     this.turn.producedMessage = false;
+    this.turn.usedTools = false;
   }
 
   constructor(opts: WeChatAcpClientOpts) {
@@ -422,6 +426,7 @@ export class WeChatAcpClient implements acp.Client {
   async requestPermission(
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
+    this.turn.usedTools = true;
     // Auto-allow: find first "allow" option
     const allowOpt = params.options.find(
       (o) => o.kind === "allow_once" || o.kind === "allow_always",
@@ -461,6 +466,7 @@ export class WeChatAcpClient implements acp.Client {
     // never the next turn's buffers or callbacks (issue 54).
     const turn = this.turn;
     const suppressed = this.suppressSessionUpdates;
+    if (!suppressed && ['tool_call', 'tool_call_update'].includes(params.update.sessionUpdate)) turn.usedTools = true;
     return this.enqueue(() =>
       suppressed ? Promise.resolve() : this.handleSessionUpdate(params, turn),
     );
@@ -495,6 +501,7 @@ export class WeChatAcpClient implements acp.Client {
         break;
 
       case "tool_call":
+        turn.usedTools = true;
         await this.maybeFlushThoughts(turn);
         await this.maybeFlushMessage(turn);
         if (update.status === "completed" && update.content) {
@@ -521,6 +528,7 @@ export class WeChatAcpClient implements acp.Client {
         break;
 
       case "tool_call_update": {
+        turn.usedTools = true;
         let imageContentBlocks = 0;
         let resourceContentBlocks = 0;
         let resourceLinkContentBlocks = 0;

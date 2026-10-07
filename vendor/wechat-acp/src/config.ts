@@ -136,6 +136,7 @@ export interface WeChatAcpConfig {
     personaFile?: string;
   };
   goals?: { url: string; tokenFile: string };
+  inbound?: { enabled: boolean; dir?: string; acknowledgeVoice?: boolean };
   /**
    * Optional user-defined aliases for bridge slash commands. Maps a
    * canonical command (e.g. `"/acp-cancel"`) to one or more custom
