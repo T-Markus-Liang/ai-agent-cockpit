@@ -100,6 +100,42 @@ def all_rows(path):
         conn.close()
 
 
+def insert_row(path, event_id, user_id, role, text, *, status="done",
+               source="wechat", created_at=1.0, digest=None):
+    """Insert one baseline row with an explicit ``created_at`` (impostor fixtures)."""
+    obj = payload(event_id, user_id, role, text, source)
+    raw = json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "INSERT INTO turns(event_id,payload,digest,status,created_at) "
+            "VALUES(?,?,?,?,?)",
+            (event_id, raw, digest or digest_of(obj), status, created_at))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def text_hash(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def insert_tombstone(path, user_id, event_id, source_hash, quote_hashes,
+                     request_id="seed-tombstone"):
+    """Seed a lifecycle tombstone directly (row's own forgotten flag untouched)."""
+    conn = sqlite3.connect(path)
+    try:
+        lifecycle.ensure_schema(conn)
+        conn.execute(
+            "INSERT INTO tombstones(user_id,event_id,source_hash,quote_hashes,"
+            "request_id,created_at) VALUES(?,?,?,?,?,?)",
+            (user_id, event_id, source_hash, json.dumps(sorted(quote_hashes)),
+             request_id, time.time()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # --- test doubles (no host, no model, no network) ---------------------------
 def noul(probability=0.99):
     return {"type": "noul", "noul": probability}
@@ -143,12 +179,25 @@ class FakeMem0:
                 break
         return {"results": found}
 
+    def delete(self, memory_id):
+        for index, row in enumerate(self.rows):
+            if row["id"] == memory_id:
+                del self.rows[index]
+                return True
+        return False
+
     def search(self, query, *, filters=None, top_k=20):
         filters = filters or {}
         found = [{"id": row["id"], "memory": row["memory"], "score": 1.0,
                   "metadata": dict(row["metadata"])}
                  for row in self.rows if row["user_id"] == filters.get("user_id")]
         return {"results": found[:top_k]}
+
+
+class NoDeleteMem0(FakeMem0):
+    """A store the converter cannot compensate: it exposes no delete capability."""
+
+    delete = None
 
 
 class FakeEvaluator:
@@ -878,6 +927,534 @@ class PartialStoreTests(MigrationFixture):
         service = MemoryService(Path(self.copy), engine)
         hits = service.search(Search(user_id="u1", query="偏好"))
         self.assertEqual(len(hits), 2)
+
+
+# --- 11. F001 target provenance + path protection ---------------------------
+class TargetProvenanceTests(MigrationFixture):
+    """F001: never trust a target just because it shares our schema."""
+
+    def _seed_source(self, text="alpha durable preference"):
+        make_db(self.source)
+        conn = self.connect(self.source_db)
+        insert_original(conn, "e1", "u1", "user", text)
+        conn.commit()
+        conn.close()
+
+    def test_same_schema_impostor_is_refused_without_mutation(self):
+        self._seed_source()
+        os.makedirs(self.copy, mode=0o700)
+        # Same baseline schema + same payload, but an INDEPENDENTLY created db
+        # (different created_at).  It is not our copy and must never be written.
+        make_db(self.copy)
+        insert_row(self.copy_db, "e1", "u1", "user", "alpha durable preference",
+                   created_at=99.0)
+        before_bytes = Path(self.copy_db).read_bytes()
+        before_mode = stat.S_IMODE(os.stat(self.copy_db).st_mode)
+        before_entries = sorted(os.listdir(self.copy))
+
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+        self.assertEqual(Path(self.copy_db).read_bytes(), before_bytes)
+        self.assertEqual(stat.S_IMODE(os.stat(self.copy_db).st_mode), before_mode)
+        self.assertEqual(sorted(os.listdir(self.copy)), before_entries)
+        self.assertEqual(read_row(self.copy_db, "e1")["status"], "done")
+
+    def test_forged_manifest_with_bad_provenance_is_refused(self):
+        self._seed_source()
+        snapshot(self.source, self.copy)
+        with open(os.path.join(self.copy, "migration-manifest.json"), "w") as handle:
+            json.dump({"schemaVersion": 1, "converterVersion": "memory-migration-v1",
+                       "source_digest_set_hash": "deadbeef"}, handle)
+        before = Path(self.copy_db).read_bytes()
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+        self.assertEqual(Path(self.copy_db).read_bytes(), before)
+
+    def test_forged_manifest_with_wrong_version_is_refused(self):
+        self._seed_source()
+        snapshot(self.source, self.copy)
+        with open(os.path.join(self.copy, "migration-manifest.json"), "w") as handle:
+            json.dump({"schemaVersion": 1, "converterVersion": "memory-migration-v0",
+                       "source_digest_set_hash": "deadbeef"}, handle)
+        before = Path(self.copy_db).read_bytes()
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "manifest_version_drift")
+        self.assertEqual(Path(self.copy_db).read_bytes(), before)
+
+    def test_manifest_provenance_mismatch_is_refused(self):
+        self._seed_source()
+        convert(self.source, self.copy)
+        # Source changed after the manifest froze its digest set -> provenance
+        # no longer fingerprints this source.
+        conn = self.connect(self.source_db)
+        insert_original(conn, "e2", "u1", "user", "second line")
+        conn.commit()
+        conn.close()
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+
+    def _victim(self, name="victim"):
+        victim = os.path.join(self.tmp, name)
+        os.makedirs(victim, mode=0o700)
+        make_db(victim)
+        victim_db = os.path.join(victim, "ingest.sqlite")
+        insert_row(victim_db, "e1", "u1", "user", "victim text", created_at=99.0)
+        return victim, victim_db
+
+    def test_symlink_directory_target_is_refused(self):
+        self._seed_source()
+        victim, victim_db = self._victim()
+        before_bytes = Path(victim_db).read_bytes()
+        before_entries = sorted(os.listdir(victim))
+        alias = os.path.join(self.tmp, "alias")
+        os.symlink(victim, alias)
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, alias)
+        self.assertEqual(str(ctx.exception), "target_symlink")
+        self.assertEqual(Path(victim_db).read_bytes(), before_bytes)
+        self.assertEqual(sorted(os.listdir(victim)), before_entries)
+        self.assertEqual(read_row(victim_db, "e1")["status"], "done")
+
+    def test_symlink_database_target_is_refused(self):
+        self._seed_source()
+        os.makedirs(self.copy, mode=0o700)
+        _, victim_db = self._victim()
+        before_bytes = Path(victim_db).read_bytes()
+        os.symlink(victim_db, self.copy_db)
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "target_symlink")
+        self.assertEqual(Path(victim_db).read_bytes(), before_bytes)
+
+    def test_symlink_ancestor_target_is_refused(self):
+        self._seed_source()
+        real = os.path.join(self.tmp, "real")
+        os.makedirs(real, mode=0o700)
+        alias = os.path.join(self.tmp, "alias-root")
+        os.symlink(real, alias)
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, os.path.join(alias, "nested"))
+        self.assertEqual(str(ctx.exception), "target_symlink")
+
+    def test_unknown_hardlink_database_is_refused(self):
+        self._seed_source()
+        os.makedirs(self.copy, mode=0o700)
+        _, victim_db = self._victim()
+        before_bytes = Path(victim_db).read_bytes()
+        os.link(victim_db, self.copy_db)  # copy db shares an inode with the victim
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "target_hardlink")
+        self.assertEqual(Path(victim_db).read_bytes(), before_bytes)
+
+    def test_non_regular_database_is_refused(self):
+        self._seed_source()
+        os.makedirs(self.copy, mode=0o700)
+        os.makedirs(self.copy_db)  # a directory, not a database file
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "target_not_regular")
+
+    def test_legit_copy_with_manifest_reenters_safely(self):
+        self._seed_source()
+        first = convert(self.source, self.copy)
+        second = convert(self.source, self.copy)
+        self.assertTrue(first["conservation"]["digests_match"])
+        self.assertTrue(second["conservation"]["digests_match"])
+        self.assertEqual(first["copy_rows"]["total"], second["copy_rows"]["total"])
+
+    def test_brand_new_directory_is_accepted(self):
+        self._seed_source()
+        report = convert(self.source, os.path.join(self.tmp, "brand", "new"))
+        self.assertTrue(report["conservation"]["digests_match"])
+        self.assertEqual(report["copy_rows"]["total"], 1)
+
+
+# --- 12. F002 field-by-field conservation -----------------------------------
+class ConservationFieldTests(MigrationFixture):
+    """F002: digest equality alone must not be trusted as conservation."""
+
+    def _convert_two(self):
+        make_db(self.source)
+        conn = self.connect(self.source_db)
+        insert_original(conn, "e1", "u1", "user", "alpha durable preference")
+        insert_original(conn, "e2", "u1", "assistant", "noted")
+        conn.commit()
+        conn.close()
+        convert(self.source, self.copy)
+
+    def _mutate_copy(self, sql, params=()):
+        conn = sqlite3.connect(self.copy_db)
+        try:
+            conn.execute(sql, params)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_created_at_tamper_is_detected(self):
+        self._convert_two()
+        self._mutate_copy("UPDATE turns SET created_at=99 WHERE event_id='e1'")
+        with self.assertRaises(MigrationError):
+            verify_conservation(self.source, self.copy)
+
+    def test_payload_tamper_is_detected(self):
+        self._convert_two()
+        obj = json.loads(read_row(self.copy_db, "e1")["payload"])
+        obj["text"] = "tampered content"
+        self._mutate_copy("UPDATE turns SET payload=? WHERE event_id='e1'",
+                          (json.dumps(obj, sort_keys=True, ensure_ascii=False),))
+        with self.assertRaises(MigrationError):
+            verify_conservation(self.source, self.copy)
+
+    def test_event_id_added_is_detected(self):
+        self._convert_two()
+        insert_row(self.copy_db, "e3", "u1", "user", "injected row")
+        with self.assertRaises(MigrationError):
+            verify_conservation(self.source, self.copy)
+
+    def test_event_id_removed_is_detected(self):
+        self._convert_two()
+        self._mutate_copy("DELETE FROM turns WHERE event_id='e2'")
+        with self.assertRaises(MigrationError):
+            verify_conservation(self.source, self.copy)
+
+    def test_illegal_status_transition_is_detected(self):
+        self._convert_two()
+        # source e1 was 'done'; flipping the copy to needs_review is not a
+        # trusted migration outcome.
+        self._mutate_copy("UPDATE turns SET status='needs_review' WHERE event_id='e1'")
+        with self.assertRaises(MigrationError):
+            verify_conservation(self.source, self.copy)
+
+    def test_legal_status_transition_is_accepted(self):
+        self._convert_two()
+        # done -> pending is the trusted re-verification outcome.
+        self.assertEqual(read_row(self.copy_db, "e1")["status"], "pending")
+        self.assertTrue(verify_conservation(self.source, self.copy)["digests_match"])
+
+    def test_duplicate_digest_event_ids_both_survive(self):
+        # Two distinct event_ids whose payloads are byte-identical (same embedded
+        # event_id) share one digest; conservation is keyed by event_id so both
+        # must survive rather than being collapsed by the journal.
+        make_db(self.source)
+        obj = payload("shared-event", "u1", "user", "identical durable sentence")
+        raw = json.dumps(obj, sort_keys=True, ensure_ascii=False)
+        digest = digest_of(obj)
+        conn = self.connect(self.source_db)
+        conn.execute(
+            "INSERT INTO turns(event_id,payload,digest,status,created_at) VALUES(?,?,?,?,?)",
+            ("e1", raw, digest, "done", 1.0))
+        conn.execute(
+            "INSERT INTO turns(event_id,payload,digest,status,created_at) VALUES(?,?,?,?,?)",
+            ("e2", raw, digest, "done", 1.0))
+        conn.commit()
+        conn.close()
+        convert(self.source, self.copy)
+        rows = self.copy_state()
+        self.assertEqual(set(rows), {"e1", "e2"})
+        self.assertEqual(rows["e1"]["digest"], rows["e2"]["digest"])
+        self.assertTrue(verify_conservation(self.source, self.copy)["digests_match"])
+        # Collapsing the two same-digest events into one is a violation.
+        self._mutate_copy("DELETE FROM turns WHERE event_id='e2'")
+        with self.assertRaises(MigrationError):
+            verify_conservation(self.source, self.copy)
+
+
+# --- 13. F003 forget races during revalidation ------------------------------
+class ForgetDuringReverifyTests(MigrationFixture):
+    """F003: a forget committed mid-pipeline never yields a validated receipt."""
+
+    def _prepare(self, text="我喜欢用中文回复"):
+        make_db(self.source)
+        conn = self.connect(self.source_db)
+        insert_original(conn, "e1", "u1", "user", text)
+        conn.commit()
+        conn.close()
+        convert(self.source, self.copy)
+
+    def _forget_store(self):
+        return lifecycle.ForgetStore(lambda: sqlite3.connect(self.copy_db))
+
+    def _forget(self, store, *, request_id="req-forget", event_ids=("e1",),
+                user_id="u1"):
+        store.forget(lifecycle.ForgetRequest(
+            request_id=request_id, user_id=user_id, event_ids=list(event_ids)))
+
+    def _engine(self, memory=None, evaluator=None):
+        return Mem0Engine(memory=memory if memory is not None else FakeMem0(),
+                          evaluator=evaluator if evaluator is not None else FakeEvaluator(),
+                          quality_config=make_config(), version="synthetic-only")
+
+    def test_forget_before_reverify_leaves_no_vector(self):
+        self._prepare()
+        self._forget(self._forget_store())  # real forget: row flag set
+        memory = FakeMem0()
+        counts = reverify(self.copy, self._engine(memory=memory))
+        self.assertEqual(counts["validated"], 0)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["forgotten"], 1)
+        self.assertNotEqual(row["validation_status"], "validated")
+        self.assertEqual(memory.rows, [])
+
+    def test_tombstone_without_row_flag_is_caught_before_store(self):
+        # A tombstone that matches the row, but whose ``forgotten`` flag was not
+        # (yet) written, must still stop the vector effect.
+        self._prepare()
+        insert_tombstone(self.copy_db, "u1", "e1", text_hash("我喜欢用中文回复"), [])
+        memory = FakeMem0()
+        counts = reverify(self.copy, self._engine(memory=memory))
+        self.assertEqual(counts["forgotten"], 1)
+        self.assertEqual(counts["validated"], 0)
+        self.assertEqual(memory.rows, [])
+        self.assertEqual(read_row(self.copy_db, "e1")["forgotten"], 1)
+
+    def test_forget_during_prepare_never_starts_store(self):
+        self._prepare()
+        store = self._forget_store()
+        memory = FakeMem0()
+        engine = self._engine(memory=memory)
+        real_prepare = engine.prepare
+
+        def prepare_then_forget(turn):
+            plan = real_prepare(turn)
+            self._forget(store)
+            return plan
+
+        engine.prepare = prepare_then_forget
+        counts = reverify(self.copy, engine)
+        self.assertEqual(counts["forgotten"], 1)
+        self.assertEqual(counts["validated"], 0)
+        self.assertEqual(memory.rows, [])
+        self.assertEqual(read_row(self.copy_db, "e1")["forgotten"], 1)
+
+    def test_forget_during_store_compensates_vector_effect(self):
+        self._prepare()
+        store = self._forget_store()
+        memory = FakeMem0()
+        engine = self._engine(memory=memory)
+        real_store = engine.store
+
+        def store_then_forget(turn, plan):
+            result = real_store(turn, plan)
+            self._forget(store)  # forget commits after the vector effect
+            return result
+
+        engine.store = store_then_forget
+        counts = reverify(self.copy, engine)
+        self.assertEqual(counts["validated"], 0)
+        self.assertEqual(read_row(self.copy_db, "e1")["forgotten"], 1)
+        self.assertEqual(memory.rows, [])  # the effect was compensated away
+
+    def test_forget_during_store_without_delete_fails_closed(self):
+        self._prepare()
+        store = self._forget_store()
+        memory = NoDeleteMem0()
+        engine = self._engine(memory=memory)
+        real_store = engine.store
+
+        def store_then_forget(turn, plan):
+            result = real_store(turn, plan)
+            self._forget(store)
+            return result
+
+        engine.store = store_then_forget
+        counts = reverify(self.copy, engine)
+        self.assertEqual(counts["validated"], 0)
+        self.assertEqual(counts["needs_review"], 1)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["forgotten"], 1)
+        self.assertNotEqual(row["validation_status"], "validated")
+
+    def test_forget_before_settlement_guard_blocks_validated(self):
+        self._prepare()
+        store = self._forget_store()
+        memory = FakeMem0()
+        engine = self._engine(memory=memory)
+        real_receipt = migration._write_receipt
+
+        def receipt_after_forget(copy_path, event_id, **kwargs):
+            if (kwargs.get("status") == "done"
+                    and kwargs.get("validation_status") == "validated"):
+                self._forget(store)  # forget races in right before settlement
+            return real_receipt(copy_path, event_id, **kwargs)
+
+        with patch.object(migration, "_write_receipt", side_effect=receipt_after_forget):
+            counts = reverify(self.copy, engine)
+        self.assertEqual(counts["validated"], 0)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["forgotten"], 1)
+        self.assertNotEqual(row["validation_status"], "validated")
+        self.assertEqual(memory.rows, [])  # compensated
+
+    def _reverify_with_tombstone(self, text, t_event, source_hash, quote_hashes):
+        tag = f"{t_event}-{len(quote_hashes)}"
+        src = os.path.join(self.tmp, "s-" + tag)
+        copy = os.path.join(self.tmp, "c-" + tag)
+        os.makedirs(src, mode=0o700)
+        make_db(src)
+        conn = sqlite3.connect(os.path.join(src, "ingest.sqlite"))
+        insert_original(conn, "e1", "u1", "user", text)
+        conn.commit()
+        conn.close()
+        convert(src, copy)
+        copy_db = os.path.join(copy, "ingest.sqlite")
+        insert_tombstone(copy_db, "u1", t_event, source_hash, quote_hashes)
+        memory = FakeMem0()
+        engine = Mem0Engine(memory=memory, evaluator=FakeEvaluator(),
+                            quality_config=make_config(), version="synthetic-only")
+        counts = reverify(copy, engine)
+        return counts, read_row(copy_db, "e1"), memory, copy, copy_db
+
+    def test_event_source_quote_tombstones_all_suppress(self):
+        text = "我喜欢用中文回复。另外一句。"
+        sentence = sorted(lifecycle.sentence_hashes(text))
+        cases = {
+            "event": ("e1", text_hash("unrelated text"), []),
+            "source": ("other-event", text_hash(text), []),
+            "quote": ("other-event", text_hash("unrelated text"), sentence[:1]),
+        }
+        for kind, (t_event, source_hash, quote_hashes) in cases.items():
+            with self.subTest(kind=kind):
+                counts, row, memory, copy, copy_db = self._reverify_with_tombstone(
+                    text, t_event, source_hash, quote_hashes)
+                self.assertEqual(counts["forgotten"], 1)
+                self.assertEqual(counts["validated"], 0)
+                self.assertEqual(row["forgotten"], 1)
+                self.assertNotEqual(row["validation_status"], "validated")
+                self.assertEqual(memory.rows, [])
+                # A forgotten turn is never recallable through the service.
+                service = MemoryService(Path(copy), Mem0Engine(
+                    memory=memory, evaluator=FakeEvaluator(),
+                    quality_config=make_config(), version="synthetic-only"))
+                self.assertEqual(
+                    service.search(Search(user_id="u1", query="中文")), [])
+
+
+# --- 14. F004 store-retry reuses the persisted plan -------------------------
+class StoreRetryPlanReuseTests(MigrationFixture):
+    """F004: a store retry never re-runs prepare/evaluator; a bad plan fails closed."""
+
+    def _prepare(self, text="我喜欢用中文回复"):
+        make_db(self.source)
+        conn = self.connect(self.source_db)
+        insert_original(conn, "e1", "u1", "user", text)
+        conn.commit()
+        conn.close()
+        convert(self.source, self.copy)
+
+    def _engine(self, memory, evaluator):
+        return Mem0Engine(memory=memory, evaluator=evaluator,
+                          quality_config=make_config(), version="synthetic-only")
+
+    def test_store_retry_reuses_persisted_plan_without_repreparing(self):
+        self._prepare()
+        memory = FakeMem0()
+        memory.failures_remaining = 1
+        evaluator = FakeEvaluator()
+        engine = self._engine(memory, evaluator)
+
+        first = reverify(self.copy, engine)
+        first_calls = len(evaluator.calls)
+        self.assertEqual(first["errors"], 1)
+        plan_after_first = read_row(self.copy_db, "e1")["plan"]
+        self.assertIsNotNone(plan_after_first)
+
+        second = reverify(self.copy, engine)
+        self.assertEqual(second["validated"], 1)
+        # Zero additional evaluator (semantic) calls on the retry.
+        self.assertEqual(len(evaluator.calls), first_calls)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["validation_status"], "validated")
+        self.assertEqual(json.loads(row["plan"]), json.loads(plan_after_first))
+
+    def test_persisted_plan_settles_after_simulated_crash(self):
+        self._prepare()
+        memory = FakeMem0()
+        evaluator = FakeEvaluator()
+        engine = self._engine(memory, evaluator)
+        real_store = engine.store
+
+        def store_then_crash(turn, plan):
+            real_store(turn, plan)  # the vector effect happens...
+            raise RuntimeError("crash after effect, before receipt")
+
+        engine.store = store_then_crash
+        first = reverify(self.copy, engine)
+        self.assertEqual(first["errors"], 1)
+        self.assertEqual(len(memory.rows), 1)
+        plan_after_first = json.loads(read_row(self.copy_db, "e1")["plan"])
+
+        # Resume from the persisted plan: same plan, no re-extraction, no dup.
+        engine.store = real_store
+        before_calls = len(evaluator.calls)
+        second = reverify(self.copy, engine)
+        self.assertEqual(second["validated"], 1)
+        self.assertEqual(len(evaluator.calls), before_calls)
+        self.assertEqual(len(memory.rows), 1)
+        self.assertEqual(json.loads(read_row(self.copy_db, "e1")["plan"]),
+                         plan_after_first)
+
+    def test_tampered_persisted_plan_fails_closed(self):
+        self._prepare()
+        memory = FakeMem0()
+        memory.failures_remaining = 1
+        evaluator = FakeEvaluator()
+        engine = self._engine(memory, evaluator)
+        self.assertEqual(reverify(self.copy, engine)["errors"], 1)
+
+        plan = json.loads(read_row(self.copy_db, "e1")["plan"])
+        plan["facts"][0]["quote"] = "a quote that is not in the source text"
+        conn = sqlite3.connect(self.copy_db)
+        conn.execute("UPDATE turns SET plan=? WHERE event_id='e1'",
+                     (json.dumps(plan, ensure_ascii=False),))
+        conn.commit()
+        conn.close()
+
+        before_calls = len(evaluator.calls)
+        store_calls = []
+        real_store = engine.store
+
+        def spy_store(turn, plan):
+            store_calls.append(turn.event_id)
+            return real_store(turn, plan)
+
+        engine.store = spy_store
+        second = reverify(self.copy, engine)
+        self.assertEqual(second["validated"], 0)
+        self.assertEqual(second["needs_review"], 1)
+        self.assertEqual(len(evaluator.calls), before_calls)  # no re-extraction
+        self.assertEqual(store_calls, [])  # no effect attempted
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["status"], "needs_review")
+        self.assertNotEqual(row["validation_status"], "validated")
+
+    def test_plan_version_drift_fails_closed(self):
+        self._prepare()
+        memory = FakeMem0()
+        memory.failures_remaining = 1
+        evaluator = FakeEvaluator()
+        engine = self._engine(memory, evaluator)
+        self.assertEqual(reverify(self.copy, engine)["errors"], 1)
+
+        plan = json.loads(read_row(self.copy_db, "e1")["plan"])
+        plan["extraction_version"] = "extraction-v0"
+        conn = sqlite3.connect(self.copy_db)
+        conn.execute("UPDATE turns SET plan=? WHERE event_id='e1'",
+                     (json.dumps(plan, ensure_ascii=False),))
+        conn.commit()
+        conn.close()
+
+        before_calls = len(evaluator.calls)
+        second = reverify(self.copy, engine)
+        self.assertEqual(second["validated"], 0)
+        self.assertEqual(second["needs_review"], 1)
+        self.assertEqual(len(evaluator.calls), before_calls)
+        self.assertNotEqual(
+            read_row(self.copy_db, "e1")["validation_status"], "validated")
 
 
 # --- CLI smoke tests --------------------------------------------------------

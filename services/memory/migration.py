@@ -37,9 +37,9 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 import time
-from collections import Counter
 
 from . import migration_preflight, quality
 from .migration_preflight import PreflightError
@@ -77,6 +77,23 @@ _BASELINE_COLUMNS = ("event_id", "payload", "digest", "status", "created_at")
 # transient vector-store failure is retried; semantic/credential/plan decisions
 # are terminal.
 _RETRYABLE_ERROR_KINDS = ("store_error",)
+
+# The only status transitions a *trusted* conversion may apply to an immutable
+# source row.  ``done`` legacy receipts may be re-queued (``pending``), archived
+# (``done``) or tombstoned (``forgotten``); every other status is preserved
+# verbatim.  Any transition outside this whitelist is conservation drift.
+_ALLOWED_MIGRATED_STATUS = {
+    "done": frozenset({"done", "pending", "forgotten"}),
+    "pending": frozenset({"pending"}),
+    "needs_review": frozenset({"needs_review"}),
+    "forgotten": frozenset({"forgotten"}),
+}
+
+
+def _digest_set_hash(digests) -> str:
+    """sha256 over the sorted stored digests (duplicates preserved)."""
+    return hashlib.sha256(
+        "\n".join(sorted(digests)).encode("utf-8")).hexdigest()
 
 
 class MigrationError(Exception):
@@ -141,26 +158,135 @@ def _check_target_alias(source_path: str, source_dir, copy_dir, copy_path: str) 
         raise _fail("target_alias")
 
 
-def _is_known_copy(copy_dir, copy_path: str) -> bool:
-    """True when an existing target is recognizably one of our copies.
-
-    A converter manifest marks it outright; otherwise it must at least look
-    like a memory ingestion database (baseline ``turns`` columns).  Anything
-    else is an unknown database we must never overwrite.
+def _symlink_components(path):
+    """Symlink components of an absolute path, excluding root-level system
+    aliases (macOS ``/var`` -> ``/private/var``), which only the superuser and
+    the OS installer create.  Any symlink below the filesystem root is a
+    redirect an attacker (or a mistaken operator) can point at a victim.
     """
-    if os.path.exists(os.path.join(os.fspath(copy_dir), MANIFEST_NAME)):
-        return True
+    found = []
+    current = os.path.abspath(os.fspath(path))
+    while True:
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        try:
+            if os.path.islink(current) and parent != os.sep:
+                found.append(current)
+        except OSError:
+            pass
+        current = parent
+    return found
+
+
+def _validate_target_path(copy_dir, copy_path: str) -> None:
+    """Refuse an unsafe target *before* any write/chmod.
+
+    A symlink anywhere in ``copy_dir``/DB path (or the DB itself), a DB that is
+    not a regular file, or a DB with more than one hard link (an unknown
+    hardlink the caller deliberately pointed us at) is rejected.  The
+    source-aliasing hardlink is caught earlier by :func:`_check_target_alias`.
+    """
+    if _symlink_components(copy_path):
+        raise _fail("target_symlink")
+    if os.path.lexists(copy_path):
+        st = os.lstat(copy_path)
+        if stat.S_ISLNK(st.st_mode):
+            raise _fail("target_symlink")
+        if not stat.S_ISREG(st.st_mode):
+            raise _fail("target_not_regular")
+        if st.st_nlink > 1:
+            raise _fail("target_hardlink")
+
+
+def _source_provenance(source_path: str):
+    """``(digest_set_hash, {event_id: (digest, payload, created_at)})`` read-only.
+
+    Used to (a) fingerprint the source for the manifest and (b) verify that an
+    existing manifest-less target is a *byte-faithful snapshot* of this source
+    (same rows, same created_at) rather than a same-schema impostor.
+    """
+    conn = migration_preflight._open_readonly(source_path)
     try:
-        conn = _connect(copy_path)
-    except sqlite3.Error:
-        return False
+        digests = []
+        rows = {}
+        for event_id, digest, payload, created_at in conn.execute(
+                "SELECT event_id,digest,payload,created_at FROM turns"):
+            digests.append(digest)
+            rows[event_id] = (digest, payload, created_at)
+        return _digest_set_hash(digests), rows
+    finally:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        conn.close()
+
+
+def _read_target_rows_readonly(copy_path: str):
+    """Read ``{event_id: (digest, payload, created_at)}`` read-only; ``None`` when
+    the target is not a readable memory database.
+
+    Opened read-only so probing an existing (possibly hostile) target never
+    mutates its bytes, permissions or directory entry.
+    """
+    try:
+        conn = migration_preflight._open_readonly(os.path.abspath(copy_path))
+    except PreflightError:
+        return None
     try:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(turns)")}
+        if not all(name in columns for name in _BASELINE_COLUMNS):
+            return None
+        rows = {}
+        for event_id, digest, payload, created_at in conn.execute(
+                "SELECT event_id,digest,payload,created_at FROM turns"):
+            rows[event_id] = (digest, payload, created_at)
+        return rows
     except sqlite3.Error:
-        return False
+        return None
     finally:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
         conn.close()
-    return all(name in columns for name in _BASELINE_COLUMNS)
+
+
+def _copy_is_faithful_snapshot(copy_path: str, source_rows) -> bool:
+    """True when every target row is byte-identical to a source row.
+
+    A manifest-less target is only trusted when it is a verifiable content
+    mapping of the current source: same ``(digest, payload, created_at)`` for
+    every ``event_id`` it holds.  A same-schema impostor (e.g. one that copied
+    the payloads but rewrote ``created_at``) fails this and is refused.
+    """
+    target_rows = _read_target_rows_readonly(copy_path)
+    if target_rows is None:
+        return False
+    for event_id, triple in target_rows.items():
+        if source_rows.get(event_id) != triple:
+            return False
+    return True
+
+
+def _is_known_copy(copy_dir, copy_path: str, source_digest_hash: str, source_rows) -> bool:
+    """True only for a target we can prove provenance for.
+
+    A copy is *known* when it carries our converter manifest with a matching
+    ``converterVersion`` **and** a provenance fingerprint equal to the current
+    source's digest-set hash.  Without a manifest, the target must be a
+    verifiable byte-faithful snapshot of the source.  A bare baseline ``turns``
+    schema, a forged/mismatched manifest, or a same-schema impostor is **not**
+    known and must never reach ``_backup``'s delete/rebuild.
+    """
+    manifest = _load_manifest(copy_dir)
+    if manifest is not None:
+        if manifest.get("converterVersion") != CONVERTER_VERSION:
+            raise _fail("manifest_version_drift")
+        recorded = manifest.get("source_digest_set_hash")
+        return isinstance(recorded, str) and recorded == source_digest_hash
+    return _copy_is_faithful_snapshot(copy_path, source_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +306,19 @@ def snapshot(source_dir, copy_dir) -> dict:
     copy_path = _db_path(copy_dir)
 
     _check_target_alias(source_path, source_dir, copy_dir, copy_path)
+    _validate_target_path(copy_dir, copy_path)
+
+    try:
+        source_digest_hash, source_rows = _source_provenance(source_path)
+    except PreflightError:
+        raise _fail("source_not_readable") from None
 
     os.makedirs(copy_dir, mode=0o700, exist_ok=True)
     os.chmod(copy_dir, 0o700)
 
-    if (os.path.exists(copy_path) and os.path.getsize(copy_path) > 0
-            and not _is_known_copy(copy_dir, copy_path)):
-        raise _fail("unknown_existing_db")
+    if os.path.exists(copy_path):
+        if not _is_known_copy(copy_dir, copy_path, source_digest_hash, source_rows):
+            raise _fail("unknown_existing_db")
 
     if not _is_usable_copy(copy_path):
         try:
@@ -289,13 +421,17 @@ def _copy_event_ids(copy_path: str) -> set:
         conn.close()
 
 
-def _write_columns(copy_path: str, event_id: str, columns: dict) -> None:
+def _write_columns(copy_path: str, event_id: str, columns: dict, *, require=None) -> None:
     keys = list(columns)
     assignments = ",".join(f"{key}=?" for key in keys)
+    where = "event_id=?"
     params = [columns[key] for key in keys] + [event_id]
+    for guard_key, guard_value in (require or {}).items():
+        where += f" AND {guard_key}=?"
+        params.append(guard_value)
     conn = _connect(copy_path)
     try:
-        conn.execute(f"UPDATE turns SET {assignments} WHERE event_id=?", params)
+        conn.execute(f"UPDATE turns SET {assignments} WHERE {where}", params)
         conn.commit()
     finally:
         conn.close()
@@ -318,8 +454,7 @@ def _insert_row(copy_path: str, row: dict) -> None:
 # 2. manifest
 # ---------------------------------------------------------------------------
 def _build_manifest(rows: list, dry_run: bool) -> dict:
-    digests = sorted(row["digest"] for row in rows)
-    digest_hash = hashlib.sha256("\n".join(digests).encode("utf-8")).hexdigest()
+    digest_hash = _digest_set_hash(row["digest"] for row in rows)
     done = 0
     by_role: dict[str, int] = {}
     for row in rows:
@@ -622,13 +757,14 @@ def _pending_user_rows(copy_path: str) -> list:
 
     Pending rows awaiting first validation, plus rows whose only failure was a
     transient vector-store error (``store_error``) so a later pass can recover
-    them.  Terminal ``needs_review`` reasons are never retried.
+    them.  Terminal ``needs_review`` reasons are never retried.  The persisted
+    ``plan`` (if any) is returned so a retry reuses it instead of re-extracting.
     """
     placeholders = ",".join("?" for _ in _RETRYABLE_ERROR_KINDS)
     conn = _connect(copy_path)
     try:
         return conn.execute(
-            "SELECT event_id,payload FROM turns "
+            "SELECT event_id,payload,plan FROM turns "
             "WHERE forgotten=0 AND (status='pending' "
             f"OR (status='needs_review' AND error_kind IN ({placeholders})))",
             _RETRYABLE_ERROR_KINDS).fetchall()
@@ -636,8 +772,73 @@ def _pending_user_rows(copy_path: str) -> list:
         conn.close()
 
 
+def _load_persisted_plan(raw):
+    """Parse a persisted ``plan`` column.  ``None`` when absent; ``False`` when
+    present but corrupt (so a retry fails closed instead of re-extracting)."""
+    if raw is None or raw == "":
+        return None
+    try:
+        plan = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return plan if isinstance(plan, dict) else False
+
+
+def _row_is_forgotten(copy_path: str, event_id: str, forget_store, user_id: str, text) -> bool:
+    """True when the row is flagged forgotten or a tombstone matches it now."""
+    conn = _connect(copy_path)
+    try:
+        row = conn.execute("SELECT forgotten FROM turns WHERE event_id=?",
+                           (event_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is not None and int(row[0] or 0) == 1:
+        return True
+    return forget_store.match(user_id, event_id, text) is not None
+
+
+def _mark_forgotten(copy_path: str, event_id: str) -> None:
+    _write_columns(copy_path, event_id, {
+        "status": "forgotten", "forgotten": 1, "validation_status": None, "error_kind": None})
+
+
+def _delete_effects(engine, ids) -> bool:
+    """Best-effort compensation: delete vector effects just written for a row
+    that a forget committed to mid-flight.  Returns False when the engine
+    exposes no usable delete capability (caller must then fail closed)."""
+    memory = getattr(engine, "memory", None)
+    delete = getattr(memory, "delete", None)
+    if not callable(delete):
+        return False
+    ok = True
+    for memory_id in ids:
+        if not isinstance(memory_id, str) or not memory_id:
+            ok = False
+            continue
+        try:
+            delete(memory_id)
+        except Exception:  # noqa: BLE001 - any delete failure is not a success
+            ok = False
+    return ok
+
+
+def _persist_plan(copy_path: str, event_id: str, plan: dict) -> None:
+    """Durably persist a validated plan BEFORE any vector effect (F004)."""
+    _write_columns(copy_path, event_id, {
+        "plan": json.dumps(plan, ensure_ascii=False),
+        "validation_status": plan.get("validation_status"),
+        "extraction_version": plan.get("extraction_version"),
+        "quality": json.dumps(plan.get("quality") or {}, ensure_ascii=False),
+    }, require={"forgotten": 0})
+
+
 def _write_receipt(copy_path: str, event_id: str, *, status: str,
-                   validation_status, plan: dict, error_kind, stored_ids) -> None:
+                   validation_status, plan: dict, error_kind, stored_ids,
+                   require=None) -> None:
+    # A receipt never overwrites a row a forget has since tombstoned: the
+    # ``forgotten=0`` guard makes the settlement fence race-proof.
+    if require is None:
+        require = {"forgotten": 0}
     _write_columns(copy_path, event_id, {
         "status": status,
         "validation_status": validation_status,
@@ -646,22 +847,28 @@ def _write_receipt(copy_path: str, event_id: str, *, status: str,
         "quality": json.dumps(plan.get("quality") or {}, ensure_ascii=False),
         "plan": json.dumps(plan, ensure_ascii=False),
         "stored_ids": json.dumps(stored_ids, ensure_ascii=False),
-    })
+    }, require=require)
 
 
-def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig) -> str:
-    try:
-        plan = engine.prepare(turn)
-    except Exception as error:  # noqa: BLE001 - sanitized into a stable kind
-        _write_columns(copy_path, turn.event_id, {
-            "status": "needs_review", "validation_status": "needs_review",
-            "error_kind": _safe_kind(error)})
-        return "errors"
-    if not isinstance(plan, dict):
-        _write_columns(copy_path, turn.event_id, {
-            "status": "needs_review", "validation_status": "needs_review",
-            "error_kind": "invalid_plan"})
-        return "errors"
+def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig,
+                  forget_store, persisted_plan) -> str:
+    if persisted_plan is None:
+        try:
+            plan = engine.prepare(turn)
+        except Exception as error:  # noqa: BLE001 - sanitized into a stable kind
+            _write_columns(copy_path, turn.event_id, {
+                "status": "needs_review", "validation_status": "needs_review",
+                "error_kind": _safe_kind(error)})
+            return "errors"
+        if not isinstance(plan, dict):
+            _write_columns(copy_path, turn.event_id, {
+                "status": "needs_review", "validation_status": "needs_review",
+                "error_kind": "invalid_plan"})
+            return "errors"
+    else:
+        # A persisted plan is reused verbatim (F004); it is never replaced by a
+        # fresh extraction, so a tampered/drifted plan fails closed below.
+        plan = persisted_plan
 
     status = plan.get("validation_status")
     if status in ("needs_review", "rejected"):
@@ -694,14 +901,39 @@ def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig) -
             error_kind="invalid_plan", stored_ids={"stored": [], "reused": []})
         return "needs_review"
 
+    # Privacy fence A: a forget committed before/while the plan was prepared
+    # must stop the store from ever starting.
+    if _row_is_forgotten(copy_path, turn.event_id, forget_store, turn.user_id, turn.text):
+        _mark_forgotten(copy_path, turn.event_id)
+        return "forgotten"
+
+    # F004: persist the validated plan BEFORE the vector effect so a crash or a
+    # later store failure is recovered from the *same* plan (zero re-extraction).
+    _persist_plan(copy_path, turn.event_id, plan)
+
     try:
         result = engine.store(turn, plan)
     except Exception as error:  # noqa: BLE001 - sanitized into a stable kind
+        # A forget committed while the store was in flight: never validated.
+        if _row_is_forgotten(copy_path, turn.event_id, forget_store, turn.user_id, turn.text):
+            _mark_forgotten(copy_path, turn.event_id)
+            return "forgotten"
         _write_receipt(
             copy_path, turn.event_id, status="needs_review",
             validation_status="needs_review", plan=plan,
             error_kind=_store_kind(error), stored_ids={"stored": [], "reused": []})
         return "errors"
+
+    # Privacy fence B: a forget committed around the store must never be
+    # recorded as validated.  Compensate the effects just written; when deletion
+    # is impossible the row is held for review, never validated.
+    if _row_is_forgotten(copy_path, turn.event_id, forget_store, turn.user_id, turn.text):
+        stored = result.get("stored") if isinstance(result, dict) else None
+        ids = [mid for mid in (stored or []) if isinstance(mid, str) and mid]
+        deleted = _delete_effects(engine, ids)
+        _mark_forgotten(copy_path, turn.event_id)
+        return "forgotten" if deleted else "needs_review"
+
     if not isinstance(result, dict) or not result.get("ok"):
         _write_receipt(
             copy_path, turn.event_id, status="needs_review",
@@ -717,9 +949,18 @@ def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig) -
             validation_status="needs_review", plan=plan,
             error_kind="store_incomplete", stored_ids={"stored": [], "reused": []})
         return "needs_review"
+
+    # Privacy fence C: the settlement UPDATE carries a ``forgotten=0`` guard and
+    # we re-read to confirm it landed.  A forget that raced in after the guard
+    # leaves the row forgotten -> never validated.
     _write_receipt(
         copy_path, turn.event_id, status="done", validation_status="validated",
-        plan=plan, error_kind=None, stored_ids={"stored": stored, "reused": reused})
+        plan=plan, error_kind=None, stored_ids={"stored": stored, "reused": reused},
+        require={"forgotten": 0})
+    if _row_is_forgotten(copy_path, turn.event_id, forget_store, turn.user_id, turn.text):
+        _delete_effects(engine, stored)
+        _mark_forgotten(copy_path, turn.event_id)
+        return "forgotten"
     return "validated"
 
 
@@ -729,19 +970,23 @@ def reverify(copy_dir, engine) -> dict:
     ``engine`` is supplied by the caller (a ``Mem0Engine`` with an injected
     memory/evaluator, or a test double).  Credential-like or otherwise
     unverifiable rows are written back as ``needs_review`` with a sanitized
-    ``error_kind``; the original payload/text is never dropped.
+    ``error_kind``; the original payload/text is never dropped.  A row whose
+    store already failed is retried from its persisted plan (no re-extraction),
+    and a forget committed at any point in the pipeline suppresses the row.
     """
-    from .service import Turn  # lazy: keeps the read-only CLI import light
+    from . import lifecycle  # lazy: keeps the read-only CLI import light
+    from .service import Turn
 
     copy_path = _db_path(copy_dir)
     _ensure_copy_schema(copy_path)
     config = getattr(engine, "quality", None)
     if not isinstance(config, quality.QualityConfig):
         config = quality.QualityConfig()
+    forget_store = lifecycle.ForgetStore(lambda: _connect(copy_path))
 
     counts = {"validated": 0, "needs_review": 0, "no_facts": 0,
-              "assistant_archived": 0, "errors": 0}
-    for event_id, payload in _pending_user_rows(copy_path):
+              "assistant_archived": 0, "errors": 0, "forgotten": 0}
+    for event_id, payload, plan_json in _pending_user_rows(copy_path):
         try:
             turn = Turn.model_validate_json(payload)
         except Exception:  # noqa: BLE001 - malformed persisted payload
@@ -756,7 +1001,16 @@ def reverify(copy_dir, engine) -> dict:
                 "error_kind": "invalid_payload"})
             counts["errors"] += 1
             continue
-        outcome = _reverify_one(copy_path, engine, turn, config)
+        persisted = _load_persisted_plan(plan_json)
+        if persisted is False:
+            # A previously-persisted but corrupt plan fails closed; it is never
+            # silently replaced by a fresh extraction or a new request id.
+            _write_columns(copy_path, event_id, {
+                "status": "needs_review", "validation_status": "needs_review",
+                "error_kind": "invalid_plan"}, require={"forgotten": 0})
+            counts["needs_review"] += 1
+            continue
+        outcome = _reverify_one(copy_path, engine, turn, config, forget_store, persisted)
         counts[outcome] = counts.get(outcome, 0) + 1
     return counts
 
@@ -764,8 +1018,8 @@ def reverify(copy_dir, engine) -> dict:
 # ---------------------------------------------------------------------------
 # 6. verify_conservation
 # ---------------------------------------------------------------------------
-def _digests(path: str, *, readonly: bool = False) -> list:
-    """Read every row digest.
+def _conservation_rows(path: str, *, readonly: bool) -> dict:
+    """Read every row as ``{event_id: {payload,digest,status,created_at,forgotten}}``.
 
     ``readonly=True`` opens the database with the preflight read-only snapshot
     (URI ``mode=ro`` + ``PRAGMA query_only``) so the source is never opened for
@@ -776,7 +1030,17 @@ def _digests(path: str, *, readonly: bool = False) -> list:
     else:
         conn = _connect(path)
     try:
-        return [row[0] for row in conn.execute("SELECT digest FROM turns")]
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(turns)")}
+        forgotten = "forgotten" if "forgotten" in columns else "0"
+        select = "event_id,payload,digest,status,created_at," + forgotten
+        rows = {}
+        for event_id, payload, digest, status, created_at, forgotten_flag in conn.execute(
+                "SELECT " + select + " FROM turns"):
+            rows[event_id] = {
+                "payload": payload, "digest": digest, "status": status,
+                "created_at": created_at, "forgotten": int(forgotten_flag or 0),
+            }
+        return rows
     finally:
         if readonly:
             try:
@@ -786,31 +1050,120 @@ def _digests(path: str, *, readonly: bool = False) -> list:
         conn.close()
 
 
-def verify_conservation(source_dir, copy_dir) -> dict:
-    """Assert the copy neither adds, drops nor duplicates any source row.
+def _payload_digest(payload) -> str:
+    """Re-derive the stored digest from the stored payload (canonical JSON)."""
+    try:
+        obj = json.loads(payload)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        raise _fail("conservation_violation") from None
+    if not isinstance(obj, dict):
+        raise _fail("conservation_violation")
+    return migration_preflight._canonical_digest(obj)
 
-    Compares the multiset of row digests (and totals).  The source is opened
-    read-only; returns a redacted report and raises :class:`MigrationError` on
-    any mismatch.
+
+def _tombstones_consistent(copy_path: str, copy_rows: dict):
+    """Every tombstoned event must be marked forgotten in the copy.
+
+    ``None`` when the copy's tombstone table cannot be read; ``True`` when there
+    is no tombstone table at all (a pure legacy snapshot).
+    """
+    conn = _connect(copy_path)
+    try:
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "tombstones" not in tables:
+            return True
+        tombstones = [row[0] for row in conn.execute("SELECT event_id FROM tombstones")]
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    for event_id in tombstones:
+        row = copy_rows.get(event_id)
+        if row is not None and not row["forgotten"]:
+            return False
+    return True
+
+
+def _manifest_provenance_ok(copy_dir, source_rows: dict) -> bool:
+    """The copy's manifest (if any) must still fingerprint this source."""
+    manifest = _load_manifest(copy_dir)
+    if manifest is None:
+        return True
+    if manifest.get("converterVersion") != CONVERTER_VERSION:
+        return False
+    recorded = manifest.get("source_digest_set_hash")
+    return isinstance(recorded, str) and recorded == _digest_set_hash(
+        row["digest"] for row in source_rows.values())
+
+
+def verify_conservation(source_dir, copy_dir) -> dict:
+    """Assert the copy conserves the immutable source, field by field.
+
+    Every source ``event_id`` must survive with an identical ``payload``, a
+    ``digest`` that re-derives from that payload, an identical ``created_at``
+    and a status reached only through the trusted migration whitelist.  The
+    ``event_id`` sets must be equal (nothing added, dropped or duplicated), the
+    copy's forgotten flags must agree with its tombstones, and any manifest
+    provenance must still fingerprint this source.  The source is opened
+    read-only; the returned report is redacted and any mismatch raises
+    :class:`MigrationError`.
     """
     source_path = _validated_source(source_dir)
     copy_path = _db_path(copy_dir)
 
     try:
-        source_counts = Counter(_digests(source_path, readonly=True))
+        source_rows = _conservation_rows(source_path, readonly=True)
     except PreflightError:
         raise _fail("source_not_readable") from None
-    copy_counts = Counter(_digests(copy_path))
-    added = copy_counts - source_counts
-    missing = source_counts - copy_counts
+    copy_rows = _conservation_rows(copy_path, readonly=False)
+
+    added = set(copy_rows) - set(source_rows)
+    missing = set(source_rows) - set(copy_rows)
+    mismatches = 0
+    for event_id, srow in source_rows.items():
+        crow = copy_rows.get(event_id)
+        if crow is None:
+            continue
+        if srow["payload"] != crow["payload"]:
+            mismatches += 1
+            continue
+        try:
+            if _payload_digest(srow["payload"]) != srow["digest"]:
+                mismatches += 1
+                continue
+            if _payload_digest(crow["payload"]) != crow["digest"]:
+                mismatches += 1
+                continue
+        except MigrationError:
+            mismatches += 1
+            continue
+        if srow["created_at"] != crow["created_at"]:
+            mismatches += 1
+            continue
+        allowed = _ALLOWED_MIGRATED_STATUS.get(srow["status"])
+        if allowed is None or crow["status"] not in allowed:
+            mismatches += 1
+            continue
+        if srow["forgotten"] and not crow["forgotten"]:
+            mismatches += 1
+            continue
+
+    if _tombstones_consistent(copy_path, copy_rows) is False:
+        mismatches += 1
+    if not _manifest_provenance_ok(copy_dir, source_rows):
+        mismatches += 1
+
+    matches = not added and not missing and mismatches == 0
     report = {
-        "source_rows": sum(source_counts.values()),
-        "copy_rows": sum(copy_counts.values()),
-        "digests_match": source_counts == copy_counts,
-        "added_rows": sum(added.values()),
-        "missing_rows": sum(missing.values()),
+        "source_rows": len(source_rows),
+        "copy_rows": len(copy_rows),
+        "digests_match": matches,
+        "added_rows": len(added),
+        "missing_rows": len(missing),
+        "field_mismatches": mismatches,
     }
-    if source_counts != copy_counts:
+    if not matches:
         raise _fail("conservation_violation")
     return report
 
