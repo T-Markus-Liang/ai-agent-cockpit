@@ -20,6 +20,73 @@ export const NATIVE_ACP_BROKER_ERROR = 'NATIVE_ACP_BROKER_ERROR'
 // never off a human message.
 export const REVIEWER_READONLY_APPLIED = 'REVIEWER_READONLY_APPLIED'
 
+// ---------------------------------------------------------------------------
+// External-occupancy observation (V41)
+//
+// A native GUI / app session may be held by an EXTERNAL process the control plane
+// cannot see: the in-process SESSION_LOCKED / SESSION_BUSY guards only know about
+// executions THIS store created, so a local lock can NEVER stand in for an
+// external App / GUI lock. Occupancy is therefore observed through a separate,
+// OPTIONAL port whose honest default is `unknown` — NEVER `clear` — because the
+// absence of evidence of an external occupant is not evidence of absence.
+//
+// The result is recorded EVERY launch as its own Evidence log line (a "record
+// level concern", not an admission gate): whether a `suspected` state should
+// BLOCK or make a launch WAIT is a product decision this slice deliberately does
+// not take. The default probe itself just answers `unknown`.
+// ---------------------------------------------------------------------------
+
+// The three occupancy states. `clear` requires positive evidence, so it is never
+// the default; `suspected` is an observed hint; `unknown` is the honest answer
+// when no probe is configured, a probe fails, or a probe returns a shape this
+// executor does not recognise.
+export const OCCUPANCY_STATES = Object.freeze(['clear', 'suspected', 'unknown'])
+
+// Why the default probe answers `unknown`: no external-occupancy source is wired.
+export const OCCUPANCY_PROBE_UNCONFIGURED = '未配置外部占用探测'
+
+// The longest occupancy Evidence summary the executor writes: the state and the
+// detail are always carried, truncated to this bound (mirroring the 4000-char cap
+// on the prompt reply summary).
+export const OCCUPANCY_SUMMARY_MAX = 300
+
+// The default occupancy probe. Deliberately does NOT claim `clear`: with no
+// external-occupancy source configured, `unknown` plus the reason is the only
+// honest answer — a local lock is not an external App lock.
+export async function defaultOccupancyProbe() {
+  return { state: 'unknown', detail: OCCUPANCY_PROBE_UNCONFIGURED }
+}
+
+// Run the occupancy probe and normalise its result. NEVER throws: a probe that
+// throws, or that returns an unrecognised state, is reported as `unknown` with
+// the error class / the offending value recorded — so a broken probe can neither
+// make a launch look `clear` nor block it. A missing detail is filled with an
+// honest per-state default rather than fabricated evidence.
+export async function resolveOccupancy({ probe, source, nativeSessionId, cwd } = {}) {
+  const run = typeof probe === 'function' ? probe : defaultOccupancyProbe
+  let raw
+  try {
+    raw = await run({ source, nativeSessionId, cwd })
+  } catch (error) {
+    const category = error?.code ?? error?.name ?? 'Error'
+    return { state: 'unknown', detail: `外部占用探测失败（${category}）: ${error?.message ?? String(error)}`, probeError: String(category) }
+  }
+  if (!OCCUPANCY_STATES.includes(raw?.state)) {
+    return { state: 'unknown', detail: `外部占用探测返回无法识别的状态：${JSON.stringify(raw?.state)}`, probeError: 'OCCUPANCY_PROBE_UNRECOGNIZED' }
+  }
+  const detail = typeof raw?.detail === 'string' && raw.detail.trim()
+    ? raw.detail.trim()
+    : (raw.state === 'clear' ? '未检测到外部占用迹象' : raw.state === 'suspected' ? '检测到可能的外部占用迹象' : OCCUPANCY_PROBE_UNCONFIGURED)
+  return { state: raw.state, detail }
+}
+
+// Bound the occupancy Evidence summary: it always carries the state (`state=…`) and
+// the detail, truncated to OCCUPANCY_SUMMARY_MAX characters.
+export function occupancyEvidenceSummary(occupancy) {
+  const base = `外部占用探测（state=${occupancy.state}）: ${occupancy.detail}`
+  return base.length > OCCUPANCY_SUMMARY_MAX ? `${base.slice(0, OCCUPANCY_SUMMARY_MAX - 3)}...` : base
+}
+
 // Grace window between asking an in-flight agent to stop (ACP `session/cancel`)
 // and escalating to SIGTERM. The agent gets this long to wind the prompt down
 // itself; anything slower is force-terminated. Exported so tests can assert the
@@ -412,11 +479,19 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
 // in the run result and as an Evidence log line — never silently accepted. See
 // docs/handoffs/p4-reviewer-readonly-r1.md.
 //
+// External occupancy (V41): an OPTIONAL `occupancyProbe({ source, nativeSessionId,
+// cwd })` is called once per launch — AFTER the durable launch intent, BEFORE the
+// spawn — and its result is recorded as its own bounded, redacted Evidence log
+// line under a dedicated `${key}:occupancy` idempotency key. The default probe
+// answers `unknown` (never `clear`) because a local lock is not an external App
+// lock; a probe that fails is normalised to `unknown` and does NOT block the
+// launch. Whether `suspected` should block/wait is a product decision left open.
+//
 // The engine ref is attached exactly ONCE (step 2); the previous post-spawn
 // second attach is intentionally dropped, so there is a single idempotency-
 // keyed attach step. Each store step keeps its own `${idempotencyKey ?? executionId}:<step>`
 // key, so replaying one step never collides with another.
-export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, sessionRefId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false, cancelGraceMs } = {}) {
+export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, sessionRefId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false, cancelGraceMs, occupancyProbe } = {}) {
   if (!store) throw new StoreError('STORE_REQUIRED', 'control-plane store is required', 500)
   const aggregate = await store.getTask(taskId)
   const execution = aggregate.executions.find((candidate) => candidate.id === executionId)
@@ -454,6 +529,16 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
 
   let launched = false
   try {
+    // (2b) external-occupancy observation (V41): AFTER the durable launch intent,
+    // BEFORE the spawn. The probe result is recorded as its own bounded, redacted
+    // Evidence log line under a dedicated `${key}:occupancy` key, so replaying one
+    // step never collides with another. resolveOccupancy NEVER throws — a probe
+    // that fails or returns an unrecognised state is normalised to `unknown` — so a
+    // broken probe can neither fake `clear` nor block the launch (occupancy is a
+    // record-level concern, not an admission gate).
+    const occupancy = await resolveOccupancy({ probe: occupancyProbe, source, nativeSessionId, cwd })
+    await store.addEvidence(executionId, { kind: 'log', summary: occupancyEvidenceSummary(occupancy), source: `${source}:acp`, redacted: true }, { idempotencyKey: step('occupancy') })
+    const occupancyNote = occupancy.state === 'suspected' ? '；检测到可能的外部占用迹象（不阻断，仅记录）' : ''
     // (3) the approval must cover this exact execution scope and a running execution.
     await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, {
       executionGuard: { executionId, taskId, ...scope },
@@ -481,16 +566,16 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
     // cancelled; whichever writes first, the other is an idempotent no-op.
     if (result.stopReason === 'cancelled') {
       await store.addEvidence(executionId, { kind: 'message', summary: 'native ACP prompt was cancelled (stopReason=cancelled)', source: `${source}:acp`, redacted: true }, { idempotencyKey: step('evidence') })
-      const cancelled = await store.updateExecutionStatus(executionId, { status: 'cancelled', outcome: 'native ACP prompt was cancelled through ACP session/cancel' }, { idempotencyKey: step('cancelled') })
-      return { execution: cancelled.execution, reply: result.text, stopReason: 'cancelled', cancelled: true, agentInfo: result.agentInfo, reviewerReadonly: result.reviewerReadonly }
+      const cancelled = await store.updateExecutionStatus(executionId, { status: 'cancelled', outcome: `native ACP prompt was cancelled through ACP session/cancel${occupancyNote}` }, { idempotencyKey: step('cancelled') })
+      return { execution: cancelled.execution, reply: result.text, stopReason: 'cancelled', cancelled: true, agentInfo: result.agentInfo, reviewerReadonly: result.reviewerReadonly, occupancy }
     }
     const text = result.text ?? ''
     const summary = text.trim().length > 0
       ? (text.length > 4000 ? `${text.slice(0, 3997)}...` : text)
       : `native ACP prompt returned no text (stopReason=${result.stopReason ?? 'unknown'})`
     await store.addEvidence(executionId, { kind: 'message', summary, source: `${source}:acp`, redacted: true }, { idempotencyKey: step('evidence') })
-    const updated = await store.updateExecutionStatus(executionId, { status: 'verifying', outcome: `native ACP prompt completed (${result.stopReason ?? 'unknown'})` }, { idempotencyKey: step('verifying') })
-    return { execution: updated.execution, reply: result.text, stopReason: result.stopReason, agentInfo: result.agentInfo, reviewerReadonly: result.reviewerReadonly }
+    const updated = await store.updateExecutionStatus(executionId, { status: 'verifying', outcome: `native ACP prompt completed (${result.stopReason ?? 'unknown'})${occupancyNote}` }, { idempotencyKey: step('verifying') })
+    return { execution: updated.execution, reply: result.text, stopReason: result.stopReason, agentInfo: result.agentInfo, reviewerReadonly: result.reviewerReadonly, occupancy }
   } catch (error) {
     // A cancel the agent ignored (the process was force-terminated) is recorded
     // honestly as cancelled, never as a generic failure and never as a success.

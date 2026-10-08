@@ -17,16 +17,21 @@ import {
   NATIVE_ACP_CLIENT_TOOL_DENIED,
   NATIVE_ACP_CLIENT_TOOL_UNSUPPORTED,
   NATIVE_CANCEL_GRACE_MS,
+  OCCUPANCY_PROBE_UNCONFIGURED,
+  OCCUPANCY_SUMMARY_MAX,
   REVIEWER_READONLY_APPLIED,
   applyReviewerReadonlyConstraint,
   assertSessionRefMatches,
   cancelNativeExecution,
+  defaultOccupancyProbe,
   executeNativeSessionPrompt,
   nativeAcpChildEnv,
   nativeAcpSandboxSpec,
   nativeCancelPlan,
   nativeInFlightExecutionIds,
   nativePromptPlan,
+  occupancyEvidenceSummary,
+  resolveOccupancy,
   runNativeAcpPrompt,
 } from '../control-plane/native-acp-executor.mjs'
 import { ControlPlaneStore, parametersDigest } from '../control-plane/store.mjs'
@@ -1086,5 +1091,178 @@ test('cancelNativeExecution refuses a malformed stored sessionRefId as a 400 bef
     )
     assert.equal((await f.store.getExecution(f.executionId)).status, 'running', 'a malformed stored ref never cancels the execution')
     assert.equal((await f.store.getApproval(f.approvalId)).usedAt, undefined, 'the cancel approval is never consumed')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------------------
+// External-occupancy observation (V41)
+//
+// The occupancy probe is an OPTIONAL port whose honest default is `unknown` (a
+// local SESSION_LOCKED / SESSION_BUSY lock can never stand in for an external
+// App / GUI lock, so absent evidence we must NOT claim `clear`). Every launch
+// records its occupancy as its own bounded, redacted Evidence log line under a
+// dedicated `${key}:occupancy` key, and `suspected` is surfaced in the outcome
+// without blocking the spawn (record-level concern, not an admission gate).
+// Fully synthetic: fake ACP agent, spy sandbox, scratch store dir; no real CLI,
+// no network, no user files.
+// ---------------------------------------------------------------------------
+
+// The occupancy Evidence log lines recorded for one execution, in order.
+const occupancyEvidence = async (store, taskId) =>
+  (await store.getTask(taskId)).evidence.filter((item) => item.kind === 'log' && item.summary.includes('外部占用探测'))
+
+test('the default occupancy probe answers unknown (never clear), and resolveOccupancy normalises the three states honestly', async () => {
+  // The default probe must NEVER claim `clear`: with no external-occupancy source
+  // wired, `unknown` + the reason is the only honest answer.
+  assert.deepEqual(await defaultOccupancyProbe(), { state: 'unknown', detail: OCCUPANCY_PROBE_UNCONFIGURED })
+  assert.deepEqual(await resolveOccupancy({}), { state: 'unknown', detail: OCCUPANCY_PROBE_UNCONFIGURED }, 'no probe configured → unknown')
+  assert.deepEqual(await resolveOccupancy({ probe: null }), { state: 'unknown', detail: OCCUPANCY_PROBE_UNCONFIGURED }, 'a non-function probe falls back to the default')
+  // The three recognised states pass through with their detail.
+  assert.deepEqual(await resolveOccupancy({ probe: async () => ({ state: 'clear', detail: 'no GUI on this cwd' }) }), { state: 'clear', detail: 'no GUI on this cwd' })
+  assert.deepEqual(await resolveOccupancy({ probe: async () => ({ state: 'suspected', detail: 'GUI open' }) }), { state: 'suspected', detail: 'GUI open' })
+  assert.deepEqual(await resolveOccupancy({ probe: async () => ({ state: 'unknown', detail: 'cannot tell' }) }), { state: 'unknown', detail: 'cannot tell' })
+  // A missing detail gets an honest per-state default rather than fabricated evidence.
+  assert.equal((await resolveOccupancy({ probe: async () => ({ state: 'clear' }) })).detail, '未检测到外部占用迹象')
+  // An unrecognised state fails soft to unknown — never to clear.
+  const weird = await resolveOccupancy({ probe: async () => ({ state: 'maybe' }) })
+  assert.equal(weird.state, 'unknown')
+  assert.equal(weird.probeError, 'OCCUPANCY_PROBE_UNRECOGNIZED')
+  assert.match(weird.detail, /maybe/)
+  // The Evidence summary always carries the state and is bounded.
+  const long = await resolveOccupancy({ probe: async () => ({ state: 'suspected', detail: 'x'.repeat(1000) }) })
+  const summary = occupancyEvidenceSummary(long)
+  assert.match(summary, /state=suspected/)
+  assert.ok(summary.length <= OCCUPANCY_SUMMARY_MAX, `the occupancy summary is bounded (got ${summary.length})`)
+})
+
+test('with no occupancy probe configured the launch records an honest unknown (never clear)', async () => {
+  const f = await launchFixture()
+  try {
+    const result = await executeNativeSessionPrompt({ store: f.store, ...f.input, approvalId: f.approvalId, command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox, idempotencyKey: 'occ-default' })
+    assert.equal(result.execution.status, 'verifying')
+    assert.equal(result.occupancy.state, 'unknown', 'the default probe must never claim clear')
+    assert.equal(result.occupancy.detail, OCCUPANCY_PROBE_UNCONFIGURED)
+    const records = await occupancyEvidence(f.store, f.taskId)
+    assert.equal(records.length, 1, 'exactly one occupancy record is written')
+    assert.match(records[0].summary, /state=unknown/)
+    assert.match(records[0].summary, /未配置外部占用探测/)
+    assert.equal(records[0].kind, 'log')
+    assert.equal(records[0].redacted, true)
+    assert.equal(records[0].source, 'fake:acp')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('the occupancy probe receives the source, nativeSessionId and cwd of the launch', async () => {
+  const seen = []
+  const f = await launchFixture()
+  try {
+    await executeNativeSessionPrompt({ store: f.store, ...f.input, approvalId: f.approvalId, command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox, occupancyProbe: async (input) => { seen.push(input); return { state: 'clear', detail: 'quiet' } }, idempotencyKey: 'occ-args' })
+    assert.deepEqual(seen, [{ source: 'fake', nativeSessionId: 'native-1', cwd: '/tmp' }])
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('a clear / suspected / unknown probe each lands its own occupancy Evidence record', async () => {
+  for (const state of ['clear', 'suspected', 'unknown']) {
+    const f = await launchFixture()
+    try {
+      const result = await executeNativeSessionPrompt({ store: f.store, ...f.input, approvalId: f.approvalId, command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox, occupancyProbe: async () => ({ state, detail: `probe says ${state}` }), idempotencyKey: `occ-${state}` })
+      assert.equal(result.occupancy.state, state)
+      const records = await occupancyEvidence(f.store, f.taskId)
+      assert.equal(records.length, 1, `a ${state} probe writes exactly one record`)
+      assert.match(records[0].summary, new RegExp(`state=${state}`))
+      assert.match(records[0].summary, new RegExp(`probe says ${state}`))
+    } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+  }
+})
+
+test('a probe that throws is recorded as unknown with the error class and never blocks the launch', async () => {
+  const f = await launchFixture()
+  try {
+    const events = []
+    const boom = Object.assign(new Error('gui query exploded'), { code: 'GUI_PROBE_DOWN' })
+    const result = await executeNativeSessionPrompt({
+      store: recordingStore(f.store, events), ...f.input, approvalId: f.approvalId,
+      command: process.execPath, args: FAKE_OK, sandbox: trackingSandbox(events),
+      occupancyProbe: async () => { throw boom },
+      idempotencyKey: 'occ-throw',
+    })
+    assert.equal(result.execution.status, 'verifying', 'a broken probe must not block the launch')
+    assert.equal(result.occupancy.state, 'unknown')
+    assert.equal(result.occupancy.probeError, 'GUI_PROBE_DOWN')
+    assert.match(result.occupancy.detail, /GUI_PROBE_DOWN/, 'the error class is recorded')
+    assert.match(result.occupancy.detail, /gui query exploded/)
+    assert.ok(events.some((event) => event.op === 'spawn'), 'the spawn still happens after a probe failure')
+    const [record] = await occupancyEvidence(f.store, f.taskId)
+    assert.match(record.summary, /state=unknown/)
+    assert.match(record.summary, /GUI_PROBE_DOWN/)
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('a suspected occupancy is recorded, does not block the spawn, and is surfaced in the outcome', async () => {
+  const f = await launchFixture()
+  try {
+    const events = []
+    const result = await executeNativeSessionPrompt({
+      store: recordingStore(f.store, events), ...f.input, approvalId: f.approvalId,
+      command: process.execPath, args: FAKE_OK, sandbox: trackingSandbox(events),
+      occupancyProbe: async () => ({ state: 'suspected', detail: 'GUI 打开同一 cwd' }),
+      idempotencyKey: 'occ-suspected',
+    })
+    assert.equal(result.execution.status, 'verifying', 'a suspected occupancy is recorded, never enforced')
+    assert.equal(result.occupancy.state, 'suspected')
+    assert.ok(events.some((event) => event.op === 'spawn'), 'a suspected occupancy must not block the spawn')
+    assert.match(result.execution.outcome, /检测到可能的外部占用迹象/)
+    const records = await occupancyEvidence(f.store, f.taskId)
+    assert.equal(records.length, 1)
+    assert.match(records[0].summary, /state=suspected/)
+    assert.match(records[0].summary, /GUI 打开同一 cwd/)
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('the occupancy record is written under a dedicated idempotency key so a replay never duplicates it', async () => {
+  const f = await launchFixture()
+  try {
+    const events = []
+    await executeNativeSessionPrompt({
+      store: recordingStore(f.store, events), ...f.input, approvalId: f.approvalId,
+      command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox,
+      occupancyProbe: async () => ({ state: 'clear', detail: 'quiet' }),
+      idempotencyKey: 'occ-replay',
+    })
+    assert.equal((await occupancyEvidence(f.store, f.taskId)).length, 1)
+    const call = events.find((event) => event.op === 'addEvidence' && event.args[1].summary.includes('外部占用探测'))
+    assert.ok(call, 'the occupancy record is written through addEvidence')
+    assert.equal(call.args[2].idempotencyKey, 'occ-replay:occupancy', 'the occupancy key is dedicated')
+    // Replaying the very same write (same key, same input) is an idempotent no-op.
+    const replay = await f.store.addEvidence(f.executionId, call.args[1], { idempotencyKey: call.args[2].idempotencyKey })
+    assert.equal(replay.replay, true)
+    assert.equal((await occupancyEvidence(f.store, f.taskId)).length, 1, 'a replayed occupancy key never adds a second record')
+    // And a full executor replay is refused before any effect (the execution is no longer queued).
+    await assert.rejects(
+      () => executeNativeSessionPrompt({ store: f.store, ...f.input, approvalId: f.approvalId, command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox, occupancyProbe: async () => ({ state: 'clear', detail: 'quiet' }), idempotencyKey: 'occ-replay' }),
+      (error) => error.code === 'EXECUTION_NOT_QUEUED',
+    )
+    assert.equal((await occupancyEvidence(f.store, f.taskId)).length, 1)
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('the occupancy probe runs after the launch intent and before the approval is consumed', async () => {
+  const f = await launchFixture()
+  try {
+    const events = []
+    await executeNativeSessionPrompt({
+      store: recordingStore(f.store, events), ...f.input, approvalId: f.approvalId,
+      command: process.execPath, args: FAKE_OK, sandbox: trackingSandbox(events),
+      occupancyProbe: async () => ({ state: 'clear', detail: 'quiet' }),
+      idempotencyKey: 'occ-order',
+    })
+    const occupancyAt = events.findIndex((event) => event.op === 'addEvidence' && event.args[1].summary.includes('外部占用探测'))
+    const runningAt = events.findIndex((event) => event.op === 'updateExecutionStatus' && event.args[1]?.status === 'running')
+    const consumeAt = events.findIndex((event) => event.op === 'consumeApproval')
+    const spawnAt = events.findIndex((event) => event.op === 'spawn')
+    assert.ok(runningAt > -1 && occupancyAt > -1 && consumeAt > -1 && spawnAt > -1)
+    assert.ok(runningAt < occupancyAt, 'the launch intent (running) precedes the occupancy record')
+    assert.ok(occupancyAt < consumeAt, 'the occupancy record precedes the approval consumption')
+    assert.ok(occupancyAt < spawnAt, 'the occupancy record precedes the spawn')
   } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
 })

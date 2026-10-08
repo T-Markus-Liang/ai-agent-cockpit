@@ -305,7 +305,10 @@ test('native ACP resume+prompt executor is approval-bound and ends in VERIFYING'
     const result = await executeNativeSessionPrompt({ store, taskId: task.task.id, executionId: execution.execution.id, approvalId: approval.approval.id, source: 'codex', nativeSessionId: 'native-1', sessionRefId: 'session:codex:native-1', cwd: '/tmp', prompt: '继续', command: process.execPath, args: ['-e', script], idempotencyKey: 'native-run' })
     assert.equal(result.reply, '继续结果')
     assert.equal(result.execution.status, 'verifying')
-    assert.equal((await store.getTask(task.task.id)).evidence.length, 1)
+    const evidence = (await store.getTask(task.task.id)).evidence
+    const message = evidence.find((item) => item.kind === 'message')
+    assert.equal(message.summary, '继续结果', 'the prompt text is recorded as a message Evidence')
+    assert.ok(evidence.some((item) => item.kind === 'log' && item.summary.includes('外部占用探测')), 'the launch also records the occupancy observation (V41)')
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }
@@ -329,10 +332,10 @@ test('native ACP resume+prompt executor records non-empty evidence when the mode
     assert.equal(result.stopReason, 'refusal')
     assert.equal(result.execution.status, 'verifying')
     const evidence = (await store.getTask(task.task.id)).evidence
-    assert.equal(evidence.length, 1)
-    assert.equal(typeof evidence[0].summary, 'string')
-    assert.ok(evidence[0].summary.trim().length > 0)
-    assert.equal(evidence[0].summary, 'native ACP prompt returned no text (stopReason=refusal)')
+    const message = evidence.find((item) => item.kind === 'message')
+    assert.equal(typeof message.summary, 'string')
+    assert.ok(message.summary.trim().length > 0)
+    assert.equal(message.summary, 'native ACP prompt returned no text (stopReason=refusal)')
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }
