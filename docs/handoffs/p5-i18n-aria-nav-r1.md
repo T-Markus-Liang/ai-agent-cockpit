@@ -132,3 +132,108 @@
 - **`npm test` 的 8 条 server 失败为既有环境问题**：见上；本批未改任何 server 文件，且这些用例在改动前即失败（macOS `realpath`、temp 目录、真实 git）。**未**用 git 做基线对比（本批禁止 git），判断依据是改动范围与失败性质。
 - **本批对象边界**：仅 `routes/dashboard/` 的五个 Personal AI OS 模块 + `locale-provider.tsx`。`routes/workflows/personal-ai-os-workflow.tsx` 与 `routes/settings/local-agents-section.tsx` 同含硬编码中文，**不属本批对象**（前者是工作流页、后者是设置页），留待各自批次。
 - 未执行真实外呼/生产读写/launchd/服务重启/git；未改任一 `package.json`；未新增依赖。
+
+---
+
+## r1 增补：两文件收尾（D60 登记的两个非本批对象文件）
+
+D60 合同「本批对象边界」明确登记 `routes/workflows/personal-ai-os-workflow.tsx` 与 `routes/settings/local-agents-section.tsx` 同含硬编码中文、留待各自批次。本节即该收尾：两文件的**用户可见中文**改为英文源串 + `t()`，`TRANSLATIONS` 补 zh-CN 映射（措辞逐字不变），含变量处走 `fill()` 模板键。纯前端；未起服务、未外呼、未执行任何 git、未改任何 `package.json` / `docs/audits/**` / `docs/plans/**`、未新增依赖。
+
+### 本批实际写入
+
+- `vendor/cezar/packages/web/src/routes/workflows/personal-ai-os-workflow.tsx`（**修改**：i18n）sha256 `f0319422f0e778c717cdd5038e52584940c95ea616f3bf443f887576860aee4d`（36 → **42 行**）
+- `vendor/cezar/packages/web/src/routes/settings/local-agents-section.tsx`（**修改**：i18n + 装饰图标 `aria-hidden`）sha256 `149c25fc03c96eae1c1a4f53a636b57764793c7a4e8e7cd9ea373e84723b5aac`（58 → **65 行**）
+- `vendor/cezar/packages/web/src/routes/workflows/personal-ai-os-workflow.test.tsx`（**修改**：zh-CN 适配 + en 新用例）sha256 `64fe11ca6cdc337383c41a5cfb66a834f2bb0f961795d0bedff397d3bc42e4a3`（17 → **40 行**；用例 **1 → 3**）
+- `vendor/cezar/packages/web/src/routes/settings/local-agents-section.test.tsx`（**新增**：zh-CN 逐字 + en 源串 + 未知状态）sha256 `241531a1aebce1b95d94794d0b5a3c1b964270dbcffb8392a36ccb2921d91643`（**58 行**；用例 **0 → 4**）
+- `vendor/cezar/packages/web/src/components/locale-provider.tsx`（**修改**：仅追加 zh-CN 映射）sha256 `245c9ad38b28f8c9709598ce2f40c876f9dac27e1364f0e74334c027cd0967fc`（299 → **331 行**）
+- `docs/handoffs/p5-i18n-aria-nav-r1.md`（本文件，**追加本节**；其自身 sha256 因自引用不稳定，由执行方在回报中给出）
+- **未改**：仓库根 `package.json`、`vendor/cezar/package.json`、`vendor/cezar/packages/web/package.json`、`docs/audits/**`、`docs/plans/**`、任何服务端/生产文件、`nav-items.ts`。**未执行任何 `git` 命令**。**未新增依赖**。
+
+### TRANSLATIONS 键数
+
+- 键数：**359 → 386**（**+27**，全部为本次两文件新增）。脚本逐字核对：`duplicates = []`，`cjk keys = []`。
+  > 口径说明：任务简报所记「D60 后 286 键」与文件实测不符；本次改动前对 `locale-provider.tsx` 的 `TRANSLATIONS` 字面量用状态机逐字符解析，实测为 **359** 键（D60 后、本批前）。本节以实测为准。
+- **复用的既有键**（未新增、无重复）：`WeChat primary agent (configured)`、`Shared Mem0 memory`、`Long-term retrieval is unavailable; WeChat keeps using local context`、`Connected`、`Available`、`Unavailable`、`Local agents`。
+- **含变量的模板键（走 `fill()`，不拼碎片）**：`Connected · {pending} pending · {retrying} retrying` → zh-CN「已连接 · 待提炼 {pending} · 重试 {retrying}」。
+- **品牌/命令/缩写名不入表，`t` 原样返回**：`Chief`、`Feature Map + Router`、`Task / Execution`、`Reviewer + Verification`、`Approval / Completion Gate`、`Codex`、`Kimi CLI`、`GUI-only`、`codebuddy --acp`、`kimi --session` 等。
+
+### 合同逐条
+
+1. **英文源串 + `t()`**：两文件全部用户可见中文改为英文源串、渲染点 `t()`；zh-CN 值逐字等于今天。覆盖 `NODES` 标题/详情、`ADAPTERS` 注记、状态徽章、Mem0 卡片标题/描述、内存队列行、Qdrant 脚注、`statusFor` 的「微信主 Agent（配置）」前缀（复用既有键，` · ` 为语言中立分隔符，沿用 D60 的拼接惯例）。
+2. **aria 补齐**：两文件**无**缺可访问名的交互元素（`personal-ai-os-workflow` 无交互元素；`local-agents-section` 的外链 `<a>` 有可见 URL 文本即其可访问名）。仅将**装饰图标**补 `aria-hidden="true"`：`TerminalIcon`、`ExternalLinkIcon`；`personal-ai-os-workflow` 的 `WorkflowIcon`/`ArrowDownIcon`/`ShieldCheckIcon` 与 `→` 分隔符本就 `aria-hidden`。**未过度添加**。
+3. **无重复键、无残留中文键**：见上（386 键，`duplicates=[]`，`cjk keys=[]`）。
+
+### 测试与验证（原始结果）
+
+| 命令（cwd） | 结果 |
+| --- | --- |
+| `npm test -- packages/web/src/routes/workflows/personal-ai-os-workflow.test.tsx packages/web/src/routes/settings/local-agents-section.test.tsx`（cwd `vendor/cezar`） | ✅ **Test Files 2 passed（2）；Tests 7 passed（7）** |
+| `npm test -- packages/web/src/routes`（cwd `vendor/cezar`） | ✅ **Test Files 127 passed（127）；Tests 2262 passed（2262）** |
+| `npm test -- packages/web`（cwd `vendor/cezar`） | ✅ **Test Files 245 passed（245）；Tests 4444 passed（4444）**（较 D60 基线 244 / 4438：文件 **+1**，用例 **+6**） |
+| `npm run typecheck:web`（cwd `vendor/cezar`，`tsc --noEmit`） | ✅ exit 0，无报错 |
+| `npm run test:runtime-policy`（cwd 仓库根） | ✅ **39 / 39 pass，fail 0** |
+| `npm run audit:secrets`（cwd 仓库根） | ✅ `PASS: 0 undispositioned credential-shaped hits.` |
+
+新增/改写用例：
+
+| 文件 | 用例 | 覆盖 | 结果 |
+| --- | --- | --- | --- |
+| personal-ai-os-workflow.test.tsx | 架构阶段渲染（zh-CN，原用例适配） | 回归 + zh 逐字 | ✅ |
+| personal-ai-os-workflow.test.tsx | node 标题/详情 zh-CN 逐字一致 | zh 逐字 | ✅ |
+| personal-ai-os-workflow.test.tsx | locale=en 渲染英文源串 | en 源串 | ✅ |
+| local-agents-section.test.tsx | 通道 + 已配置主 Agent + 共享记忆队列（zh-CN） | zh 逐字 + 前缀 | ✅ |
+| local-agents-section.test.tsx | 记忆不可用回退说明（zh-CN） | zh 逐字 | ✅ |
+| local-agents-section.test.tsx | locale=en 英文源串 + 品牌名保留 | en 源串 | ✅ |
+| local-agents-section.test.tsx | 未知状态标为「已发现/待验证」而非臆造就绪 | 状态徽章 | ✅ |
+
+全部为 vitest jsdom + 全局 mock `fetch`：**未起任何真实服务、未外呼真实网络、未执行写操作、未连 127.0.0.1:4324/4322/8080**。locale 强制方式学 `continuous-goals.test.tsx`（`localStorage['cez-locale']` 优先）+ `LocaleProvider` 包裹。
+
+### 越界中文残留（grep `packages/web/src/routes/` 与 `.../components/`）
+
+改动后**两目标文件已无中文残留**。其余命中：
+
+- **非本批对象、仍为真实硬编码中文（新发现，D60 与本批均未登记）**：`routes/settings/wechat-section.tsx` —— **9 处**用户可见中文：标题「微信连接」、描述「通过本机微信桥接器接收任务和发送 Agent 回复。」、「已连接」、「点击生成二维码，用微信扫码并确认登录。」、「生成中…」/「生成微信二维码」、iframe title「微信登录二维码」、「已扫码，请在微信中确认登录。」、`微信控制服务不可用：${error}`、「二维码和登录令牌只在本机回环服务处理，不会提交到 Git 仓库。」。**建议单列批次**。
+- **仅注释、非用户可见**：`routes/dashboard/continuous-goals.tsx:49`（代码注释中的「待唤醒」，D60 文件）。
+- **测试文件（按设计在 zh-CN 断言中文）**：`routes/dashboard/continuous-goals.test.tsx`、`routes/dashboard/system-connections.test.tsx`、`routes/dashboard/control-plane-dashboard.test.tsx`、`routes/workflows/personal-ai-os-workflow.test.tsx`、`routes/settings/local-agents-section.test.tsx`。
+- **`components/locale-provider.tsx`**：命中即 zh-CN 映射值本身，预期。
+
+### 未覆盖项与诚实边界
+
+- 仅 jsdom 合成测试；**未在真实浏览器渲染、未验响应式/暗色/移动端 safe-area、未验真机 locale 切换观感**——需 Markus 真机抽验。
+- 未跑 `npm run build` / `npm run test:package` / e2e；未产出/校验打包 tarball。
+- 未切换服务运行态：运行中的驾驶舱仍执行旧代码，新 UI 生效需另行构建部署（`packages/cezar/web/dist`），不属本授权。
+- 只有前端源码 + docs 变更；**未起服务、未外呼、未执行 git、未改 `package.json`、未新增依赖**。
+
+---
+
+### r1 增补（二）：wechat-section.tsx 收尾
+
+上一小节「越界中文残留」第 1 项（`routes/settings/wechat-section.tsx` 的 9 处用户可见中文）已按同口径收尾：英文源串 + `t()`，`TRANSLATIONS` 补 zh-CN 逐字映射，含变量的错误文案走 `fill()` 模板键，iframe `title` 经 `t()` 本地化，装饰图标补 `aria-hidden`（`MessageCircleIcon`/`CheckCircle2Icon`/`RefreshCwIcon`）。**该文件此前无测试，本节新增 `wechat-section.test.tsx`。**
+
+- `vendor/cezar/packages/web/src/routes/settings/wechat-section.tsx`（**修改**：i18n + iframe title + 装饰图标 `aria-hidden`）sha256 `0683155b3bba3865c2c4e9f352f74d9eecf98dcb200d44e9b13351220b01a4ed`（72 → **76 行**）
+- `vendor/cezar/packages/web/src/routes/settings/wechat-section.test.tsx`（**新增**：zh-CN 逐字 + en 源串 + iframe title + 错误文案 + 已连接/已扫码）sha256 `9a508692d05508e67b0de61d8379d50dda51122dd48000510dbb54008a06c4ce`（**57 行**；用例 **0 → 6**）
+- `vendor/cezar/packages/web/src/components/locale-provider.tsx`（**修改**：仅追加 zh-CN 映射）sha256 `c44c4a27c0fed87c7f598b09932a6c28f82ee47e1e32fc42d37dd9cb0dce37f3`（331 → **344 行**）
+- `docs/handoffs/p5-i18n-aria-nav-r1.md`（本文件，**追加本小节**；其自身 sha256 因自引用不稳定，由执行方在回报中给出）
+
+**TRANSLATIONS 键数**：**386 → 395（+9）**；脚本逐字核对 `duplicates = []`、`cjk keys = []`。新增键：`WeChat connection`、`Receive tasks and send Agent replies through the local WeChat bridge.`、`Click to generate a QR code, then scan it in WeChat and confirm the login.`、`Generating…`、`Generate WeChat QR code`、`WeChat login QR code`、`Scanned; confirm the login in WeChat.`、`WeChat control service is unavailable: {error}`（`fill()` 模板，zh-CN「微信控制服务不可用：{error}」）、`The QR code and login token are handled only by the local loopback service, and are never committed to the Git repository.`。「已连接」**复用既有键** `Connected`，未新增、无重复。
+
+**合同逐条**：(1) 9 处用户可见中文全改英文源串 + 渲染点 `t()`，zh-CN 逐字不变；`refresh` 的 `useCallback` 依赖由 `[]` 补为 `[t]`（locale 变化时重建，2s 轮询内自然重渲染，无 stale 文案）。(2) aria：装饰图标 `aria-hidden`；iframe `title` 经 `t()` 本地化（即可访问名）；`Button` 有可见文本即其可访问名；**无过度添加**。(3) 无重复键、无中文键。
+
+**测试与验证（原始结果）**
+
+| 命令（cwd） | 结果 |
+| --- | --- |
+| `npm test -- packages/web/src/routes/settings/wechat-section.test.tsx`（cwd `vendor/cezar`） | ✅ **Test Files 1 passed（1）；Tests 6 passed（6）** |
+| `npm test -- packages/web/src/routes`（cwd `vendor/cezar`） | ✅ **Test Files 128 passed（128）；Tests 2268 passed（2268）** |
+| `npm test -- packages/web`（cwd `vendor/cezar`） | ✅ **Test Files 246 passed（246）；Tests 4450 passed（4450）**（较上节 245 / 4444：文件 **+1**，用例 **+6**） |
+| `npm run typecheck:web`（cwd `vendor/cezar`，`tsc --noEmit`） | ✅ exit 0 |
+| `npm run test:runtime-policy`（cwd 仓库根） | ✅ **39 / 39 pass，fail 0** |
+| `npm run audit:secrets`（cwd 仓库根） | ✅ `PASS: 0 undispositioned credential-shaped hits.` |
+
+**残留中文终检（grep `packages/web/src/routes/` 与 `.../components/`）**：**用户可见硬编码中文已清零**。仅余：
+
+- `components/locale-provider.tsx` —— 命中即 zh-CN 映射值本身（翻译表，预期）；
+- `routes/dashboard/continuous-goals.tsx:49` —— **代码注释**中的「待唤醒」，非用户可见；
+- 测试文件（按设计在 zh-CN 断言中文）：`dashboard/continuous-goals.test.tsx`、`dashboard/system-connections.test.tsx`、`dashboard/control-plane-dashboard.test.tsx`、`workflows/personal-ai-os-workflow.test.tsx`、`settings/local-agents-section.test.tsx`、`settings/wechat-section.test.tsx`。
+
+**未覆盖项与诚实边界**：仅 jsdom 合成测试（mock `fetch`），**未起服务、未外呼、未在真实浏览器渲染、未验响应式/暗色/移动端**；未跑 `build`/`test:package`/e2e、未部署、未引入服务运行态；**未执行 git、未改 `package.json`/`docs/audits/**`/`docs/plans/**`、未新增依赖**。真机 locale 切换观感需 Markus 抽验。

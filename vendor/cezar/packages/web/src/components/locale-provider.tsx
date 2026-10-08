@@ -238,6 +238,51 @@ const TRANSLATIONS: Record<string, string> = {
   'Approve': '批准',
   'Reject {action} · {target}': '拒绝 {action} · {target}',
   'Approve {action} · {target}': '批准 {action} · {target}',
+
+  // Personal AI OS cockpit (personal-ai-os-workflow.tsx + settings/local-agents-section.tsx).
+  // Same convention as above: the ENGLISH source string is the key, the value is the exact
+  // Chinese the surface renders today, and a sentence carrying a variable is ONE whole template
+  // key (never assembled from translated fragments) so the Chinese can carry its own word order.
+  'WeChat / phone entry': '微信 / 手机入口',
+  'Messages, approvals, status and Evidence relayed back': '消息、审批、状态、Evidence 回传',
+  'Understands the goal, checks constraints, summarizes results': '理解目标、核对约束、汇总结果',
+  'Capability evidence, Jev advisory, Policy gate': '能力证据、Jev advisory、Policy gate',
+  'Idempotency, state machine, Session lock, audit': '幂等、状态机、Session lock、审计',
+  'Cezar, Codex, OpenCode, Kimi, Devin, WorkBuddy': 'Cezar、Codex、OpenCode、Kimi、Devin、WorkBuddy',
+  'Independent Review, test/command Evidence': '独立 Review、test/command Evidence',
+  'Completion or external side effects only after precise Approval': '精确 Approval 后才允许完成或外部副作用',
+  'Personal AI OS control-plane workflow': 'Personal AI OS 控制面工作流',
+  'The Chief → Router → Worker → Reviewer → Verification closed loop being designed. The Cezar workflow below is still one reusable Worker chain in it.': '架构设计中的 Chief → Router → Worker → Reviewer → Verification 闭环。下方的 Cezar workflow 仍是其中一个可复用 Worker 链。',
+  'A worker reporting completion does not close the case: it must pass Verification, independent Review and precise Approval.': 'Worker 自报完成不会直接结案：必须经过 Verification、独立 Review 和精确 Approval。',
+  'Local agent channels, protocols and availability.': '本机 Agent 通道、协议和可用状态。',
+  'Standalone local agent channel': '独立本机 Agent 通道',
+  'Codex App manages its own old sessions; the control plane does not silently drive the GUI': 'Codex App 的旧会话由 App 自己管理，控制面不静默操作 GUI',
+  'Usable as a local fallback and an independent workflow': '可作为本机 fallback 和独立工作流',
+  'Config entry point detected; sign in to enable it': '检测到配置入口，需完成登录后启用',
+  'ACP supported; old sessions can be resumed via kimi --session': '支持 ACP；旧会话可通过 kimi --session 选择恢复',
+  'Bundled CodeBuddy CLI detected; new sessions can join via ACP': '检测到内置 CodeBuddy CLI；可通过 ACP 接入新会话',
+  'Reached through the local Gemini reverse proxy': '通过本机 Gemini 反代接入',
+  'Devin ACP discovered; old sessions are chosen with Devin own session arguments': '已发现 Devin ACP；旧会话需通过 Devin 自身 session 参数选择',
+  'Shows entry evidence only; no cloud task is created and no auth is read automatically': '仅显示入口证据；未自动创建云端任务或读取认证',
+  'CLI detected only; no workflow is triggered': '仅发现 CLI；未触发 workflow',
+  'Only a desktop app and internal IPC today; no verifiable CLI/ACP port': '当前只有桌面 App 和内部 IPC，没有可验证的 CLI/ACP 端口',
+  'Discovered / unverified': '已发现/待验证',
+  'Recent context, full transcript archive and cross-model long-term semantic memory.': '近期上下文、完整原文归档与跨模型长期语义记忆。',
+  'Connected · {pending} pending · {retrying} retrying': '已连接 · 待提炼 {pending} · 重试 {retrying}',
+  'Local Qdrant + SQLite; fact extraction uses the existing Kimi API, not fully offline inference.': '本地 Qdrant + SQLite；事实提炼使用已有 Kimi API，不是全离线推理。',
+
+  // Personal AI OS cockpit (settings/wechat-section.tsx). Same convention: English source key,
+  // exact Chinese value; the unreachable-service message is one whole `fill()` template so the
+  // Chinese keeps its own `：` separator and word order. `Connected` reuses the key above.
+  'WeChat connection': '微信连接',
+  'Receive tasks and send Agent replies through the local WeChat bridge.': '通过本机微信桥接器接收任务和发送 Agent 回复。',
+  'Click to generate a QR code, then scan it in WeChat and confirm the login.': '点击生成二维码，用微信扫码并确认登录。',
+  'Generating…': '生成中…',
+  'Generate WeChat QR code': '生成微信二维码',
+  'WeChat login QR code': '微信登录二维码',
+  'Scanned; confirm the login in WeChat.': '已扫码，请在微信中确认登录。',
+  'WeChat control service is unavailable: {error}': '微信控制服务不可用：{error}',
+  'The QR code and login token are handled only by the local loopback service, and are never committed to the Git repository.': '二维码和登录令牌只在本机回环服务处理，不会提交到 Git 仓库。',
 }
 
 type LocaleContextValue = { locale: Locale; setLocale: (locale: Locale) => void; t: (text: string) => string }
