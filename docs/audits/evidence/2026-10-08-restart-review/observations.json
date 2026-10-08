@@ -1,0 +1,218 @@
+{
+  "observed": {
+    "checkedAt": "2026-10-08T11:43:46.791Z",
+    "head": "a9747bd185897504a4c63b96eebec6407d1b2a17",
+    "dirty": "",
+    "sourceRef": [
+      {
+        "file": "gateway/goals.mjs",
+        "sha256": "cf10b8007fd37196f89d2ad73ca89996a68bc765cd546142408ae082226ab086"
+      },
+      {
+        "file": "control-plane/request-authority.mjs",
+        "sha256": "a96954507408a6704cd26f31c470f2eb4274c6a15df5dc2744cae6c37d24f997"
+      },
+      {
+        "file": "control-plane/goal-client.mjs",
+        "sha256": "d24d895a3c8dc79f7e7c8d758b704270ed1a77a93157e264ef220f349423f4ba"
+      },
+      {
+        "file": "services/memory/service.py",
+        "sha256": "87bffe307d5765256ef2f899532ae2f65d89a6dc1bb81758f466d9de11fb85cb"
+      },
+      {
+        "file": "config/runtime-versions.json",
+        "sha256": "bb02397f71f208a4185146de0f77c143d48335fa44c21b6197d81a92c935926b"
+      },
+      {
+        "file": "vendor/wechat-acp/src/telemetry/index.ts",
+        "sha256": "c6553c4f72d392f8a39c8a5a5dc8979ec79d764a88d140462003df5c2dc71ac3"
+      },
+      {
+        "file": "vendor/wechat-acp/tests/telemetry.test.ts",
+        "sha256": "b3f1f0fc9868714c89fce97dc22d7bdc59cded45a1214fd334dd17b937595c48"
+      },
+      {
+        "file": "docs/plans/0.3.0-resume.md",
+        "sha256": "0e47d2679759c9752fc06cd87ac2bb66e0d1794e848ff1dda1ed168a5dc0798d"
+      }
+    ],
+    "goalAuthorityFileExists": false,
+    "memory": {
+      "columns": [
+        "event_id",
+        "payload",
+        "digest",
+        "status",
+        "attempts",
+        "retry_at",
+        "error_kind",
+        "created_at"
+      ],
+      "statusCounts": [
+        "done|113"
+      ],
+      "hasQualityFields": false
+    },
+    "runtime": {
+      "defaultRuntime": "legacy",
+      "piProductionEnabled": false
+    },
+    "services": [
+      {
+        "service": "wechat",
+        "httpStatus": 200,
+        "status": "connected"
+      },
+      {
+        "service": "goals",
+        "httpStatus": 200,
+        "status": "ok",
+        "version": "0.2.2",
+        "active": 0,
+        "goalCount": 5
+      },
+      {
+        "service": "memory",
+        "httpStatus": 200,
+        "status": "ok",
+        "version": "2.2.1"
+      },
+      {
+        "service": "controlPlane",
+        "httpStatus": 200,
+        "status": "ok"
+      }
+    ]
+  },
+  "results": {
+    "goalClientTests": {
+      "passed": 6,
+      "failed": 0,
+      "command": "node --test tests/goal-per-client-token.test.mjs",
+      "cwd": "repository root"
+    },
+    "telemetryTests": {
+      "passed": 14,
+      "failed": 0,
+      "command": "node --import tsx/esm --test tests/telemetry.test.ts",
+      "cwd": "vendor/wechat-acp"
+    },
+    "goalRoleProbe": {
+      "syntheticOnly": true,
+      "productionWrites": 0,
+      "projectModelCalls": 0,
+      "observations": [
+        {
+          "role": "viewer",
+          "actorHeader": "omitted",
+          "expectedStatus": 403,
+          "actualStatus": 200,
+          "fakeMutationCalls": 1
+        },
+        {
+          "role": "viewer",
+          "actorHeader": "local",
+          "expectedStatus": 403,
+          "actualStatus": 200,
+          "fakeMutationCalls": 1
+        }
+      ]
+    },
+    "authPermissionProbe": {
+      "syntheticOnly": true,
+      "productionWrites": 0,
+      "projectModelCalls": 0,
+      "initialMode": "600",
+      "newMode": "644",
+      "cacheKeyMetadataUnchanged": true,
+      "expectedError": "AUTH_CONFIGURATION",
+      "actualError": null,
+      "acceptedAfterPermissionsWidened": true
+    },
+    "telemetryProbe": {
+      "sourceSha256": "c6553c4f72d392f8a39c8a5a5dc8979ec79d764a88d140462003df5c2dc71ac3",
+      "defaultOff": true,
+      "rawExceptionMessageDropped": true,
+      "rawExceptionStackDropped": true,
+      "eventPropertyCanaryLeaked": false,
+      "eventTagCanaryLeaked": false,
+      "exceptionTagCanaryLeaked": false,
+      "commonPropertyCanaryLeaked": false,
+      "network": "fake SDK only"
+    }
+  },
+  "docWorker": {
+    "jobId": "1791456810-ca4bceb30e6c",
+    "status": "success",
+    "model": "official DeepSeek-V4.1-Flash / deepseek-flash",
+    "filesChanged": [],
+    "readOnlyDocs": 8,
+    "stagedHashesUnchanged": true,
+    "scope": "document comparison only; no source/release approval",
+    "failedPriorJob": "1791456618-8f4569b19c3b",
+    "failedPriorReason": "invalid structured result; not accepted",
+    "inputs": [
+      {
+        "file": "docs/plans/0.3.0-goal-prompt.md",
+        "sha256": "7d7e72ccd64980f428f5a2e404d6c071d63d7f7baeedb89d50a81230cffb2096"
+      },
+      {
+        "file": "docs/plans/0.3.0-resume.md",
+        "sha256": "4c6465779720bc85e09cf17661e465aecb0d86d85b1c5f6adeb56d83eb0b9c83"
+      },
+      {
+        "file": "docs/plans/0.3.0-validation.md",
+        "sha256": "b3bcbe0d0bcd188ae60f0c79f309e0bad9c6fce8d74b3a882396f5df194d41d3"
+      },
+      {
+        "file": "docs/plans/0.3.0-execution.md",
+        "sha256": "19b8108abb1c8575cacf7d96604d77b8e8ed44a2aa8eddb16ad0d22b959257e1"
+      },
+      {
+        "file": "docs/handoffs/m02-goals-per-client-token-r1.md",
+        "sha256": "18a138040dbc46f70efb08c6c779e08f1ee99dde748cf7bac22688cd1b712fcf"
+      },
+      {
+        "file": "docs/handoffs/p3-readiness-r1.md",
+        "sha256": "bf6a311b3db5555f101100e0af7c08e12f95e43857b14384ef6eca15d407b133"
+      },
+      {
+        "file": "docs/handoffs/p4-readiness-r1.md",
+        "sha256": "aeae8de041812a1613fb5e0011a73a7e2ac8aee3281423abc14d09af76bd0697"
+      },
+      {
+        "file": "docs/handoffs/p5-p6-readiness-r1.md",
+        "sha256": "b210683b957c0067166877aec9293a70e3d00d57c16b2cba1c8573c077da81d8"
+      }
+    ]
+  },
+  "wordingAdvisory": {
+    "answers": {
+      "draft_overclaim": {
+        "type": "noul",
+        "noul": 0.05
+      },
+      "comparison_overclaim": {
+        "type": "noul",
+        "noul": 0.98
+      }
+    },
+    "confidence": null,
+    "usage": {
+      "inputTokens": 708,
+      "outputTokens": 44
+    },
+    "cost": null,
+    "market_cost": null,
+    "elapsed_ms": 1085.35,
+    "model": "jev-1.13.0"
+  },
+  "wordingAdvisoryScope": "metadata and claims only; no secrets/source/private text, not authorization/engineering validation",
+  "actualProductionRestarted": false,
+  "actualDataMigrated": false,
+  "actualWechatMessagesSent": false,
+  "realNativeSessionsLoaded": false,
+  "verdict": "CHANGES_REQUESTED; no whole-production restart; isolated testing remains available within existing scope"
+}
+
