@@ -141,3 +141,88 @@ it('changing credentials uses a new header and never shows the previous connecti
   expect(new Headers(requests.at(-1)?.headers).get('Authorization')).toBe(`Bearer ${next}`)
   client.clear()
 })
+
+it('shows a relative next-check badge for a wake due within the hour', async () => {
+  const { client } = setup('ready', { nextWakeAt: Date.now() + 5 * 60000 })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.getByText('约 5 分钟后检查')).toBeTruthy()
+  expect(screen.getByLabelText('下一检查：约 5 分钟后检查')).toBeTruthy()
+  client.clear()
+})
+
+it('shows a clock-style next-check badge for a wake more than an hour away', async () => {
+  const { client } = setup('ready', { nextWakeAt: Date.now() + 2 * 3600000 })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.getByText(/^\d{2}:\d{2} 检查$/)).toBeTruthy()
+  expect(screen.getByLabelText(/^下一检查：\d{2}:\d{2} 检查$/)).toBeTruthy()
+  client.clear()
+})
+
+it('labels an overdue wake as 待唤醒 for a goal that is not running', async () => {
+  const { client } = setup('ready', { nextWakeAt: Date.now() - 60000 })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.getByText('待唤醒')).toBeTruthy()
+  expect(screen.getByLabelText('下一检查：待唤醒')).toBeTruthy()
+  client.clear()
+})
+
+it('omits the next-check badge for a running goal whose wake has already fired', async () => {
+  const { client } = setup('running', { nextWakeAt: Date.now() - 60000 })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.queryByText('待唤醒')).toBeNull()
+  expect(screen.queryByLabelText(/^下一检查/)).toBeNull()
+  client.clear()
+})
+
+it('omits the next-check badge for a paused goal even when the wake time expired', async () => {
+  const { client } = setup('paused', { nextWakeAt: Date.now() - 60000 })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.queryByText('待唤醒')).toBeNull()
+  expect(screen.queryByLabelText(/^下一检查/)).toBeNull()
+  client.clear()
+})
+
+it('omits the next-check badge when nextWakeAt is missing rather than inventing a schedule', async () => {
+  const { client } = setup('ready')
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.queryByLabelText(/^下一检查/)).toBeNull()
+  expect(screen.queryByText('待唤醒')).toBeNull()
+  client.clear()
+})
+
+it('shows a prominent 待恢复 badge when the goal needs recovery', async () => {
+  const { client } = setup('waiting', { needsRecovery: true })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.getByText('待恢复')).toBeTruthy()
+  expect(screen.getByLabelText('恢复状态：待恢复')).toBeTruthy()
+  client.clear()
+})
+
+it('shows an automatic-recovery count badge and bounds the displayed reason', async () => {
+  const longReason = 'r'.repeat(300)
+  const { client } = setup('waiting', { recoveryCount: 2, needsRecovery: true, reason: longReason })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.getByText('已自动恢复 2 次')).toBeTruthy()
+  expect(screen.getByLabelText('恢复状态：已自动恢复 2 次')).toBeTruthy()
+  const shown = screen.getByText(`${'r'.repeat(160)}…`)
+  expect(shown.getAttribute('title')).toBe(longReason)
+  expect(screen.queryByText(longReason)).toBeNull()
+  client.clear()
+})
+
+it('shows a short reason unchanged, without truncation', async () => {
+  const { client } = setup('waiting', { reason: 'token 预算已耗尽' })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.getByText('token 预算已耗尽')).toBeTruthy()
+  client.clear()
+})
+

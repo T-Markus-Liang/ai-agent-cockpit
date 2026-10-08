@@ -2,8 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Pill } from '@/components/pill'
+import type { StatusDotTone } from '@/components/status-dot'
 
-type Goal = { id: string; specDigest: string; status: string; iterations: number; tokensUsed: number; workspaceDir: string; reason?: string; summary?: string; phase?: string; recoveryCount?: number;
+type Goal = { id: string; specDigest: string; status: string; iterations: number; tokensUsed: number; workspaceDir: string; reason?: string; summary?: string; phase?: string; recoveryCount?: number; nextWakeAt?: number; needsRecovery?: boolean;
   spec: { title: string; objective: string; sourceDir: string; readPaths: string[]; writePaths: string[]; checks: Array<{ name: string; args: string[] }>; limits: { maxTokens: number; maxIterations: number }; recovery?: { enabled: boolean; maxAttempts: number } };
   lastChecks?: Array<{ name: string; exitCode: number | null }>; history?: Array<{ summary: string; artifactRef?: string; review?: { verdict: string; identity?: string }; checks?: Array<{ name: string; exitCode: number | null }> }> }
 const API = 'http://127.0.0.1:4326'
@@ -23,6 +25,41 @@ async function request(credential: string, endpoint: string, body?: unknown, key
 }
 const LABELS: Record<string, string> = { draft: '待确认范围', ready: '等待下一轮', running: '自主执行中', paused: '已暂停', waiting: '需要你处理', cancelled: '已取消', complete: '已完成验收' }
 const PHASES: Record<string, string> = { planning: '规划', planner: 'Chief 规划', worker: 'Worker 提出修改', applying: '应用受控修改', verifying: '真实验收', reviewer: '独立复核' }
+// Read-only badge layer for a goal card. Each badge states only what the goal record actually
+// carries — the next scheduled check (nextWakeAt), the recovery outcome (needsRecovery /
+// recoveryCount) and the bounded reason. A missing field renders no badge: the card never
+// invents a schedule or a state (goal-store.mjs sets nextWakeAt on grant/resume/settle/recover).
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value
+}
+const clock = (ms: number): string => {
+  const date = new Date(ms)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+function nextCheck(goal: Goal, now: number): { label: string; tone: StatusDotTone } | null {
+  const wakeAt = goal.nextWakeAt
+  if (typeof wakeAt !== 'number' || !Number.isFinite(wakeAt)) return null
+  // A running goal's wake already fired for this iteration, and a terminal goal never wakes
+  // again — neither shows a next-check badge rather than claim a check that will not happen.
+  if (goal.status === 'running' && wakeAt <= now) return null
+  if (['complete', 'cancelled'].includes(goal.status)) return null
+  // A paused goal only wakes on a manual resume, so an expired wake time is not "待唤醒".
+  if (goal.status === 'paused') return null
+  const remaining = wakeAt - now
+  if (remaining <= 0) return { label: '待唤醒', tone: 'pending' }
+  const minutes = Math.max(1, Math.round(remaining / 60000))
+  return { label: minutes < 60 ? `约 ${minutes} 分钟后检查` : `${clock(wakeAt)} 检查`, tone: 'pending' }
+}
+function GoalBadges({ goal }: { goal: Goal }) {
+  const next = nextCheck(goal, Date.now())
+  const recovered = typeof goal.recoveryCount === 'number' && goal.recoveryCount > 0
+  if (!next && !goal.needsRecovery && !recovered) return null
+  return <div className="flex flex-wrap items-center gap-2">
+    {next ? <Pill dot={next.tone} aria-label={`下一检查：${next.label}`}>{next.label}</Pill> : null}
+    {goal.needsRecovery ? <Pill dot="danger" aria-label="恢复状态：待恢复">待恢复</Pill> : null}
+    {recovered ? <Pill dot="success" aria-label={`恢复状态：已自动恢复 ${goal.recoveryCount} 次`}>已自动恢复 {goal.recoveryCount} 次</Pill> : null}
+  </div>
+}
 export function ContinuousGoals() {
   const client = useQueryClient()
   const instance = useId()
@@ -118,9 +155,10 @@ export function ContinuousGoals() {
       ? <p role="alert" className="p-4 text-xs text-danger">目标服务认证失败：当前凭据被拒绝，请断开后重新连接。</p>
       : <p className="p-4 text-xs text-warning">持续目标服务暂不可用；微信聊天与 Cezar 原生任务不受影响。</p>) : !query.data?.goals?.length ? <p className="p-4 text-xs text-muted-foreground">暂无持续目标。新建后确认范围即可启动。</p> : <div className="divide-y">{query.data.goals.map(goal => <div key={goal.id} className="space-y-2 p-4">
       <div className="flex flex-wrap justify-between gap-2"><span className="text-sm font-medium">{goal.spec.title}</span><span className="text-xs">{LABELS[goal.status] ?? goal.status}{goal.status === 'running' ? ` · ${PHASES[goal.phase ?? ''] ?? goal.phase ?? ''}` : ''}</span></div>
+      <GoalBadges goal={goal} />
       <p className="text-xs text-muted-foreground">{goal.spec.objective}</p><p className="text-xs">第 {goal.iterations} / {goal.spec.limits.maxIterations} 轮 · token {goal.tokensUsed} / {goal.spec.limits.maxTokens}</p>
       <p className="text-xs text-muted-foreground">{goal.spec.recovery?.enabled ? `中断自恢复：已接续 ${goal.recoveryCount ?? 0} / ${goal.spec.recovery.maxAttempts} 次；先核对范围和检查点` : '旧目标或未开启自恢复：中断后需核对，不自动重跑'}</p>
-      {goal.summary ? <p className="text-xs">{goal.summary}</p> : null}{goal.reason ? <p className="text-xs text-warning">{goal.reason}</p> : null}
+      {goal.summary ? <p className="text-xs">{goal.summary}</p> : null}{goal.reason ? <p className="text-xs text-muted-foreground" title={goal.reason}>{truncate(goal.reason, 160)}</p> : null}
       <div className="flex flex-wrap gap-2">{goal.status === 'draft' ? <Button size="sm" disabled={mutate.isPending} onClick={() => mutate.mutate({ endpoint: `/api/goals/${goal.id}/grant`, body: { digest: goal.specDigest } })}>确认范围并启动</Button> : null}
         {['ready', 'running'].includes(goal.status) ? <Button size="sm" variant="outline" onClick={() => mutate.mutate({ endpoint: `/api/goals/${goal.id}/pause`, body: {} })}>暂停</Button> : null}
         {['paused', 'waiting'].includes(goal.status) ? <Button size="sm" variant="outline" onClick={() => mutate.mutate({ endpoint: `/api/goals/${goal.id}/resume`, body: {} })}>恢复</Button> : null}
