@@ -581,7 +581,7 @@ export class ControlPlaneStore {
         if (executionGuard !== undefined) {
           const execution = state.executions[executionGuard.executionId]
           if (!execution || execution.taskId !== executionGuard.taskId || execution.status !== 'running' ||
-              execution.engineRef?.engine !== 'native-acp' || ['source', 'nativeSessionId', 'cwd', 'accountId', 'profileId'].some(field => execution.engineRef[field] !== executionGuard[field])) {
+              execution.engineRef?.engine !== 'native-acp' || ['source', 'nativeSessionId', 'cwd', 'sessionRefId', 'accountId', 'profileId'].some(field => execution.engineRef[field] !== executionGuard[field])) {
             throw new StoreError('EXECUTION_SCOPE_CHANGED', 'native execution is no longer in the approved scope', 403)
           }
         }

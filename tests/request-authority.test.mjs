@@ -66,9 +66,9 @@ test('private auth files are required when selected; malformed/symlink/public fi
 
 test('native remote arguments cannot carry a command, env or hidden host dependencies', () => {
   for (const key of ['command', 'args', 'env', 'store', 'principal']) assert.throws(() => nativeRemoteInput({ taskId: 'task', [key]: 'SYNTHETIC_PRIVATE_VALUE' }), error => error.code === 'UNEXPECTED_ARGUMENT' && !error.message.includes('SYNTHETIC_PRIVATE_VALUE'));
-  // accountId/profileId are optional scope identifiers (never executed, unlike
+  // accountId/profileId/sessionRefId are scope identifiers (never executed, unlike
   // command/args/env), so they are accepted and passed through unchanged.
-  const scope = { taskId: 'task', accountId: 'acct-1', profileId: 'prof-1' };
+  const scope = { taskId: 'task', sessionRefId: 'session:codex:native-1', accountId: 'acct-1', profileId: 'prof-1' };
   assert.deepEqual(nativeRemoteInput(scope), scope);
 });
 

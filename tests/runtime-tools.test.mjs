@@ -50,12 +50,12 @@ test('actual Pi tool round reads bound task, creates a queued child and plans wi
   const ctx = await setup(t); let childId;
   ctx.faux.setResponses([
     fauxAssistantMessage(fauxToolCall('aios_get_current_task', {}, { id: 'query' }), { stopReason: 'toolUse' }),
-    fauxAssistantMessage(fauxToolCall('aios_create_worker_execution', { workerId: 'codex' }, { id: 'create' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('aios_create_worker_execution', { workerId: 'codex', sessionRefId: 'session:codex:synthetic' }, { id: 'create' }), { stopReason: 'toolUse' }),
     async () => {
       const aggregate = await ctx.store.getTask(ctx.binding.productTaskId);
       childId = aggregate.executions.find(exec => exec.parentExecutionId === ctx.binding.executionId)?.id;
       assert.ok(childId);
-      return fauxAssistantMessage(fauxToolCall('aios_plan_native_prompt', { executionId: childId, source: 'codex', nativeSessionId: 'synthetic-native', cwd: ctx.binding.cwd, prompt: 'synthetic plan' }, { id: 'plan' }), { stopReason: 'toolUse' });
+      return fauxAssistantMessage(fauxToolCall('aios_plan_native_prompt', { executionId: childId, source: 'codex', nativeSessionId: 'synthetic-native', sessionRefId: 'session:codex:synthetic', cwd: ctx.binding.cwd, prompt: 'synthetic plan' }, { id: 'plan' }), { stopReason: 'toolUse' });
     }, fauxAssistantMessage('Planning ready, no worker started.'),
   ]);
   let adapter = await ctx.open();
@@ -153,16 +153,16 @@ test('task-scoped descriptors and returned tools cannot be mutated or gain insta
 
 test('planning a foreign or parent execution is denied and creates no approvals, dispatch or evidence', async t => {
   const ctx = await setup(t); const create = requireTool(ctx.suite, 'aios_create_worker_execution'); const plan = requireTool(ctx.suite, 'aios_plan_native_prompt');
-  const created = await create.execute({ workerId: 'codex' }, TRUSTED_API, trustedContext());
+  const created = await create.execute({ workerId: 'codex', sessionRefId: 'session:codex:synthetic' }, TRUSTED_API, trustedContext());
   const childId = JSON.parse(created.content[0].text).executionId;
-  const valid = await plan.execute({ executionId: childId, source: 'codex', nativeSessionId: 'synthetic-native', cwd: ctx.binding.cwd, prompt: 'synthetic plan' }, TRUSTED_API, trustedContext());
+  const valid = await plan.execute({ executionId: childId, source: 'codex', nativeSessionId: 'synthetic-native', sessionRefId: 'session:codex:synthetic', cwd: ctx.binding.cwd, prompt: 'synthetic plan' }, TRUSTED_API, trustedContext());
   const validBody = JSON.parse(valid.content[0].text);
   assert.equal(validBody.requiresApproval, true); assert.equal(validBody.dispatched, false); assert.equal(validBody.nativeIdentityVerified, false);
   const foreign = await ctx.store.createTask({ goal: 'synthetic foreign task', acceptanceCriteria: ['synthetic'] }, { idempotencyKey: 'foreign-task' });
   const foreignExec = await ctx.store.createExecution(foreign.task.id, { workerId: 'codex' }, { idempotencyKey: 'foreign-exec' });
-  const foreignDenied = await plan.execute({ executionId: foreignExec.execution.id, source: 'codex', nativeSessionId: 'foreign-native', cwd: ctx.binding.cwd, prompt: 'foreign plan' }, TRUSTED_API, trustedContext());
+  const foreignDenied = await plan.execute({ executionId: foreignExec.execution.id, source: 'codex', nativeSessionId: 'foreign-native', sessionRefId: 'session:codex:foreign', cwd: ctx.binding.cwd, prompt: 'foreign plan' }, TRUSTED_API, trustedContext());
   assertScopeRejected(foreignDenied);
-  const parentDenied = await plan.execute({ executionId: ctx.binding.executionId, source: 'codex', nativeSessionId: 'parent-native', cwd: ctx.binding.cwd, prompt: 'parent plan' }, TRUSTED_API, trustedContext());
+  const parentDenied = await plan.execute({ executionId: ctx.binding.executionId, source: 'codex', nativeSessionId: 'parent-native', sessionRefId: 'session:codex:parent', cwd: ctx.binding.cwd, prompt: 'parent plan' }, TRUSTED_API, trustedContext());
   assertScopeRejected(parentDenied);
   assert.equal((await ctx.store.listApprovals()).length, 0);
   assert.equal((await ctx.store.snapshot()).evidenceCount, 0);

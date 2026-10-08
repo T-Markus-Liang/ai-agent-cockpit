@@ -204,8 +204,8 @@ test('strict Cezar dispatch rejects legacy-looking approvals before calling the 
 
 test('strict native prompt rejects an unverified approval before any process starts', async () => {
   const store = await newStore(), task = await store.createTask({ goal: 'strict native' }, { idempotencyKey: key() })
-  const exec = await store.createExecution(task.task.id, { workerId: 'synthetic' }, { idempotencyKey: key() })
-  const input = { taskId: task.task.id, executionId: exec.execution.id, source: 'codex', nativeSessionId: 'synthetic', cwd: ROOT, prompt: 'synthetic' }
+  const exec = await store.createExecution(task.task.id, { workerId: 'synthetic', sessionRefId: 'session:codex:synthetic' }, { idempotencyKey: key() })
+  const input = { taskId: task.task.id, executionId: exec.execution.id, source: 'codex', nativeSessionId: 'synthetic', sessionRefId: 'session:codex:synthetic', cwd: ROOT, prompt: 'synthetic' }
   const plan = nativePromptPlan(input)
   const created = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest, expiresAt: new Date(Date.now() + 60000).toISOString() }, { idempotencyKey: key() })
   await store.decideApproval(created.approval.id, { decision: 'approved', approvedBy: operator.id }, { idempotencyKey: key() })
@@ -216,6 +216,6 @@ test('strict native prompt rejects an unverified approval before any process sta
   // never left `queued` and never spawned. No process starts either way.
   const refused = await store.getExecution(exec.execution.id)
   assert.equal(refused.status, 'blocked')
-  assert.deepEqual(refused.engineRef, { engine: 'native-acp', id: 'codex:synthetic', source: 'codex', nativeSessionId: 'synthetic', cwd: ROOT })
+  assert.deepEqual(refused.engineRef, { engine: 'native-acp', id: 'codex:synthetic', source: 'codex', nativeSessionId: 'synthetic', sessionRefId: 'session:codex:synthetic', cwd: ROOT })
   assert.equal((await store.getApproval(created.approval.id)).usedAt, undefined)
 })

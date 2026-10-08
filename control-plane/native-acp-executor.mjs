@@ -126,12 +126,18 @@ function responseError(method, source, message, status = 502) {
   return new StoreError('NATIVE_ACP_ERROR', `${source} ${method} failed: ${message}`, status)
 }
 
-export function nativePromptPlan({ taskId, executionId, source, nativeSessionId, cwd, prompt } = {}) {
-  if (!taskId || !executionId || !source || !nativeSessionId || !cwd || !prompt?.trim()) {
-    throw new StoreError('NATIVE_PROMPT_PLAN_INVALID', 'taskId, executionId, source, nativeSessionId, cwd and prompt are required', 400)
+// sessionRefId is part of the immutable approval scope: it is carried into the
+// plan parameters (and therefore the parametersDigest) so an approval bound to
+// one session can never authorize a prompt on another. It is REQUIRED and never
+// defaulted/fabricated — a plan without it would not bind the very session the
+// SESSION_LOCKED / SESSION_BUSY guards key on, so a missing value is refused
+// fail-closed here (400) rather than silently dropped.
+export function nativePromptPlan({ taskId, executionId, source, nativeSessionId, sessionRefId, cwd, prompt } = {}) {
+  if (!taskId || !executionId || !source || !nativeSessionId || !sessionRefId || !cwd || !prompt?.trim()) {
+    throw new StoreError('NATIVE_PROMPT_PLAN_INVALID', 'taskId, executionId, source, nativeSessionId, sessionRefId, cwd and prompt are required', 400)
   }
   if (!path.isAbsolute(cwd)) throw new StoreError('ABSOLUTE_CWD_REQUIRED', 'native ACP prompt requires an absolute cwd', 400)
-  const parameters = { taskId, executionId, source, nativeSessionId, cwd, promptDigest: parametersDigest(prompt) }
+  const parameters = { taskId, executionId, source, nativeSessionId, sessionRefId, cwd, promptDigest: parametersDigest(prompt) }
   return { action: 'native.session.prompt', target: `${source}/${nativeSessionId}`, parameters, parametersDigest: parametersDigest(parameters), requiresApproval: true }
 }
 
@@ -316,23 +322,39 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
 // They are enforced through the execution guard, not (yet) through the approval
 // parameter digest — see docs/handoffs/p4-launch-intent-guard-r1.md.
 //
+// sessionRefId is a REQUIRED scope field (P4 gap 7). It is written into the plan
+// parameters (so it is part of the approval parametersDigest), into the durable
+// engine ref, and into the execution guard — all from the same resolved scope —
+// so an approval the operator granted for one session can never launch another,
+// and the SESSION_LOCKED / SESSION_BUSY guards (keyed on execution.sessionRefId)
+// guard exactly the session this prompt is bound to. See
+// docs/handoffs/p4-plan-scope-sessionref-r1.md.
+//
 // The engine ref is attached exactly ONCE (step 2); the previous post-spawn
 // second attach is intentionally dropped, so there is a single idempotency-
 // keyed attach step. Each store step keeps its own `${idempotencyKey ?? executionId}:<step>`
 // key, so replaying one step never collides with another.
-export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false, cancelGraceMs } = {}) {
+export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, sessionRefId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false, cancelGraceMs } = {}) {
   if (!store) throw new StoreError('STORE_REQUIRED', 'control-plane store is required', 500)
   const aggregate = await store.getTask(taskId)
   const execution = aggregate.executions.find((candidate) => candidate.id === executionId)
   if (!execution) throw new StoreError('EXECUTION_TASK_MISMATCH', `execution ${executionId} is not attached to task ${taskId}`, 409)
   if (execution.status !== 'queued') throw new StoreError('EXECUTION_NOT_QUEUED', `execution is ${execution.status}; only queued executions may prompt`, 409)
-  const plan = nativePromptPlan({ taskId, executionId, source, nativeSessionId, cwd, prompt })
+  // The prompt MUST name the same session the execution is bound to: a missing
+  // sessionRefId is never defaulted (fail-closed 400) and a value that differs
+  // from execution.sessionRefId is a scope conflict (409). Without this the two
+  // SESSION_LOCKED / SESSION_BUSY defences (keyed on execution.sessionRefId)
+  // would guard a different session than the one actually prompted.
+  if (!sessionRefId) throw new StoreError('SESSION_REF_REQUIRED', 'native session prompt requires the execution sessionRefId (no default is invented)', 400)
+  if (execution.sessionRefId !== sessionRefId) throw new StoreError('EXECUTION_SESSION_MISMATCH', `execution ${executionId} is bound to session ${execution.sessionRefId ?? '(none)'}, not ${sessionRefId}`, 409)
+  const plan = nativePromptPlan({ taskId, executionId, source, nativeSessionId, sessionRefId, cwd, prompt })
   if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'native session prompt requires an approved approval id', 403)
 
   const step = (name) => `${idempotencyKey ?? executionId}:${name}`
   // The single launch scope is shared by the engine ref and the execution guard,
-  // so an absent account/profile is consistently absent on both sides.
-  const scope = { source, nativeSessionId, cwd, ...(accountId === undefined ? {} : { accountId }), ...(profileId === undefined ? {} : { profileId }) }
+  // so an absent account/profile is consistently absent on both sides. sessionRefId
+  // is always present and binds the launch to one session on both sides.
+  const scope = { source, nativeSessionId, sessionRefId, cwd, ...(accountId === undefined ? {} : { accountId }), ...(profileId === undefined ? {} : { profileId }) }
 
   // (2) launch intent FIRST: durable ref + running state before any spawn.
   await store.attachExecutionRef(executionId, { engine: 'native-acp', id: `${source}:${nativeSessionId}`, ...scope }, { idempotencyKey: step('attach') })
@@ -390,7 +412,8 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
 //
 // Mirrors cancelCezarExecution: the cancellation is bound to an approval that
 // covers the EXACT native cancel plan (action `native.session.cancel`, target
-// `<source>:<nativeSessionId>`, digest over {executionId, target}). Once the
+// `<source>:<nativeSessionId>`, digest over {executionId, target, sessionRefId}).
+// Once the
 // approval is consumed, an in-flight run is asked to stop over ACP
 // (`session/cancel`, escalating to SIGTERM after NATIVE_CANCEL_GRACE_MS). When
 // there is no live process the cancellation is recorded HONESTLY from store
@@ -400,11 +423,15 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
 const TERMINAL_EXECUTION_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'blocked'])
 const CANCELLABLE_EXECUTION_STATUSES = new Set(['queued', 'running'])
 
-export function nativeCancelPlan({ executionId, engineRef } = {}) {
-  if (!executionId || typeof executionId !== 'string' || !engineRef || typeof engineRef.id !== 'string' || !engineRef.id) {
-    throw new StoreError('NATIVE_CANCEL_PLAN_INVALID', 'executionId and engineRef.id are required', 400)
+// The cancel plan carries the SAME session scope as the prompt plan: the
+// sessionRefId is part of the parameters (and therefore the parametersDigest),
+// so a cancel approval granted for one session can never cancel another — the
+// same one-session-one-approval rule as nativePromptPlan.
+export function nativeCancelPlan({ executionId, engineRef, sessionRefId } = {}) {
+  if (!executionId || typeof executionId !== 'string' || !engineRef || typeof engineRef.id !== 'string' || !engineRef.id || !sessionRefId || typeof sessionRefId !== 'string') {
+    throw new StoreError('NATIVE_CANCEL_PLAN_INVALID', 'executionId, engineRef.id and sessionRefId are required', 400)
   }
-  const parameters = { executionId, target: engineRef.id }
+  const parameters = { executionId, target: engineRef.id, sessionRefId }
   return { action: 'native.session.cancel', target: engineRef.id, parameters, parametersDigest: parametersDigest(parameters), requiresApproval: true }
 }
 
@@ -434,7 +461,7 @@ export async function cancelNativeExecution({ store, executionId, approvalId, id
   if (!live && !CANCELLABLE_EXECUTION_STATUSES.has(execution.status)) {
     throw new StoreError('EXECUTION_NOT_CANCELLABLE', `execution is ${execution.status}; only queued or running native executions may be cancelled`, 409)
   }
-  const plan = nativeCancelPlan({ executionId, engineRef: execution.engineRef })
+  const plan = nativeCancelPlan({ executionId, engineRef: execution.engineRef, sessionRefId: execution.sessionRefId })
   await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: `${idempotencyKey ?? executionId}:approval`, requireOperator })
   const signal = live ? live.cancel() : null
   const outcome = signal?.delivered

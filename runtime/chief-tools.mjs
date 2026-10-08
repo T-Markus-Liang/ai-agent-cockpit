@@ -78,11 +78,11 @@ export function createChiefToolSuite({ store, binding: input, workerIds: inputWo
       return { executionId: result.execution.id, status: result.execution.status, replay: result.replay, dispatched: false };
     }),
     tool(TOOL_NAMES[2], 'Plan a prompt for a queued child native session; approval and native identity verification are still required. No load/prompt.',
-      Type.Object({ executionId: ref(), source: ref(), nativeSessionId: ref(), cwd: ref(), prompt: Type.String({ minLength: 1, maxLength: 100000 }) }, { additionalProperties: false }), async raw => {
-        const args = checkedArgs(raw, ['executionId', 'source', 'nativeSessionId', 'cwd', 'prompt'], ['executionId', 'source', 'nativeSessionId', 'cwd', 'prompt']);
+      Type.Object({ executionId: ref(), source: ref(), nativeSessionId: ref(), sessionRefId: ref(), cwd: ref(), prompt: Type.String({ minLength: 1, maxLength: 100000 }) }, { additionalProperties: false }), async raw => {
+        const args = checkedArgs(raw, ['executionId', 'source', 'nativeSessionId', 'sessionRefId', 'cwd', 'prompt'], ['executionId', 'source', 'nativeSessionId', 'sessionRefId', 'cwd', 'prompt']);
         const { aggregate } = await currentTask();
         const child = aggregate.executions.find(exec => exec.id === args.executionId);
-        if (!child || child.parentExecutionId !== binding.executionId || child.status !== 'queued' || child.workerId !== args.source || !workers.includes(args.source) || args.cwd !== binding.cwd) deny();
+        if (!child || child.parentExecutionId !== binding.executionId || child.status !== 'queued' || child.workerId !== args.source || !workers.includes(args.source) || args.cwd !== binding.cwd || child.sessionRefId !== args.sessionRefId) deny();
         return { ...nativePromptPlan({ taskId: binding.productTaskId, ...args }), dispatched: false, nativeIdentityVerified: false };
       }),
   ];

@@ -98,10 +98,10 @@ async function main() {
     return output(await createReviewerExecution({ store, taskId: required('task'), sourceExecutionId: required('source-execution'), reviewerId: required('reviewer'), sessionRefId: value('session'), idempotencyKey: idempotency() }))
   }
   if (command === 'native' && subcommand === 'plan') {
-    return output(nativePromptPlan({ taskId: required('task'), executionId: required('execution'), source: required('provider'), nativeSessionId: required('session'), cwd: required('cwd'), prompt: required('prompt') }))
+    return output(nativePromptPlan({ taskId: required('task'), executionId: required('execution'), source: required('provider'), nativeSessionId: required('session'), sessionRefId: required('session-ref'), cwd: required('cwd'), prompt: required('prompt') }))
   }
   if (command === 'native' && subcommand === 'prompt') {
-    return output(await executeNativeSessionPrompt({ store, taskId: required('task'), executionId: required('execution'), approvalId: required('approval'), source: required('provider'), nativeSessionId: required('session'), cwd: required('cwd'), prompt: required('prompt'), accountId: value('account'), profileId: value('profile'), idempotencyKey: idempotency() }))
+    return output(await executeNativeSessionPrompt({ store, taskId: required('task'), executionId: required('execution'), approvalId: required('approval'), source: required('provider'), nativeSessionId: required('session'), sessionRefId: required('session-ref'), cwd: required('cwd'), prompt: required('prompt'), accountId: value('account'), profileId: value('profile'), idempotencyKey: idempotency() }))
   }
   if (command === 'native' && subcommand === 'cancel') {
     return output(await cancelNativeExecution({ store, executionId: required('execution'), approvalId: required('approval'), idempotencyKey: idempotency() }))

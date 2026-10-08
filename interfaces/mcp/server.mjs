@@ -74,12 +74,12 @@ export const TOOL_DEFINITIONS = Object.freeze([
   {
     name: 'plan_native_prompt',
     description: '生成恢复旧 ACP 会话的审批摘要；只规划，不 load 或 prompt。',
-    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'source', 'nativeSessionId', 'cwd', 'prompt'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'source', 'nativeSessionId', 'sessionRefId', 'cwd', 'prompt'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, sessionRefId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' } } },
   },
   {
     name: 'prompt_native_session',
     description: '在精确 Approval 下 load 并 prompt 一个已有 ACP 会话；完成后进入 VERIFYING。',
-    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'approvalId', 'source', 'nativeSessionId', 'cwd', 'prompt', 'idempotencyKey'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, approvalId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, accountId: { type: 'string' }, profileId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'approvalId', 'source', 'nativeSessionId', 'sessionRefId', 'cwd', 'prompt', 'idempotencyKey'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, approvalId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, sessionRefId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, accountId: { type: 'string' }, profileId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'cancel_native_session',

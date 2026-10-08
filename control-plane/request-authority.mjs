@@ -202,11 +202,13 @@ export function trustedApprovalDecision(input, principal) {
 }
 
 export function nativeRemoteInput(input, { approval = false } = {}) {
-  // accountId / profileId are optional scope identifiers carried into the native
-  // launch-intent guard. They are NOT host dependencies (unlike command/args/env/
-  // store/principal, which stay rejected below): they only bind the approved
-  // session to an account/profile and are never executed.
-  const keys = new Set(['taskId', 'source', 'nativeSessionId', 'cwd', 'prompt', 'accountId', 'profileId', ...(approval ? ['approvalId'] : [])]);
+  // accountId / profileId / sessionRefId are optional scope identifiers carried
+  // into the native launch-intent guard. They are NOT host dependencies (unlike
+  // command/args/env/store/principal, which stay rejected below): they only bind
+  // the approved session to an account/profile and a SessionRef id, and are never
+  // executed. sessionRefId is required by the executor itself (fail-closed there),
+  // not by this whitelist.
+  const keys = new Set(['taskId', 'source', 'nativeSessionId', 'sessionRefId', 'cwd', 'prompt', 'accountId', 'profileId', ...(approval ? ['approvalId'] : [])]);
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !keys.has(key))) {
     throw new AuthorityError('UNEXPECTED_ARGUMENT', 400);
   }
