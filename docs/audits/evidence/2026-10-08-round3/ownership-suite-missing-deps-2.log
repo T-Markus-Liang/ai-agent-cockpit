@@ -1,0 +1,88 @@
+✔ corrupt mapping orphan/cross-owner keys are rejected (0.56775ms)
+✔ recover restores a lost submission link without replaying the input (35.056834ms)
+✔ recover rejects unresolved models before scheduling new work (14.159334ms)
+✔ same request id reuses one faux submission and one model call (12.4625ms)
+✔ changed text/task/execution/profile/cwd/authorization reject before another call (11.008542ms)
+✔ reopened adapter rejects reuse when the default model drifted (14.4805ms)
+✔ distinct owners and prototype-like ids stay isolated (20.730583ms)
+✔ close and reopen reuses the same submission with zero extra model calls (11.063167ms)
+✔ cancelled Chord wait rejects the waiter while the generation continues (10.459667ms)
+✔ a nonempty tool registry is rejected before the harness starts (2.838083ms)
+✔ inspect, usage and observe return actual SDK state (10.251917ms)
+✔ unsupported execution and goal-wide abort scopes are explicitly rejected (10.76725ms)
+✔ a closed adapter denies every operation (15.369541ms)
+✔ an unknown admission mapping version is rejected and not erased (5.904958ms)
+✔ first owner claims, same-PID second owner on same file is denied (8.939542ms)
+✔ path alias resolving to the same DB is denied as the same owner (4.098042ms)
+✔ fake-clock expired LIVE pid is not stolen; explicit renew restores assertCurrent (3.904083ms)
+✔ invalid lease is rejected before any database state exists (0.265375ms)
+✔ invalid clock is rejected before any database state exists (0.153417ms)
+✔ malformed owner row denies instead of being reclaimed (6.5075ms)
+✔ foreign-host owner row denies instead of being reclaimed (8.633166ms)
+✔ unknown-schema owner row denies instead of being reclaimed (6.153125ms)
+✔ released storage denies writes/reads/renew after close (4.6515ms)
+✔ actual Harness faux submit survives close/reopen with no rerun (24.067166ms)
+✔ spawned child owner killed; next claim reclaims with higher fence (41.5115ms)
+✔ administrative revocation: old close cannot release the new owner (3.83325ms)
+✔ full-sqlite facade keeps FULL/WAL and private modes (1.002375ms)
+✔ lease expires inside a durable transaction: admission rolls back (5.739291ms)
+✔ a request without ownership is persisted as foreground and survives reopen (29.630916ms)
+✔ an explicit background ownership binds its execution id durably across reopen (16.950958ms)
+✔ invalid ownership is rejected before any admission record is written (6.0715ms)
+✔ V10: cancelling a parent wait does not kill an explicit background generation (15.273667ms)
+✔ V11: a conversation-scope abort cancels foreground work but not background work (21.888375ms)
+✔ an execution-scope abort cancels only the background submissions bound to that id (78.334667ms)
+✔ an execution-scope abort with an unknown id fails closed and aborts nothing (15.557208ms)
+✔ goal-wide abort stays explicitly refused (11.029792ms)
+✔ execution-scope abort still works after a close/reopen restore (139.144375ms)
+✔ a same request id resubmitted with different ownership is rejected as a conflict (5.428208ms)
+✔ a legacy mapping record without an ownership field keeps its stored shape (8.191834ms)
+✔ F001: stopping an active foreground reports queued background submissions as stalled (211.318541ms)
+✔ F001: a background already active keeps running when the foreground queues behind it (14.505333ms)
+✔ F001: cancellation then recover keeps the exact stalled state durably (67.283917ms)
+✔ F002: a placed foreground inside a mixed run is reported still-running, never aborted (19.248417ms)
+✔ F002: two executions placed in one mixed run resist a single-execution stop (19.546709ms)
+✔ F002: a queued target is withdrawn exactly and a settled target reports aborted (15.20075ms)
+✔ F003: a background request with no resolvable execution binding is refused before any effect (2.897333ms)
+✔ F003: a nested executionId contradicting the top-level id is refused (2.621042ms)
+✔ F003: a background without a nested executionId is normalized to the top-level id and is cancellable (57.145792ms)
+✔ F003: legacy records without ownership stay foreground and are unaffected (24.454375ms)
+✔ SIGKILL stored safe / current safe: only safe+safe replays one idempotent effect (252.978333ms)
+✔ SIGKILL stored safe / current unsafe: only safe+safe replays one idempotent effect (179.77575ms)
+✔ SIGKILL stored unsafe / current safe: only safe+safe replays one idempotent effect (175.975792ms)
+✔ SIGKILL stored unsafe / current unsafe: only safe+safe replays one idempotent effect (182.024ms)
+node:internal/modules/esm/resolve:271
+    throw new ERR_MODULE_NOT_FOUND(
+          ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/private/tmp/personal-ai-os-review-round3.ClxFrw/input/scripts/runtime-adapter-canary.mjs' imported from /private/tmp/personal-ai-os-review-round3.ClxFrw/input/scripts/runtime-tools-canary.mjs
+    at finalizeResolution (node:internal/modules/esm/resolve:271:11)
+    at moduleResolve (node:internal/modules/esm/resolve:861:10)
+    at defaultResolve (node:internal/modules/esm/resolve:988:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:697:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:714:38)
+    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:746:52)
+    at #resolve (node:internal/modules/esm/loader:679:17)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:599:35)
+    at ModuleJob.syncLink (node:internal/modules/esm/module_job:162:33)
+    at ModuleJob.link (node:internal/modules/esm/module_job:252:17) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///private/tmp/personal-ai-os-review-round3.ClxFrw/input/scripts/runtime-adapter-canary.mjs'
+}
+
+Node.js v24.15.0
+✖ /tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-tools.test.mjs (127.836667ms)
+ℹ tests 54
+ℹ suites 0
+ℹ pass 53
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 932.802917
+
+✖ failing tests:
+
+test at ../../../../tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-tools.test.mjs:1:1
+✖ /tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-tools.test.mjs (127.836667ms)
+  'test failed'

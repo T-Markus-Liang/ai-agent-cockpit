@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/tmp/personal-ai-os-review-r2-followup.Kw3IZt/probes/r2-memory-review.py", line 21, in <module>
+    try:migration.snapshot(source,target)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/personal-ai-os-review-r2-followup.Kw3IZt/input/services/memory/migration.py", line 321, in snapshot
+    raise _fail("unknown_existing_db")
+services.memory.migration.MigrationError: unknown_existing_db
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/tmp/personal-ai-os-review-r2-followup.Kw3IZt/probes/r2-memory-review.py", line 23, in <module>
+    assert error.code=='unknown_existing_db'
+           ^^^^^^^^^^
+AttributeError: 'MigrationError' object has no attribute 'code'

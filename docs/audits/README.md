@@ -4,6 +4,30 @@
 
 ## 已审查的批次（逐版本限定）
 
+最新入口：[给执行Goal的新输入](2026-10-08-unblock-input.md)。审计/设计反馈已交付；源码返工不必等旧事实外呼/生产切换批准。本线程未代改执行Goal、提交GitHub review或批准生产。
+
+### 最新返工与第三轮
+
+| 批次 | 结论 | 下一动作 |
+| --- | --- | --- |
+| [M01 r2](m01-migration-r2.md) | CHANGES_REQUESTED：未知目录拒前chmod，empty subset误认snapshot | 原F001交r3；43旧事实/迁回/重启暂不做 |
+| [ownership r2](m02-runtime-ownership-r2.md) | 新admission F003关闭；F001/F002诚实子项接受，完整能力未过 | 按[方向条件](durable-ownership-proposal-r1.md)做新合成切片 |
+| [reconcile r2](i02-memory-reconcile-r2.md) | 纯解析核心限定接受，RC-F001关闭 | 可fake接search，真实质量/隐私另验 |
+| [purge r2](i02-memory-purge-r2.md) | 内容检查子项接受，PG-F002预检→effect间漂移仍删除 | 单owner/epoch/fence及交错负例 |
+| [session r2](m02-session-permission-broker-r2.md) | 进程内关闭窗/并发一次性限定接受 | commit fence、pending耐久、全路另验 |
+| [resolver r1](m02-provider-resolver-r1.md) | 纯离线解析核心限定接受 | 私有transport/公开DTO、真实认证待证 |
+| [fallback r1](i03b-fallback-policy-r1.md) | CHANGES_REQUESTED：FB-F001/002 | 全kind副作用屏障、完整immutable上下文 |
+| [budget r1](m02-budget-policy-r1.md) | CHANGES_REQUESTED：BP-F001异常clock仍active | 不明时间拒绝，slot/原预算分开 |
+| [route r1](m02-route-binding-r1.md) | CHANGES_REQUESTED：RB-F001不同task未conflict | intent参数身份/恢复唯一性 |
+| [route store r1](m02-route-binding-store-r1.md) | CHANGES_REQUESTED：RBS-F001失败后ghost成功 | poison/回滚；未知DB接管/owner另补 |
+| [ContextAssembler r1](m02-context-assembler-r1.md) | EVIDENCE_REQUIRED：局部限额不等总预算/隐私 | 总budget/数量/来源与epoch |
+| [native sandbox r1](m02-native-sandbox-r1.md) | EVIDENCE_REQUIRED：四deny树覆盖不全 | 完整Grant读边界、executor接线 |
+| [ownership提案](durable-ownership-proposal-r1.md) / [序列提案](construction-sequence-r1.md) | 源码/隔离方向条件接受，不是生产Grant | 原owner/预算；不自动迁旧stalled |
+
+第三轮147项选定原套件通过，另5项代码Finding、3类接线缺口分列；[成功/失败/OS证据](evidence/2026-10-08-round3/README.md)。四份r2另257项通过，M01/purge负例仍失败；[followup](evidence/2026-10-08-r2-followup/README.md)。不能相加冒充V01–V52全过。
+
+### 历史r1结论（不覆盖原失败）
+
 | 交接 / 固定sourceRef | 结论 | 发现 | 返工负责人 |
 | --- | --- | --- | --- |
 | [m01-migration-r1](../handoffs/m01-migration-r1.md)；migration `679b2ae3…d1cb6` | [CHANGES_REQUESTED](m01-migration-r1.md) | 4项：未知目标/别名、digest-only守恒、忘记后写向量、store重试重新提炼 | Kimi Code执行线程，交r2 |
@@ -25,18 +49,13 @@
 | --- | --- | --- | --- |
 | 隐私/数据 | [memory-purge-live r1](../handoffs/i02-memory-purge-live-r1.md) | offline真实SDK删除取证、失败负例、擦除范围与原始artifact | QUEUED / 只读过交接，未审脚本或复跑 |
 | 隐私/展示 | [vendor隐私重置/质量UI提案](../handoffs/i02-vendor-proposals-r1.md) | 原生上下文重置、来源质量可视化；提案不算实施 | QUEUED / 提案待审 |
-| 安全/权限 | [native-sandbox r1](../handoffs/m02-native-sandbox-r1.md) | OS文件/exec/network、symlink、实际接线、fail-closed | QUEUED / 尚未正式审 |
-| 安全/期限 | [budget-policy r1](../handoffs/m02-budget-policy-r1.md) | 原Goal预算、到期/暂停、重开和effect前拒绝 | QUEUED / 尚未正式审 |
-| 数据/恢复 | [route-binding-store r1](../handoffs/m02-route-binding-store-r1.md) | DB来源/权限、owner、事务回滚、内存/持久态一致 | QUEUED / 尚未正式审 |
-| 数据/恢复 | [route-binding r1](../handoffs/m02-route-binding-r1.md) | intent先于effect、唯一route、幂等/旧待办关联 | QUEUED / 尚未正式审 |
-| 模型/记忆 | [provider-resolver r1](../handoffs/m02-provider-resolver-r1.md) | 私有凭据引用、错误分类、fallback不重放、秘密清理 | QUEUED / 尚未正式审 |
-| 模型/记忆 | [context-assembler r1](../handoffs/m02-context-assembler-r1.md) | 原文与压缩来源、遗忘/跨用户、稳定fallback上下文 | QUEUED / 尚未正式审 |
-| 模型/恢复 | [fallback-policy r1](../handoffs/i03b-fallback-policy-r1.md) | auth错误/期限预算、上下文绑定、不明effect不重放 | QUEUED / 尚未正式审 |
 | 兼容/退役 | [legacy-adapter r1](../handoffs/m02-legacy-adapter-r1.md) | 期限、legacy真实能力边界、不明请求不重派 | QUEUED / 尚未正式审 |
 | P0基础 | [dependency-audit r1](../handoffs/i01-dependency-audit-r1.md) | 依赖/许可/telemetry实际覆盖、工具exit=1含义、未覆盖风险 | QUEUED / 尚未正式审 |
 | P0基础 | [private-data-boot r1](../handoffs/i01-private-data-boot-r1.md) | 私有库存权限、真实launchd来源与现场时间，非重启成功证明 | QUEUED / 尚未正式审 |
 | 微信接线 | [P3 readiness r1](../handoffs/p3-readiness-r1.md) | Inbox/结果/Outbox崩溃守恒、映射链、依赖缺陷未关闭 | QUEUED / 探索不算接线实施 |
 | Worker接线 | [P4 readiness r1](../handoffs/p4-readiness-r1.md) | 真实worker/旧会话/权限与Evidence交接范围 | QUEUED / 探索不算真实Worker通过 |
+| 可视化/迁移 | [P5/P6 readiness r1](../handoffs/p5-p6-readiness-r1.md) | UI/资源/迁移/回退范围 | QUEUED / 探索不算实施 |
+| 盘点 | [T01/T02 inventory r1](../handoffs/t01-t02-evidence-inventory-r1.md) | sourceRef与U/I/L/R缺口 | QUEUED / 不算验收 |
 
 执行方可继续无冲突任务；未关闭M01/M02 finding的依赖链不得过对应门槛。新批次不被旧r1测试覆盖，也不能自动继承本轮审计结论。
 

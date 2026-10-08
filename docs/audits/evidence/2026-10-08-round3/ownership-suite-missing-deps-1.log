@@ -1,0 +1,103 @@
+node:internal/modules/esm/resolve:271
+    throw new ERR_MODULE_NOT_FOUND(
+          ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/private/tmp/personal-ai-os-review-round3.ClxFrw/input/control-plane/native-acp-executor.mjs' imported from /private/tmp/personal-ai-os-review-round3.ClxFrw/input/runtime/chief-tools.mjs
+    at finalizeResolution (node:internal/modules/esm/resolve:271:11)
+    at moduleResolve (node:internal/modules/esm/resolve:861:10)
+    at defaultResolve (node:internal/modules/esm/resolve:988:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:697:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:714:38)
+    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:746:52)
+    at #resolve (node:internal/modules/esm/loader:679:17)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:599:35)
+    at ModuleJob.syncLink (node:internal/modules/esm/module_job:162:33)
+    at ModuleJob.link (node:internal/modules/esm/module_job:252:17) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///private/tmp/personal-ai-os-review-round3.ClxFrw/input/control-plane/native-acp-executor.mjs'
+}
+
+Node.js v24.15.0
+✖ /tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-contract.test.mjs (177.436792ms)
+✔ first owner claims, same-PID second owner on same file is denied (7.427833ms)
+✔ path alias resolving to the same DB is denied as the same owner (4.018917ms)
+✔ fake-clock expired LIVE pid is not stolen; explicit renew restores assertCurrent (2.815417ms)
+✔ invalid lease is rejected before any database state exists (0.268541ms)
+✔ invalid clock is rejected before any database state exists (0.151791ms)
+✔ malformed owner row denies instead of being reclaimed (4.220958ms)
+✔ foreign-host owner row denies instead of being reclaimed (3.702166ms)
+✔ unknown-schema owner row denies instead of being reclaimed (3.560292ms)
+✔ released storage denies writes/reads/renew after close (2.39125ms)
+✔ actual Harness faux submit survives close/reopen with no rerun (12.93975ms)
+✔ spawned child owner killed; next claim reclaims with higher fence (35.123542ms)
+✔ administrative revocation: old close cannot release the new owner (3.033791ms)
+✔ full-sqlite facade keeps FULL/WAL and private modes (1.016417ms)
+✔ lease expires inside a durable transaction: admission rolls back (3.951333ms)
+node:internal/modules/esm/resolve:271
+    throw new ERR_MODULE_NOT_FOUND(
+          ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/private/tmp/personal-ai-os-review-round3.ClxFrw/input/control-plane/native-acp-executor.mjs' imported from /private/tmp/personal-ai-os-review-round3.ClxFrw/input/runtime/chief-tools.mjs
+    at finalizeResolution (node:internal/modules/esm/resolve:271:11)
+    at moduleResolve (node:internal/modules/esm/resolve:861:10)
+    at defaultResolve (node:internal/modules/esm/resolve:988:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:697:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:714:38)
+    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:746:52)
+    at #resolve (node:internal/modules/esm/loader:679:17)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:599:35)
+    at ModuleJob.syncLink (node:internal/modules/esm/module_job:162:33)
+    at ModuleJob.link (node:internal/modules/esm/module_job:252:17) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///private/tmp/personal-ai-os-review-round3.ClxFrw/input/control-plane/native-acp-executor.mjs'
+}
+
+Node.js v24.15.0
+✖ /tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-ownership.test.mjs (175.188459ms)
+✔ SIGKILL stored safe / current safe: only safe+safe replays one idempotent effect (203.643209ms)
+✔ SIGKILL stored safe / current unsafe: only safe+safe replays one idempotent effect (177.86225ms)
+✔ SIGKILL stored unsafe / current safe: only safe+safe replays one idempotent effect (175.4335ms)
+✔ SIGKILL stored unsafe / current unsafe: only safe+safe replays one idempotent effect (176.493708ms)
+node:internal/modules/esm/resolve:271
+    throw new ERR_MODULE_NOT_FOUND(
+          ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/private/tmp/personal-ai-os-review-round3.ClxFrw/input/control-plane/native-acp-executor.mjs' imported from /private/tmp/personal-ai-os-review-round3.ClxFrw/input/runtime/chief-tools.mjs
+    at finalizeResolution (node:internal/modules/esm/resolve:271:11)
+    at moduleResolve (node:internal/modules/esm/resolve:861:10)
+    at defaultResolve (node:internal/modules/esm/resolve:988:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:697:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:714:38)
+    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:746:52)
+    at #resolve (node:internal/modules/esm/loader:679:17)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:599:35)
+    at ModuleJob.syncLink (node:internal/modules/esm/module_job:162:33)
+    at ModuleJob.link (node:internal/modules/esm/module_job:252:17) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///private/tmp/personal-ai-os-review-round3.ClxFrw/input/control-plane/native-acp-executor.mjs'
+}
+
+Node.js v24.15.0
+✖ /tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-tools.test.mjs (173.344542ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 18
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 924.390708
+
+✖ failing tests:
+
+test at ../../../../tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-contract.test.mjs:1:1
+✖ /tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-contract.test.mjs (177.436792ms)
+  'test failed'
+
+test at ../../../../tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-ownership.test.mjs:1:1
+✖ /tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-ownership.test.mjs (175.188459ms)
+  'test failed'
+
+test at ../../../../tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-tools.test.mjs:1:1
+✖ /tmp/personal-ai-os-review-round3.ClxFrw/input/tests/runtime-tools.test.mjs (173.344542ms)
+  'test failed'

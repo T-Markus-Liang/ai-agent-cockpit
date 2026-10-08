@@ -1,0 +1,33 @@
+✔ 1: a registered session with a live approval returns allow_once and consumes it once (74.911958ms)
+✔ 2: an unregistered session is denied unknown-session and never touches the approval resolver (36.382542ms)
+✔ 3: a closed session is denied session-closed; closing an unknown session throws unknown-session (36.0355ms)
+✔ 4: a replayed toolCallId is denied replay and never re-consumes the approval (62.837541ms)
+✔ 5: missing, expired, wrong-digest and unverified approvals deny without changing the store (202.406208ms)
+✔ 6: options that are not exactly one allow_once are denied unsupported-options (36.660625ms)
+✔ 7: an unknown tool kind is denied unknown-tool-kind (36.734333ms)
+✔ 8: registering a binding with a missing field is rejected (35.051542ms)
+✔ 9: the decision log keeps digests, never rawInput, and filters by session (66.024625ms)
+✔ 10: a serialized snapshot restores closed sessions and the log; replay is still denied (92.928ms)
+✔ 11: every denied path leaves the store byte-identical (55.099041ms)
+✔ 12: error messages carry only codes, never payloads or secrets; the handler never throws (36.818834ms)
+✔ 13: injected now/random make session ids and timestamps deterministic (36.918834ms)
+✔ 14: malformed snapshots fail closed with invalid-state (38.174875ms)
+✔ 15: a close before entry denies session-closed with zero consumption (54.768708ms)
+✔ 16: a close while the resolver is awaited denies session-closed and never consumes (54.995583ms)
+✔ 17: a close after the resolver fulfils but before the broker resumes denies session-closed (55.228875ms)
+✔ 18: a close once the consume has committed reports consumed-then-closed, never a clean denial (63.786416ms)
+✔ 19: concurrent same id, same body replays and never allows or consumes twice (64.689042ms)
+✔ 20: concurrent same id, different body is a conflict refused before resolver or consume (81.612042ms)
+✔ 21: once the first allow settles, a later same id replays without re-consuming (63.360167ms)
+✔ 22: a settled denial burns the reservation, so a same-id retry is replay and cannot consume (59.094542ms)
+✔ 23: an exception path fail-closed burns the reservation (no replay-free retry of the same id) (37.835375ms)
+✔ 24: different tool call ids adjudicate in parallel and each consumes its own approval (113.333917ms)
+✔ 25: reservations are process-local — a restore keeps the log semantics but not in-flight claims (43.394917ms)
+ℹ tests 25
+ℹ suites 0
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1594.362708

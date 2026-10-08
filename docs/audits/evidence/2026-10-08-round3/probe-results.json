@@ -1,0 +1,150 @@
+{
+  "policies": {
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "dirty-failure-still-falls-back",
+        "cases": [
+          {
+            "kind": "protocol_error",
+            "eligible": true,
+            "action": "fallback"
+          },
+          {
+            "kind": "rate_limit",
+            "eligible": true,
+            "action": "fallback"
+          },
+          {
+            "kind": "startup_error",
+            "eligible": true,
+            "action": "fallback"
+          }
+        ],
+        "missingProtocolFlagsEligible": true
+      },
+      {
+        "probe": "fallback-context-clone",
+        "unsupportedDateSilentlyDropped": true,
+        "nestedCopyMutable": true,
+        "originalNotMutated": true
+      },
+      {
+        "probe": "context-not-globally-bounded",
+        "factCount": 64,
+        "outputChars": 196991,
+        "truncatedSections": []
+      },
+      {
+        "probe": "budget-invalid-clock",
+        "initialGrantTimeValid": true,
+        "activeAfterClockBroke": true,
+        "activeWithNaNRemainingMs": true,
+        "chargeAccepted": true,
+        "callsCharged": 1
+      }
+    ]
+  },
+  "routes": {
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "changed-task-intent-is-not-conflict",
+        "requestedTask": "synthetic-task-2",
+        "returnedTask": "synthetic-task-1",
+        "restoreDuplicateSilentlyReplaced": true
+      },
+      {
+        "probe": "failed-write-leaves-ghost-success",
+        "firstError": "ERR_INVALID_STATE",
+        "retryReportsBinding": true,
+        "memorySize": 1,
+        "durableSize": 0,
+        "openStoreReloadFailureAlsoReturnsGhost": true,
+        "openStoreGhostDurableRows": 0
+      },
+      {
+        "probe": "unknown-existing-db-adopted",
+        "newTablesAdded": [
+          "bindings",
+          "intents",
+          "meta"
+        ],
+        "unrelatedDataRetained": true
+      }
+    ]
+  },
+  "native": {
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "private-read-control",
+        "deniedCode": 1,
+        "allowedCode": 0,
+        "positiveMatches": true
+      },
+      {
+        "probe": "workspace-symlink-read",
+        "exit": 1,
+        "outsideSyntheticContentReadable": false
+      },
+      {
+        "probe": "write-controls",
+        "allowedCode": 0,
+        "deniedCode": 1,
+        "ungrantedFileAbsent": true
+      },
+      {
+        "probe": "owned-ephemeral-network-control",
+        "allowedCode": 0,
+        "deniedCode": 7,
+        "nonceMatches": true,
+        "deniedRequestNeverArrived": true,
+        "foreignPortUsed": false
+      },
+      {
+        "probe": "unlisted-private-temp-readable",
+        "exit": 0,
+        "readWithoutGrant": true,
+        "pathClass": "/private/var/tmp (only own synthetic fixture)"
+      },
+      {
+        "probe": "malformed-network-option",
+        "nonBooleanAccepted": true,
+        "networkDenyOmitted": true
+      }
+    ]
+  },
+  "ownershipR2": {
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "F001-r2",
+        "returnResult": "partial",
+        "status": "stalled",
+        "durableRecoveryReportsStalled": true,
+        "backgroundStillNotAdvanced": true,
+        "modelCalls": 1
+      },
+      {
+        "probe": "F002-r2",
+        "returnResult": "unsupported",
+        "noFalseAborted": true,
+        "foregroundEventually": "done",
+        "backgroundEventually": "done",
+        "preciseCancellationStillUnavailable": true
+      },
+      {
+        "probe": "F003-r2",
+        "invalidAdmissionCreatesZeroRequests": true,
+        "invalidAdmissionCallsZeroModels": true,
+        "topBindingNormalized": true,
+        "executionCancellation": "aborted"
+      }
+    ]
+  }
+}

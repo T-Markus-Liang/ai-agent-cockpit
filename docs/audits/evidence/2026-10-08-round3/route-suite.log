@@ -1,0 +1,30 @@
+✔ 1: a binding persists across close/reopen with every field intact (8.97425ms)
+✔ 2: a binding-conflict writes nothing (DB dump identical before/after) (4.234375ms)
+✔ 3: an identical re-bind is idempotent and re-writes nothing (3.226834ms)
+✔ 4: an intent persists and repeated planEffect is idempotent (row count stays 1) (3.524792ms)
+✔ 5: crash-atomicity: an uncommitted row never survives a reopen (3.168333ms)
+✔ 6: an expired legacy binding is loaded (retained) but resolve fails closed (3.73375ms)
+✔ 7: an unknown schema version is refused and the DB is left untouched (3.100375ms)
+✔ 8: a legacy scope violation still holds after a reopen (2.866834ms)
+✔ 9: the store file is 0600 and its directory is 0700 (2.2355ms)
+✔ 10: the durable key set matches the memory-visible key set (3.979291ms)
+✔ legacy and pi-durable bindings normalize to the frozen contract shape (1.846458ms)
+✔ V01: re-binding an identical requestKey is idempotent (same record, count 1) (0.263333ms)
+✔ V02: a differing field is a binding-conflict and leaves the existing binding untouched (0.317416ms)
+✔ no double-live: legacy then pi-durable for the same request is a binding-conflict (0.110542ms)
+✔ legacy requires an explicit expiry and a non-empty task scope (0.127292ms)
+✔ expiry is fail-closed on resolve: valid before expiresAt, binding-expired at it, record retained (0.184583ms)
+✔ legacy planEffect is scope-bounded: in-scope yields an intent, out-of-scope is denied (0.243292ms)
+✔ field validation fails closed with invalid-binding (0.315708ms)
+✔ effectKey mismatch is an effect-conflict (0.133042ms)
+✔ intent registration is idempotent per requestKey+effectKey (count stays 1) (0.134417ms)
+✔ toJSON/fromJSON round-trips behavior and rejects tampered data (0.967458ms)
+✔ records and intents are deeply frozen; expiry/conflict never mutate the registry (0.212292ms)
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 82.296834
