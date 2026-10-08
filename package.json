@@ -46,6 +46,7 @@
     "test:route-binding-store": "node --test tests/route-binding-store.test.mjs",
     "test:snapshot-orchestrator": "node --test tests/snapshot-orchestrator.test.mjs",
     "test:state-converter": "node --test tests/state-converter.test.mjs",
+    "test:shadow-projection": "node --test tests/shadow-projection.test.mjs",
     "test:migration-drill": "node --test tests/migration-rollback-drill.test.mjs",
     "test:legacy-adapter": "node --test tests/legacy-adapter.test.mjs",
     "test:kimi-shim": "python3 -m unittest discover -s tests -p 'kimi_shim_test.py' -v",
