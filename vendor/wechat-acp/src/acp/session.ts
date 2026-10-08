@@ -22,6 +22,7 @@ import {
 } from "./agent-manager.js";
 import type { AgentCommandConfig, SessionResumePolicy } from "../config.js";
 import { trackEvent, trackException, hashUserId } from "../telemetry/index.js";
+import { decideFallback } from "./fallback-policy.js";
 
 /**
  * Build a short, user-friendly notice for a turn that ended without the
@@ -51,6 +52,13 @@ export interface PendingMessage {
   receiptIds?: string[];
   automaticRetryCount?: number;
   replySequence?: number;
+  /**
+   * Absolute epoch-ms grant deadline for this turn, stamped once when the turn
+   * starts and inherited unchanged by every fallback / retry / resume. Every wait
+   * derives its remaining budget from this fixed instant and NEVER opens a fresh
+   * full grantDeadlineMs.
+   */
+  deadlineAt?: number;
   contextToken: string;
   replyGeneration?: number;
   completion?: {
@@ -132,7 +140,7 @@ export interface SessionManagerOpts {
   progressNoticeMs?: number;
   preparePrompt?: (userId: string, prompt: acp.ContentBlock[], pending?: PendingMessage) => Promise<acp.ContentBlock[]>;
   onNotice?: SessionManagerOpts['onReply'];
-  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'sent-unconfirmed' | 'dispatched' | 'tool_activity' | 'background' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string }) => Promise<void>;
+  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'sent-unconfirmed' | 'dispatched' | 'tool_activity' | 'background' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string; deadlineAt?: number }) => Promise<void>;
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -215,12 +223,13 @@ export class QueuedMessageDeferredError extends Error {
 }
 
 class GrantDeadlineError extends Error {
-  readonly deadlineMs: number;
+  /** The absolute epoch-ms deadline that was reached (never a relative budget). */
+  readonly deadlineAt: number;
 
-  constructor(operationName: string, deadlineMs: number) {
-    super(`${operationName} exceeded the grant deadline of ${deadlineMs}ms`);
+  constructor(operationName: string, deadlineAt: number) {
+    super(`${operationName} reached its absolute grant deadline (${new Date(deadlineAt).toISOString()})`);
     this.name = "GrantDeadlineError";
-    this.deadlineMs = deadlineMs;
+    this.deadlineAt = deadlineAt;
   }
 }
 
@@ -1154,6 +1163,14 @@ export class SessionManager {
         session.activeMessage = pending;
         let completionError: unknown;
         const promptStartedAt = Date.now();
+        // Stamp the ABSOLUTE grant deadline exactly once, when the turn starts.
+        // Every later wait (foreground / background / fallback / retry / resume)
+        // derives its remaining budget from this fixed instant — never a fresh
+        // full grantDeadlineMs. A fallback re-enqueue spreads the same pending, so
+        // it keeps this `deadlineAt` instead of restarting the clock.
+        if (pending.deadlineAt === undefined && this.opts.grantDeadlineMs && this.opts.grantDeadlineMs > 0) {
+          pending.deadlineAt = Date.now() + this.opts.grantDeadlineMs;
+        }
         const isSessionCurrent = () => this.isCurrentSession(session);
         const progressTimer = this.opts.progressNoticeMs && this.opts.progressNoticeMs > 0
           ? setTimeout(() => { if (this.isCurrentSession(session) && !session.client.hasProducedMessage) void this.notice(session, pending, '这条消息已保存，我还在处理。后续消息也会排队保留；你可以发 /取消 中止当前处理。', true).catch(() => {}); }, this.opts.progressNoticeMs)
@@ -1255,6 +1272,7 @@ export class SessionManager {
             session,
             beginTurn,
             "turn setup",
+            { deadlineAt: pending.deadlineAt },
           );
 
           if (!this.isCurrentSession(session)) {
@@ -1273,7 +1291,7 @@ export class SessionManager {
           ).catch(() => {});
 
           // Send ACP prompt
-          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'preparing', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid });
+          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'preparing', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid, deadlineAt: pending.deadlineAt });
           pending.preparedPrompt ??= this.opts.preparePrompt
             ? await this.opts.preparePrompt(session.userId, pending.prompt, pending)
             : pending.prompt;
@@ -1294,7 +1312,7 @@ export class SessionManager {
             "prompt response",
             {
               foregroundWaitMs: this.opts.foregroundWaitMs,
-              grantDeadlineMs: this.opts.grantDeadlineMs,
+              deadlineAt: pending.deadlineAt,
               onForegroundWaitExpired: () =>
                 this.opts.onTurnEvent?.(session.userId, pending, {
                   phase: 'background',
@@ -1394,16 +1412,32 @@ export class SessionManager {
           }
           this.opts.log(`[${session.userId}] Agent prompt error: ${String(err)}`);
 
-          if (err instanceof GrantDeadlineError) {
-            this.opts.log(
-              `[${session.userId}] Grant deadline of ${err.deadlineMs}ms exceeded; resetting the ACP session`,
-            );
-            const generation = session.lifecycleGeneration ?? (this.userGenerations.get(session.userId) ?? 0);
+          // ONE gate decides whether this failed turn may be retried on another
+          // candidate. It refuses whenever side effects are uncertain OR the grant
+          // budget (the absolute `deadlineAt`) is spent, so a deadline can NEVER
+          // trigger a resend — the audited re-enqueue is gone.
+          const generation = session.lifecycleGeneration ?? (this.userGenerations.get(session.userId) ?? 0);
+          const remainingMs = pending.deadlineAt !== undefined ? pending.deadlineAt - Date.now() : Number.POSITIVE_INFINITY;
+          const gate = decideFallback({
+            kind: this.classifyTurnFailure(err, session),
+            hasProducedMessage: session.client.hasProducedMessage,
+            hasUsedTools: session.client.hasUsedTools,
+            remainingMs,
+          });
+          this.opts.log(
+            `[${session.userId}] Turn-failure gate: ${gate.action} (${gate.reason}); ${Number.isFinite(remainingMs) ? `remaining ${Math.round(remainingMs)}ms` : 'no grant deadline'}`,
+          );
+
+          if (err instanceof GrantDeadlineError || gate.action === 'fallback') {
+            // Tear the failed turn's session down before any further execution: the
+            // provider process must not overlap a replacement, and the stale persisted
+            // session id is never resumed inside another harness. Queued messages are
+            // retained; the expired/failed turn itself is NEVER re-sent.
             const kept = session.queue.splice(0);
             const existing = this.retainedMessages.get(session.userId);
             this.retainedMessages.set(session.userId, { generation, messages: [...(existing?.generation === generation ? existing.messages : []), ...kept] });
-            session.closedError = err;
-            this.sessions.delete(session.userId);
+            session.closedError = err instanceof Error ? err : new Error(String(err));
+            if (this.sessions.get(session.userId) === session) this.sessions.delete(session.userId);
             session.cleanupRegistered = true;
             this.registerSessionCleanup(session, true);
             if (this.opts.removePersistedSessionId) {
@@ -1416,17 +1450,18 @@ export class SessionManager {
             let cleaned = true;
             await this.retryCleanupState(session.userId).catch((cleanupErr) => {
               cleaned = false;
-              this.opts.log(
-                `[${session.userId}] Grant-deadline ACP cleanup deferred: ${String(cleanupErr)}`,
-              );
+              this.opts.log(`[${session.userId}] Failed-turn ACP cleanup deferred: ${String(cleanupErr)}`);
             });
-            if (cleaned && !session.client.hasProducedMessage && !session.client.hasUsedTools && (pending.automaticRetryCount ?? 0) < 1 && !this.fallbackUsers.has(session.userId) && (this.opts.fallbackAgents?.length ?? 0) > 0 && this.isUserGenerationCurrent(session.userId, generation)) {
-              // Retry the same user prompt once through the first configured fallback agent.
-              // The primary session has been fully torn down above, so this cannot overlap
-              // provider processes or reuse the stale persisted ACP session.
+            if (gate.action === 'fallback' && cleaned && (pending.automaticRetryCount ?? 0) < 1 && !this.fallbackUsers.has(session.userId) && this.isUserGenerationCurrent(session.userId, generation)) {
+              // A proven-clean, degradable, in-budget failure. Retry the SAME prompt
+              // once through the next candidate. The spread below keeps the pending's
+              // original absolute `deadlineAt`, so the retry runs on the REMAINING
+              // budget — never a fresh full grantDeadlineMs.
               this.fallbackUsers.add(session.userId);
-              const retry = { ...pending, automaticRetryCount: 1 };
+              const retry = { ...pending, automaticRetryCount: (pending.automaticRetryCount ?? 0) + 1 };
               pending.completion = undefined;
+              this.opts.log(`[${session.userId}] Switching to a fallback agent candidate (${gate.reason})`);
+              await this.notice(session, pending, '主 Agent 暂时不可用，已切换到备用候选继续这同一条任务；原截止时间不变。').catch(() => {});
               void this.enqueue(session.userId, retry).then(() => this.resumeRetained(session.userId)).catch((retryErr) => {
                 this.opts.log(`[${session.userId}] Fallback retry failed: ${String(retryErr)}`);
                 retry.completion?.reject(retryErr);
@@ -1435,7 +1470,7 @@ export class SessionManager {
             }
             try {
               const queueCount = this.retainedMessages.get(session.userId)?.messages.length ?? kept.length;
-              await this.notice(session, pending, `上一条任务已到 Grant 期限，未能完成，不能算作已处理。${queueCount ? `你后发的 ${queueCount} 条消息已保留，会继续处理。` : '原文已保留；已可能执行过的操作不会自动重放。'}${cleaned ? '' : '连接清理尚未确认，暂不启动新的执行。'}`);
+              await this.notice(session, pending, `${err instanceof GrantDeadlineError ? '上一条任务已到 Grant 期限，未能完成' : '上一条任务未能完成，且不能安全换候选重放'}，不能算作已处理。${queueCount ? `你后发的 ${queueCount} 条消息已保留，会继续处理。` : '原文已保留；已可能执行过的操作不会自动重放。'}${cleaned ? '' : '连接清理尚未确认，暂不启动新的执行。'}`);
             } catch {
               // Best effort: the provider timeout must not leave the queue blocked.
             }
@@ -1634,13 +1669,26 @@ export class SessionManager {
     );
   }
 
+  /**
+   * Classify a turn failure for the fallback gate. Only a failure that provably
+   * never reached the provider (the prompt was not dispatched) is treated as a
+   * degradable `startup_error`; a deadline is the `timeout` kind; a mid-generation
+   * connection loss is uncertain side effects; anything else is unknown. Fail closed.
+   */
+  private classifyTurnFailure(err: unknown, session: UserSession): string {
+    if (err instanceof GrantDeadlineError) return "timeout";
+    if (err instanceof AgentConnectionClosedError) return "mid_generation_failure";
+    if (!session.promptDispatched) return "startup_error";
+    return "unknown";
+  }
+
   private async awaitAgentOperation<T>(
     session: UserSession,
     operation: Promise<T>,
     operationName: string,
     opts?: {
       foregroundWaitMs?: number;
-      grantDeadlineMs?: number;
+      deadlineAt?: number;
       onForegroundWaitExpired?: () => void | Promise<void>;
     },
   ): Promise<T> {
@@ -1667,12 +1715,21 @@ export class SessionManager {
           .catch(() => {});
       }, opts.foregroundWaitMs);
     }
-    const grantDeadlineMs = opts?.grantDeadlineMs;
-    const deadlinePromise = grantDeadlineMs && grantDeadlineMs > 0
+    // Absolute grant deadline. We wait at most until `opts.deadlineAt`; the
+    // remaining budget is the difference between that fixed instant and now. We
+    // NEVER start a fresh full grant timer here, so a retry / fallback / resume
+    // cannot silently extend the turn — an elapsed deadline rejects at once.
+    const deadlineAt = opts?.deadlineAt;
+    const deadlinePromise = typeof deadlineAt === "number" && Number.isFinite(deadlineAt)
       ? new Promise<never>((_resolve, reject) => {
+          const remainingMs = deadlineAt - Date.now();
+          if (remainingMs <= 0) {
+            reject(new GrantDeadlineError(operationName, deadlineAt));
+            return;
+          }
           grantTimer = setTimeout(
-            () => reject(new GrantDeadlineError(operationName, grantDeadlineMs)),
-            grantDeadlineMs,
+            () => reject(new GrantDeadlineError(operationName, deadlineAt)),
+            remainingMs,
           );
         })
       : undefined;

@@ -111,9 +111,14 @@ test('runNativeAcpPrompt spawns through the sandbox port with a spec derived fro
   assert.equal(result.stopReason, 'end_turn')
 })
 
-test('nativeAcpSandboxSpec defaults read/write to empty and denyNetwork to false', () => {
+test('nativeAcpSandboxSpec defaults read/write to empty, opts the workspace in for write, and passes a grant scratchDir through', () => {
   const spec = nativeAcpSandboxSpec({ command: '/bin/echo', cwd: '/synthetic/ws' })
-  assert.deepEqual(spec, { execLiterals: ['/bin/echo'], workspaceDir: '/synthetic/ws', readLiterals: [], writeLiterals: [], denyNetwork: false })
+  assert.deepEqual(spec, { execLiterals: ['/bin/echo'], workspaceDir: '/synthetic/ws', workspaceWrite: true, readLiterals: [], writeLiterals: [], denyNetwork: false })
+  // A grant-level scratch dir is threaded through verbatim (its strict validation,
+  // including the no-overlap-with-workspace rule, lives in native-sandbox).
+  const withScratch = nativeAcpSandboxSpec({ command: '/bin/echo', cwd: '/synthetic/ws', grant: { scratchDir: '/synthetic/scratch' } })
+  assert.equal(withScratch.scratchDir, '/synthetic/scratch')
+  assert.equal('scratchDir' in spec, false, 'an absent scratchDir is not fabricated')
 })
 
 test('the child env is a minimal host allow-list plus explicit grant keys, never the full process.env', async () => {
@@ -878,16 +883,27 @@ test('a cancel approval bound to one session cannot cancel another session', asy
 // fake ACP agent, spy sandbox, scratch store dir; no real CLI, no network.
 // ---------------------------------------------------------------------------
 
-test('applyReviewerReadonlyConstraint strips writeLiterals only for a reviewer and never mutates the input', () => {
-  const spec = nativeAcpSandboxSpec({ command: '/bin/echo', cwd: '/synthetic/ws', grant: { readLiterals: ['/r.txt'], writeLiterals: ['/w.txt'], denyNetwork: true } })
+test('applyReviewerReadonlyConstraint forces workspaceWrite false and writeLiterals empty for a reviewer, keeps scratch, and never mutates the input', () => {
+  const spec = nativeAcpSandboxSpec({ command: '/bin/echo', cwd: '/synthetic/ws', grant: { readLiterals: ['/r.txt'], writeLiterals: ['/w.txt'], denyNetwork: true, scratchDir: '/synthetic/scratch' } })
+  assert.equal(spec.workspaceWrite, true, 'the worker spec opts the workspace in for write')
   const reviewer = applyReviewerReadonlyConstraint(spec, 'reviewer')
   assert.deepEqual(reviewer.spec.writeLiterals, [], 'the reviewer write literals are forced empty')
+  assert.equal(reviewer.spec.workspaceWrite, false, 'the workspace write grant itself is turned off (an empty array alone is not enough)')
   assert.deepEqual(reviewer.spec.readLiterals, ['/r.txt'], 'read access is preserved (the reviewer must read the artifact)')
   assert.equal(reviewer.spec.denyNetwork, true, 'the network policy is untouched')
-  assert.deepEqual(spec.writeLiterals, ['/w.txt'], 'the input spec is not mutated')
+  assert.equal(reviewer.spec.scratchDir, '/synthetic/scratch', 'the host scratch outlet is preserved as the one remaining write path')
+  assert.deepEqual(spec.writeLiterals, ['/w.txt'], 'the input spec is not mutated (write literals)')
+  assert.equal(spec.workspaceWrite, true, 'the input spec is not mutated (workspaceWrite)')
   assert.equal(reviewer.readonly.applied, true)
   assert.equal(reviewer.readonly.code, REVIEWER_READONLY_APPLIED)
   assert.deepEqual(reviewer.readonly.strippedWriteLiterals, ['/w.txt'])
+  assert.equal(reviewer.readonly.scratchDir, '/synthetic/scratch')
+  // With no scratch dir there is no write outlet at all.
+  const bare = applyReviewerReadonlyConstraint(nativeAcpSandboxSpec({ command: '/bin/echo', cwd: '/synthetic/ws' }), 'reviewer')
+  assert.equal(bare.spec.workspaceWrite, false)
+  assert.deepEqual(bare.spec.writeLiterals, [])
+  assert.equal('scratchDir' in bare.spec, false)
+  assert.equal(bare.readonly.scratchDir, undefined)
   for (const role of [undefined, 'worker']) {
     const out = applyReviewerReadonlyConstraint(spec, role)
     assert.equal(out.spec, spec, 'a non-reviewer spec is passed through untouched')
@@ -895,7 +911,7 @@ test('applyReviewerReadonlyConstraint strips writeLiterals only for a reviewer a
   }
 })
 
-test('a reviewer native prompt forces writeLiterals empty in the sandbox spec and reports the marker', async () => {
+test('a reviewer native prompt forces workspaceWrite false and writeLiterals empty in the sandbox spec and reports the marker', async () => {
   const { calls, sandbox } = makeSandbox()
   const result = await runPrompt({
     nativeSessionId: 'native-reviewer',
@@ -905,6 +921,7 @@ test('a reviewer native prompt forces writeLiterals empty in the sandbox spec an
   })
   assert.equal(calls.length, 1, 'the sandbox port is invoked exactly once')
   assert.deepEqual(calls[0].spec.writeLiterals, [], 'a caller write grant on a reviewer run is stripped at the sandbox port')
+  assert.equal(calls[0].spec.workspaceWrite, false, 'the workspace write grant is turned off, so the reviewed artifact is read-only under Seatbelt')
   assert.deepEqual(calls[0].spec.readLiterals, ['/tmp/artifact.txt'], 'the reviewer keeps read access to the artifact')
   assert.equal(calls[0].spec.denyNetwork, true, 'the network policy is unchanged')
   assert.equal(result.reviewerReadonly.applied, true)
@@ -913,7 +930,7 @@ test('a reviewer native prompt forces writeLiterals empty in the sandbox spec an
   assert.equal(result.stopReason, 'end_turn', 'the prompt still runs, just read-only')
 })
 
-test('a worker native prompt passes writeLiterals through unchanged', async () => {
+test('a worker native prompt passes writeLiterals and the workspace write opt-in through unchanged', async () => {
   const { calls, sandbox } = makeSandbox()
   const result = await runPrompt({
     nativeSessionId: 'native-worker',
@@ -921,6 +938,7 @@ test('a worker native prompt passes writeLiterals through unchanged', async () =
     sandboxGrant: { writeLiterals: ['/tmp/write.txt'] },
   })
   assert.deepEqual(calls[0].spec.writeLiterals, ['/tmp/write.txt'], 'a non-reviewer keeps its write grant verbatim')
+  assert.equal(calls[0].spec.workspaceWrite, true, 'a non-reviewer keeps the workspace writable')
   assert.equal(result.reviewerReadonly.applied, false)
 })
 
@@ -931,18 +949,22 @@ test('executeNativeSessionPrompt takes the role from the stored execution and re
     const result = await executeNativeSessionPrompt({
       store: f.store, ...f.input, approvalId: f.approvalId,
       command: process.execPath, args: FAKE_OK, sandbox,
-      sandboxGrant: { readLiterals: ['/tmp/artifact.txt'], writeLiterals: ['/tmp/must-not-write.txt'] },
+      sandboxGrant: { readLiterals: ['/tmp/artifact.txt'], writeLiterals: ['/tmp/must-not-write.txt'], scratchDir: '/synthetic/reviewer-scratch' },
       idempotencyKey: 'ro-reviewer',
     })
     assert.equal(calls.length, 1)
     assert.deepEqual(calls[0].spec.writeLiterals, [], 'the stored reviewer role strips the write grant at the sandbox port')
+    assert.equal(calls[0].spec.workspaceWrite, false, 'the stored reviewer role turns the workspace write off')
+    assert.equal(calls[0].spec.scratchDir, '/synthetic/reviewer-scratch', 'the host scratch dir survives as the only write outlet')
     assert.equal(result.execution.status, 'verifying')
     assert.equal(result.reviewerReadonly.applied, true)
     assert.equal(result.reviewerReadonly.code, REVIEWER_READONLY_APPLIED)
     const evidence = (await f.store.getTask(f.taskId)).evidence
     const log = evidence.find((item) => item.kind === 'log' && item.summary.includes(REVIEWER_READONLY_APPLIED))
     assert.ok(log, 'the read-only downgrade is recorded as an auditable Evidence log line')
-    assert.match(log.summary, /must-not-write\.txt/)
+    assert.match(log.summary, /must-not-write\.txt/, 'the stripped write literals are named')
+    assert.match(log.summary, /workspaceWrite=false/, 'the Evidence is honest about the workspace write being off')
+    assert.match(log.summary, /synthetic\/reviewer-scratch/, 'the Evidence names the surviving scratch outlet (matches the real OS rule)')
   } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
 })
 

@@ -130,13 +130,37 @@ test('a receipt still in preparing is the only crash state that recovers as repl
   try {
     const first = new MessageInbox({ dir });
     const { record } = await first.put(userMessage(902));
-    await first.checkpoint(record.id, { phase: 'preparing', processId: DEAD_PID, groupIds: [record.id] }, true);
+    // A post-deadline record journals its absolute grant deadline with `preparing`.
+    await first.checkpoint(record.id, { phase: 'preparing', processId: DEAD_PID, groupIds: [record.id], deadlineAt: Date.now() + 60_000 }, true);
     await first.close();
 
     const reopened = new MessageInbox({ dir });
     const result = await reopened.recover();
     assert.deepEqual(result.pending.map((row) => row.id), [record.id], 'a pre-dispatch crash stays replayable');
     assert.equal(result.uncertainCount, 0);
+    await reopened.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a preparing record with no journaled deadline recovers as uncertain, never silently re-budgeted', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dispatch-window-inbox-'));
+  try {
+    const first = new MessageInbox({ dir });
+    const { record } = await first.put(userMessage(903));
+    // Legacy record: the turn reached `preparing` before the deadline field existed,
+    // so the remaining grant budget is unknown.
+    await first.checkpoint(record.id, { phase: 'preparing', processId: DEAD_PID, groupIds: [record.id] }, true);
+    await first.close();
+
+    const reopened = new MessageInbox({ dir });
+    const result = await reopened.recover();
+    assert.equal(result.pending.length, 0, 'an unknown-deadline turn must never be auto-replayed');
+    assert.equal(result.uncertainCount, 1);
+    const latest = (await reopened.list())[0];
+    assert.equal(latest?.status, 'uncertain');
+    assert.equal(latest?.execution?.deadlineAt, undefined);
     await reopened.close();
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -154,7 +178,7 @@ test('crash while still preparing: re-admitted exactly once (safe replay)', asyn
   const seed = new WeChatAcpBridge(config);
   const seedInbox = (seed as any).messageInbox as MessageInbox;
   const { record } = await seedInbox.put(userMessage(801));
-  await seedInbox.checkpoint(record.id, { phase: 'preparing', processId: DEAD_PID, groupIds: [record.id] }, true);
+  await seedInbox.checkpoint(record.id, { phase: 'preparing', processId: DEAD_PID, groupIds: [record.id], deadlineAt: Date.now() + 60_000 }, true);
   await seedInbox.close();
   await ((seed as any).replyOutbox as ReplyOutbox).close();
 

@@ -185,26 +185,51 @@ export function nativeAcpSandboxSpec({ command, cwd, grant = {} } = {}) {
   return {
     execLiterals,
     workspaceDir: cwd,
+    // The workspace is read/write for the ordinary (worker) path: this is the
+    // EXPLICIT opt-in the sandbox spec now requires, because its own default is
+    // false (fail-closed) so an empty writeLiterals can never leave the workspace
+    // writable. applyReviewerReadonlyConstraint flips this to false for a reviewer,
+    // which is what actually makes the workspace read-only under Seatbelt.
+    workspaceWrite: true,
     readLiterals: Array.isArray(grant.readLiterals) ? [...grant.readLiterals] : [],
     writeLiterals: Array.isArray(grant.writeLiterals) ? [...grant.writeLiterals] : [],
+    // A host-allocated, workspace-disjoint scratch directory is the ONLY extra
+    // write outlet a caller may grant (used by a reviewer for private runtime
+    // state). It is validated strictly by native-sandbox (absolute, disjoint from
+    // the workspace); an absent scratchDir means no such outlet exists.
+    ...(typeof grant.scratchDir === 'string' ? { scratchDir: grant.scratchDir } : {}),
     denyNetwork: grant.denyNetwork ?? false,
   }
 }
 
-// Reviewer read-only enforcement (P4 gap 8). A reviewer execution exists to READ
-// and judge an artifact, never to rewrite it, so its sandbox spec's writeLiterals
-// is FORCED empty — even when the caller's grant explicitly supplied write paths.
-// This is a deliberate forced downgrade WITH an audit trail, not a silent accept:
-// the stripped paths are reported back so the operator can see exactly what was
-// dropped. Read access (the artifact under review) and the network policy are
-// left untouched. A caller passing an explicit write grant to a reviewer is NOT
-// rejected — the run proceeds read-only and the downgrade is recorded.
+// Reviewer read-only enforcement (P4 gap 8; hardened per RO-F001). A reviewer
+// execution exists to READ and judge an artifact, never to rewrite it. Emptying
+// writeLiterals alone was NOT enough: the r2 profile still granted the workspace
+// subpath unconditionally, so the reviewed artifact — which lives in the
+// workspace — stayed writable through the workspace grant. A reviewer spec
+// therefore now forces BOTH
+//   - writeLiterals: []       (any caller-supplied write literal is dropped), and
+//   - workspaceWrite: false   (the workspace itself loses its write grant),
+// which is what actually makes the workspace and its artifacts read-only under
+// Seatbelt. Read access (the artifact under review) and the network policy are
+// preserved. The ONE write outlet a reviewer may keep is a host-allocated
+// `scratchDir` (disjoint from the workspace, validated by native-sandbox); it is
+// carried through for the CLI's private runtime metadata and is the only thing
+// the Evidence line reports as writable. This is a deliberate forced downgrade
+// WITH an audit trail, not a silent accept: the stripped paths and the surviving
+// scratch outlet are reported back. A caller passing an explicit write grant to a
+// reviewer is NOT rejected — the run proceeds read-only and the downgrade is
+// recorded.
+//
+// The non-reviewer branch is unchanged: the same spec object is returned and
+// nothing is stripped.
 export function applyReviewerReadonlyConstraint(spec, role) {
   if (role !== 'reviewer') return { spec, readonly: { code: REVIEWER_READONLY_APPLIED, applied: false } }
   const strippedWriteLiterals = Array.isArray(spec?.writeLiterals) ? [...spec.writeLiterals] : []
+  const scratchDir = typeof spec?.scratchDir === 'string' ? spec.scratchDir : undefined
   return {
-    spec: { ...spec, writeLiterals: [] },
-    readonly: { code: REVIEWER_READONLY_APPLIED, applied: true, strippedWriteLiterals },
+    spec: { ...spec, writeLiterals: [], workspaceWrite: false },
+    readonly: { code: REVIEWER_READONLY_APPLIED, applied: true, strippedWriteLiterals, scratchDir },
   }
 }
 
@@ -473,11 +498,14 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
 // guard exactly the session this prompt is bound to. See
 // docs/handoffs/p4-plan-scope-sessionref-r1.md.
 //
-// Reviewer read-only (P4 gap 8): the role is read from the STORED execution and
-// passed to runNativeAcpPrompt, where a `reviewer` run has its sandbox
-// writeLiterals forced empty regardless of the grant. The downgrade is recorded
-// in the run result and as an Evidence log line — never silently accepted. See
-// docs/handoffs/p4-reviewer-readonly-r1.md.
+// Reviewer read-only (P4 gap 8; hardened per RO-F001): the role is read from the
+// STORED execution and passed to runNativeAcpPrompt, where a `reviewer` run has
+// its sandbox workspaceWrite forced false AND its writeLiterals forced empty
+// regardless of the grant, so the workspace and its artifacts are read-only under
+// Seatbelt; only a host-allocated scratchDir may remain writable. The downgrade is
+// recorded in the run result and as an Evidence log line whose text matches the
+// generated rules — never silently accepted. See
+// docs/handoffs/p4-reviewer-readonly-r2.md.
 //
 // External occupancy (V41): an OPTIONAL `occupancyProbe({ source, nativeSessionId,
 // cwd })` is called once per launch — AFTER the durable launch intent, BEFORE the
@@ -555,10 +583,20 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
     // omitting an argument. When the constraint fired, record it once as a
     // durable, auditable Evidence log line (the run result carries it too).
     if (result.reviewerReadonly?.applied) {
+      // The Evidence text must match the REAL OS rules, not the wish: the
+      // workspace and its artifacts are read-only (workspaceWrite:false), the
+      // caller's write literals were dropped, and the ONLY surviving write outlet
+      // is the host-allocated scratch dir (or none). Nothing here claims a
+      // read-only guarantee the generated spec does not actually enforce.
       const stripped = result.reviewerReadonly.strippedWriteLiterals ?? []
-      const summary = stripped.length > 0
-        ? `${REVIEWER_READONLY_APPLIED}: reviewer execution forced read-only; stripped caller-supplied writeLiterals [${stripped.join(', ')}]`
-        : `${REVIEWER_READONLY_APPLIED}: reviewer execution forced read-only; no writeLiterals were granted`
+      const scratch = result.reviewerReadonly.scratchDir
+      const strippedNote = stripped.length > 0
+        ? `stripped caller-supplied writeLiterals [${stripped.join(', ')}]`
+        : 'no writeLiterals were granted'
+      const outlet = scratch
+        ? `the only write outlet is the host-allocated scratch dir ${scratch}`
+        : 'no write outlet is granted (scratchDir absent)'
+      const summary = `${REVIEWER_READONLY_APPLIED}: reviewer execution forced read-only (workspaceWrite=false); ${strippedNote}; ${outlet}`
       await store.addEvidence(executionId, { kind: 'log', summary, source: `${source}:acp`, redacted: true }, { idempotencyKey: step('readonly') })
     }
     // A cancelled prompt is a terminal, honest outcome — never a completed one.

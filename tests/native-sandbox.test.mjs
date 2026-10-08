@@ -27,6 +27,10 @@ import {
   sandboxEnv,
   wrapWithSandbox,
 } from '../control-plane/native-sandbox.mjs'
+// The reviewer read-only (RO-F001) negatives below derive the REAL reviewer spec
+// through the executor's own two functions and then run it under the genuine
+// Seatbelt helper, so the test proves the OS — not a spy — withholds the write.
+import { nativeAcpSandboxSpec, applyReviewerReadonlyConstraint } from '../control-plane/native-acp-executor.mjs'
 
 const MAC = { skip: process.platform !== 'darwin' }
 
@@ -74,10 +78,12 @@ const assertUnlisted = dir => assert.ok(
 
 // --- structural -----------------------------------------------------------------
 
-test('buildSandboxProfile emits every enforced clause with read deny-by-default', () => {
+test('buildSandboxProfile emits every enforced clause, with the workspace write gated by workspaceWrite', () => {
   const profile = buildSandboxProfile({
     execLiterals: ['/bin/echo'],
     workspaceDir: '/synthetic/ws',
+    workspaceWrite: true,
+    scratchDir: '/synthetic/scratch',
     readLiterals: ['/synthetic/ws/read.txt'],
     writeLiterals: ['/synthetic/ws/write.txt'],
   })
@@ -98,14 +104,22 @@ test('buildSandboxProfile emits every enforced clause with read deny-by-default'
     '(subpath "/dev")',
     '(literal "/bin/echo")',
     '(subpath "/synthetic/ws")',
+    '(subpath "/synthetic/scratch")',
     '(literal "/synthetic/ws/read.txt")',
     '(deny file-write*)',
-    '(allow file-write* (literal "/dev/null") (subpath "/synthetic/ws") (literal "/synthetic/ws/write.txt"))',
+    '(allow file-write* (literal "/dev/null") (subpath "/synthetic/ws") (subpath "/synthetic/scratch") (literal "/synthetic/ws/write.txt"))',
     '(deny mach-lookup (global-name "com.apple.securityd"))',
   ]
   for (const clause of required) assert.ok(profile.includes(clause), `profile is missing clause: ${clause}`)
   // The r1 hole was a blanket metadata allow widening every unlisted path.
   assert.ok(!profile.includes('(allow file-read-metadata)'), 'the blanket metadata allow must be gone')
+  // RO-F001: WITHOUT workspaceWrite the workspace subpath still enters the READ
+  // allow (the artifact must stay readable) but NOT the write allow. An emptied
+  // writeLiterals that still left the whole workspace writable was the bug.
+  const gated = buildSandboxProfile({ execLiterals: ['/bin/echo'], workspaceDir: '/synthetic/ws' })
+  assert.ok(gated.includes('(allow file-read* (literal "/")') && gated.includes('(subpath "/synthetic/ws")'), 'the workspace stays readable without workspaceWrite')
+  assert.ok(gated.includes('(allow file-write* (literal "/dev/null"))'), `the workspace is not write-granted by default: ${gated}`)
+  assert.ok(!gated.includes('(allow file-write* (literal "/dev/null") (subpath "/synthetic/ws")'), 'the workspace must be absent from the default write allow')
   // denyNetwork=false drops the network clause but keeps the rest.
   assert.ok(!buildSandboxProfile({ execLiterals: ['/bin/echo'], denyNetwork: false }).includes('(deny network*)'))
 })
@@ -115,7 +129,7 @@ test('SYSTEM_READ_SUBPATHS is the frozen re-allowed system read set', () => {
   assert.ok(Object.isFrozen(SYSTEM_READ_SUBPATHS))
 })
 
-test('spec validation rejects empty exec whitelists and relative paths', () => {
+test('spec validation rejects empty exec whitelists, relative paths, and malformed write/scratch fields', () => {
   const invalid = [
     () => buildSandboxProfile(),
     () => buildSandboxProfile({}),
@@ -125,6 +139,8 @@ test('spec validation rejects empty exec whitelists and relative paths', () => {
     () => buildSandboxProfile({ execLiterals: ['/bin/echo'], workspaceDir: 'relative/ws' }),
     () => buildSandboxProfile({ execLiterals: ['/bin/echo'], readLiterals: ['relative'] }),
     () => buildSandboxProfile({ execLiterals: ['/bin/echo'], writeLiterals: ['relative'] }),
+    () => buildSandboxProfile({ execLiterals: ['/bin/echo'], scratchDir: 'relative/scratch' }),
+    () => buildSandboxProfile({ execLiterals: ['/bin/echo'], workspaceWrite: 'yes' }),
   ]
   for (const build of invalid) assert.throws(build, error => error instanceof NativeSandboxError && error.code === 'INVALID_SPEC')
 })
@@ -159,6 +175,46 @@ test('unknown configuration keys are rejected (NS-N001)', () => {
       error => error instanceof NativeSandboxError && error.code === 'INVALID_SPEC' && /unknown sandbox spec key/.test(error.message),
     )
   }
+})
+
+// RO-F001: workspaceWrite is a strict boolean defaulting to false, exactly like
+// denyNetwork. `workspaceWrite: 1` must not be read as truthiness and silently
+// grant the workspace write the reviewer constraint is meant to withhold.
+test('workspaceWrite must be a real boolean and defaults to false (fail-closed)', () => {
+  for (const value of [0, 1, 'true', 'false', null, [], {}]) {
+    assert.throws(
+      () => buildSandboxProfile({ execLiterals: ['/bin/echo'], workspaceDir: '/ws', workspaceWrite: value }),
+      error => error instanceof NativeSandboxError && error.code === 'INVALID_SPEC',
+      `workspaceWrite: ${JSON.stringify(value)} must be rejected`,
+    )
+  }
+  // Absent → the workspace is NOT in the write allow; only an explicit true opts in.
+  const off = buildSandboxProfile({ execLiterals: ['/bin/echo'], workspaceDir: '/ws' })
+  assert.ok(!off.includes('(allow file-write* (literal "/dev/null") (subpath "/ws")'), 'default must keep the workspace out of the write allow')
+  assert.ok(off.includes('(subpath "/ws")'), 'the workspace stays readable by default')
+  const on = buildSandboxProfile({ execLiterals: ['/bin/echo'], workspaceDir: '/ws', workspaceWrite: true })
+  assert.ok(on.includes('(allow file-write* (literal "/dev/null") (subpath "/ws"))'), 'explicit true opts the workspace in for write')
+})
+
+// RO-F001: scratchDir is the one optional extra write outlet, and it must be a
+// distinct tree from the workspace — an overlapping scratch would re-open the very
+// workspace write a reviewer must not have, in either nesting direction.
+test('scratchDir must be absolute and must not overlap the workspace in either direction', () => {
+  assert.throws(
+    () => buildSandboxProfile({ execLiterals: ['/bin/echo'], scratchDir: 'rel' }),
+    error => error instanceof NativeSandboxError && error.code === 'INVALID_SPEC',
+  )
+  for (const [workspaceDir, scratchDir] of [['/ws', '/ws'], ['/ws', '/ws/deep/scratch'], ['/ws/deep', '/ws']]) {
+    assert.throws(
+      () => buildSandboxProfile({ execLiterals: ['/bin/echo'], workspaceDir, scratchDir }),
+      error => error instanceof NativeSandboxError && error.code === 'INVALID_SPEC' && /scratchDir/.test(error.message),
+      `scratchDir ${scratchDir} overlaps workspace ${workspaceDir} and must be rejected`,
+    )
+  }
+  // A disjoint scratch is accepted and appears in both the read and write allow.
+  const profile = buildSandboxProfile({ execLiterals: ['/bin/echo'], workspaceDir: '/ws', scratchDir: '/scratch' })
+  assert.ok(profile.includes('(allow file-write* (literal "/dev/null") (subpath "/scratch"))'), 'the scratch dir is writable')
+  assert.ok(profile.includes('(allow file-read* (literal "/")') && profile.includes('(subpath "/scratch")'), 'the scratch dir is readable')
 })
 
 test('quotes and backslashes in literals are escaped, not left to break the profile', () => {
@@ -282,7 +338,7 @@ test('real Seatbelt: a grant is only effective through its canonical path', MAC,
   assert.notEqual(viaAlias.code, 0, 'the alias of a granted path is not itself granted')
 })
 
-test('real Seatbelt: the workspace is read/write while outside stays denied', MAC, async t => {
+test('real Seatbelt: the workspace is read/write only with the workspaceWrite opt-in, while outside stays denied', MAC, async t => {
   const dir = varTmpDir(t)
   const ws = path.join(dir, 'ws'); fs.mkdirSync(ws)
   const insideRead = path.join(ws, 'read.txt'); fs.writeFileSync(insideRead, 'ws-content')
@@ -292,13 +348,21 @@ test('real Seatbelt: the workspace is read/write while outside stays denied', MA
 
   const wsWrite = path.join(ws, 'written.txt')
   const outsideWrite = path.join(dir, 'outside.txt')
-  const shell = { execLiterals: ['/bin/sh', '/bin/bash'], workspaceDir: ws }
+  // workspaceWrite:true is the explicit opt-in an ordinary (worker) run makes.
+  const shell = { execLiterals: ['/bin/sh', '/bin/bash'], workspaceDir: ws, workspaceWrite: true }
   const wrote = await runWrapped('/bin/sh', ['-c', `printf ws > ${wsWrite}`], shell)
   assert.equal(wrote.code, 0, wrote.stderr)
   assert.equal(fs.readFileSync(wsWrite, 'utf8'), 'ws')
   const blocked = await runWrapped('/bin/sh', ['-c', `printf x > ${outsideWrite}`], shell)
   assert.notEqual(blocked.code, 0, 'a write outside the workspace/literals must fail')
   assert.equal(fs.existsSync(outsideWrite), false)
+
+  // RO-F001 control: WITHOUT the opt-in the same workspace write is refused, even
+  // though the workspace stays readable. This is exactly the shape a reviewer uses.
+  const noOptIn = { execLiterals: ['/bin/sh', '/bin/bash'], workspaceDir: ws }
+  const refused = await runWrapped('/bin/sh', ['-c', `printf nope > ${path.join(ws, 'no.txt')}`], noOptIn)
+  assert.notEqual(refused.code, 0, 'without workspaceWrite the workspace must not be writable')
+  assert.equal(fs.existsSync(path.join(ws, 'no.txt')), false)
 })
 
 test('real Seatbelt: a write outside the literal set is denied and leaves no file', MAC, async t => {
@@ -350,4 +414,155 @@ test('real Seatbelt: a self-built loopback listener is reachable only when the g
   assert.notEqual(denied.code, 0, 'deny network* must block an otherwise reachable listener')
   assert.equal(denied.stdout, '')
   assert.equal(requests, before, 'the denied request must never reach the listener')
+})
+
+// --- RO-F001: reviewer read-only under the REAL Seatbelt ------------------------
+//
+// The r1 audit's OS repro built a reviewer spec, then started a real sandboxed
+// Node write to a self-made artifact — and the artifact was rewritten, because the
+// r2 profile granted the whole workspace for write regardless of the emptied
+// writeLiterals. These tests derive the spec exactly as the executor does
+// (nativeAcpSandboxSpec -> applyReviewerReadonlyConstraint) and run it under the
+// genuine /usr/bin/sandbox-exec helper, so the denial is enforced by the OS and
+// not by an injected spy. The load-bearing control inside the first test restores
+// the pre-fix workspace write (workspaceWrite:true) and shows the SAME write lands
+// — proving the negative bites on the actual change. Everything is a self-made
+// mkdtemp fixture under the unlisted private temp trees; no production file, no
+// real CLI, no network.
+
+// Derive the REAL reviewer spec the executor would produce: the workspace is the
+// prompt cwd, the command is the only executable, and the reviewer constraint has
+// forced workspaceWrite:false and writeLiterals:[]. An optional host scratch dir is
+// the sole surviving write outlet.
+const reviewerSpec = ({ cwd, command = process.execPath, writeLiterals = [], readLiterals = [], scratchDir }) =>
+  applyReviewerReadonlyConstraint(
+    nativeAcpSandboxSpec({ command, cwd, grant: { readLiterals, writeLiterals, ...(scratchDir ? { scratchDir } : {}), denyNetwork: true } }),
+    'reviewer',
+  ).spec
+
+test('real Seatbelt: a reviewer spec (RO-F001 repro) cannot rewrite or create the workspace artifact, and the original bytes survive', MAC, async t => {
+  const base = varTmpDir(t)
+  assertUnlisted(base)
+  const ws = path.join(base, 'ws'); fs.mkdirSync(ws)
+  const artifact = path.join(ws, 'artifact.txt'); fs.writeFileSync(artifact, 'TESTONLY-original', { mode: 0o600 })
+  // The auditor's repro: an explicit write grant for the artifact, then the
+  // reviewer constraint — which must still leave the artifact read-only.
+  const spec = reviewerSpec({ cwd: ws, writeLiterals: [artifact] })
+  assert.equal(spec.workspaceWrite, false, 'the reviewer spec turns the workspace write off')
+  assert.deepEqual(spec.writeLiterals, [], 'the explicit write grant is stripped')
+
+  // read still works (the reviewer must read the artifact).
+  const read = await runWrapped(process.execPath, ['-e', `process.stdout.write(require('node:fs').readFileSync(process.argv[1],'utf8'))`, artifact], spec)
+  assert.equal(read.code, 0, read.stderr)
+  assert.equal(read.stdout, 'TESTONLY-original', 'the reviewer can still read the artifact')
+
+  // rewrite the existing file: denied, bytes unchanged.
+  const rewrite = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'TESTONLY-modified')`, artifact], spec)
+  assert.notEqual(rewrite.code, 0, 'a reviewer must not be able to rewrite the artifact')
+  assert.equal(fs.readFileSync(artifact, 'utf8'), 'TESTONLY-original', 'the original bytes are unchanged')
+
+  // create a new file: denied, nothing appears.
+  const created = path.join(ws, 'new.txt')
+  const create = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'TESTONLY-new')`, created], spec)
+  assert.notEqual(create.code, 0, 'a reviewer must not create new files in the workspace')
+  assert.equal(fs.existsSync(created), false, 'no new file is left behind')
+
+  // LOAD-BEARING CONTROL (the mutation): with the workspace write restored
+  // (workspaceWrite:true — the pre-fix r2 shape) the SAME write DOES land, so the
+  // assertions above bite on the real change and not on some unrelated deny.
+  const preFix = { ...spec, workspaceWrite: true }
+  const control = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'TESTONLY-modified')`, artifact], preFix)
+  assert.equal(control.code, 0, control.stderr)
+  assert.equal(fs.readFileSync(artifact, 'utf8'), 'TESTONLY-modified', 'with the workspace write restored the artifact IS rewritten (proves the negative is load-bearing)')
+})
+
+test('real Seatbelt: a reviewer spec cannot modify a check script or rename/delete a workspace file', MAC, async t => {
+  const base = varTmpDir(t)
+  const ws = path.join(base, 'ws'); fs.mkdirSync(ws)
+  const script = path.join(ws, 'check.mjs'); fs.writeFileSync(script, 'export const ok = true\n', { mode: 0o600 })
+  const data = path.join(ws, 'data.txt'); fs.writeFileSync(data, 'TESTONLY-data')
+  const spec = reviewerSpec({ cwd: ws })
+
+  // modify the check script: denied, bytes unchanged.
+  const edit = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'export const ok = false\\n')`, script], spec)
+  assert.notEqual(edit.code, 0, 'a reviewer must not be able to rewrite the check script')
+  assert.equal(fs.readFileSync(script, 'utf8'), 'export const ok = true\n', 'the check script bytes are unchanged')
+
+  // rename: denied, both paths unchanged.
+  const renamed = path.join(ws, 'renamed.txt')
+  const ren = await runWrapped(process.execPath, ['-e', `require('node:fs').renameSync(process.argv[1], process.argv[2])`, data, renamed], spec)
+  assert.notEqual(ren.code, 0, 'a reviewer must not rename a workspace file')
+  assert.ok(fs.existsSync(data) && !fs.existsSync(renamed), 'the rename did not take effect')
+
+  // delete: denied, the file survives.
+  const del = await runWrapped(process.execPath, ['-e', `require('node:fs').unlinkSync(process.argv[1])`, data], spec)
+  assert.notEqual(del.code, 0, 'a reviewer must not delete a workspace file')
+  assert.ok(fs.existsSync(data), 'the file survives the delete attempt')
+})
+
+test('real Seatbelt: a reviewer spec cannot escape the workspace through a symlink or a path alias', MAC, async t => {
+  const base = varTmpDir(t)
+  const ws = path.join(base, 'ws'); fs.mkdirSync(ws)
+  const outside = path.join(base, 'outside'); fs.mkdirSync(outside)
+  const outsideFile = path.join(outside, 'target.txt'); fs.writeFileSync(outsideFile, 'TESTONLY-outside')
+  // A symlink inside the workspace pointing at an outside directory.
+  fs.symlinkSync(outside, path.join(ws, 'escape'))
+  const spec = reviewerSpec({ cwd: ws })
+
+  // Write through the symlink at an outside path: denied, outside bytes unchanged.
+  const viaLink = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'TESTONLY-pwned')`, path.join(ws, 'escape', 'target.txt')], spec)
+  assert.notEqual(viaLink.code, 0, 'a symlink out of the workspace must not grant a write')
+  assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'TESTONLY-outside', 'the outside file is untouched')
+
+  // A /var alias of the workspace must not authorize a write either: the grant is
+  // canonical-only, so the alias form is not a write path.
+  const aliasBase = fs.mkdtempSync('/var/tmp/native-sandbox-rev-alias-')
+  const canonBase = fs.realpathSync(aliasBase)
+  t.after(() => fs.rmSync(canonBase, { recursive: true, force: true }))
+  assert.notEqual(aliasBase, canonBase, '/var/tmp must differ from its canonical form for this alias test to bite')
+  const canonArtifact = path.join(canonBase, 'artifact.txt'); fs.writeFileSync(canonArtifact, 'TESTONLY-canon')
+  const aliasSpec = reviewerSpec({ cwd: canonBase })
+  const viaAlias = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'TESTONLY-alias')`, path.join(aliasBase, 'artifact.txt')], aliasSpec)
+  assert.notEqual(viaAlias.code, 0, 'the alias form of the workspace is not a write grant')
+  assert.equal(fs.readFileSync(canonArtifact, 'utf8'), 'TESTONLY-canon')
+})
+
+test('real Seatbelt: a reviewer scratchDir is writable and stays isolated from the workspace', MAC, async t => {
+  const base = varTmpDir(t)
+  const ws = path.join(base, 'ws'); fs.mkdirSync(ws)
+  const scratch = path.join(base, 'scratch'); fs.mkdirSync(scratch)
+  const artifact = path.join(ws, 'artifact.txt'); fs.writeFileSync(artifact, 'TESTONLY-original')
+  const spec = reviewerSpec({ cwd: ws, writeLiterals: [artifact], scratchDir: scratch })
+
+  // The scratch dir is the one permitted write outlet (private runtime metadata).
+  const scratchFile = path.join(scratch, 'runtime.json')
+  const toScratch = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'TESTONLY-meta')`, scratchFile], spec)
+  assert.equal(toScratch.code, 0, toScratch.stderr)
+  assert.equal(fs.readFileSync(scratchFile, 'utf8'), 'TESTONLY-meta')
+
+  // The workspace is still not writable, so scratch does not reopen it.
+  const toWs = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'TESTONLY-mod')`, artifact], spec)
+  assert.notEqual(toWs.code, 0, 'the scratch outlet must not reopen the workspace write')
+  assert.equal(fs.readFileSync(artifact, 'utf8'), 'TESTONLY-original')
+
+  // A symlink inside scratch pointing outside does not become an outside write.
+  const outside = path.join(base, 'outside'); fs.mkdirSync(outside)
+  fs.symlinkSync(outside, path.join(scratch, 'link'))
+  const viaLink = await runWrapped(process.execPath, ['-e', `require('node:fs').writeFileSync(process.argv[1],'TESTONLY-esc')`, path.join(scratch, 'link', 'esc.txt')], spec)
+  assert.notEqual(viaLink.code, 0, 'a scratch symlink must not grant a write outside scratch')
+  assert.equal(fs.existsSync(path.join(outside, 'esc.txt')), false)
+})
+
+test('a reviewer spec fails closed with SANDBOX_REQUIRED when Seatbelt is unavailable (no unsandboxed fallback)', () => {
+  // Not platform-gated: on a non-darwin host assertSandboxAvailable refuses outright,
+  // and on darwin the mocked missing helper does — either way there is no bare run.
+  const spec = reviewerSpec({ cwd: '/tmp' })
+  const original = fs.existsSync
+  try {
+    fs.existsSync = () => false
+    assert.throws(
+      () => wrapWithSandbox(process.execPath, [], spec),
+      error => error instanceof NativeSandboxError && error.code === 'SANDBOX_REQUIRED',
+    )
+  } finally { fs.existsSync = original }
 })

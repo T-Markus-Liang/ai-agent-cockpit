@@ -711,10 +711,15 @@ export class WeChatAcpBridge {
     );
 
     if (!isCurrent()) return;
+    // A recovered turn resumes against the ORIGINAL absolute deadline journaled with
+    // its `preparing` checkpoint — never a fresh full budget. A fresh message has no
+    // execution record, so the SessionManager stamps the deadline when its turn starts.
+    const recoveredDeadline = ids.length ? (await this.messageInbox?.get(ids[0]!))?.execution?.deadlineAt : undefined;
     await this.sessionManager!.enqueue(userId, {
       receiptIds: ids,
       completion: this.receiptCompletion(ids),
       prompt,
+      deadlineAt: recoveredDeadline,
       contextToken,
       replyGeneration,
     });
