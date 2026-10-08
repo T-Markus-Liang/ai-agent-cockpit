@@ -152,3 +152,18 @@
 - 按 **FG-F001 五条**逐条复核本批 diff / 新 SHA / 负例与变异结果。重点：① 到期是否**只**终结、绝不重发/重入队/换引擎（catch 分支已无 re-enqueue）；② 是否**任何地方都不再从 now 起完整 `grantDeadlineMs`**（`awaitAgentOperation` 只认 `deadlineAt`）；③ 重启是否**继承**持久化 `deadlineAt`，旧记录是否落 `uncertain`；④ fallback 是否**逐条经 classify**（干净 + 可降级 + 期限内）；⑤ 未新增第二条结果投递通道。
 - 裁决上述 3 项「未覆盖/偏差」：`createSession` 候选链是否也需过 gate、盖章时点（出队 vs 入站）、vendor 侧镜像实现。
 - 非返工前请确认：本包未触碰 `package.json`、`docs/audits/**`、`docs/plans/**`、`config/wechat-acp.json`（生产配置）。
+
+## 差分对拍护栏（r2 增补）
+
+- **目的**：给 `vendor/wechat-acp/src/acp/fallback-policy.ts`（vendor 侧镜像实现，见上文「未覆盖项/偏差，待裁决」）与根权威 `runtime/fallback-policy.mjs` 之间加一道**防漂移护栏**——**纯新增差分对拍测试**，不修任何被测实现，不碰生产、`package.json`（根/vendor）、`docs/audits/**`、`docs/plans/**`；**未执行任何 git 命令**。
+- **新增文件**：`vendor/wechat-acp/tests/fallback-policy-parity.test.ts`（**新**）SHA256 `92fa6ac363806c1705c827e55feb1a883fcc161d1edd744b05ffea79a14dc2e1`（258 行）。
+- **为何测试能 import 根 `.mjs`**：vendor `tsconfig.json` 的 `include` 仅 `src/**`+`bin/**`，测试不参与包构建的类型检查；测试经 `tsx` 运行，故可从 `tests/` import `../../../runtime/fallback-policy.mjs`（`src/` 侧的 `rootDir` 边界对测试不适用）。
+- **对拍矩阵规模**：
+  - 分类核心：14 kind（`startup_error`/`timeout`/`protocol_error`/`rate_limit`/`auth_error`/`mid_generation_failure`/`unknown`/未知名串/空串/非串 `undefined`·`null`·`42`·`{}`·`true`）× 3(`hasProducedMessage`) × 3(`hasUsedTools`) = **126 行**（root `classifyFailure({kind,hasProducedMessage,hasUsedTools})` vs vendor `classifyFailure(kind, pm, ut)`，比较 `eligible` + `reason`）。
+  - 下一候选门：14 × 3 × 3 × 3(bound) = **378 行**（root `nextAttempt` vs vendor `decideFallback`，比较「是否允许下一候选」）。
+  - 第三轴「已尝试次数边界」按各自返回形状适配：root=`auto-attempt` 计数（0 / 达 `MAX_AUTOMATIC_ATTEMPTS` / 超上限再调）；vendor=`remainingMs` 剩余预算（+1000 / 0 / -1）。二者守卫语义不同（**次数 vs 预算**），故仅比较共享语义「**耗尽即禁止再 fallback**」，不逐字段强求理由串相同。
+  - 「契约锚」负/正例：`protocol_error` 带副作用标记 → 两侧均拒 `unclean-side-effects`；`startup_error` 零副作用 → 两侧均准 `startup-failure`；dirty `timeout` → `timeout-dirty`；`auth_error`（即便零副作用）→ `auth-failure`；缺 flag → `unclean-side-effects`。
+- **结果**：**未发现真实语义分歧**——分类 126/126、决策 378/378 全等价。两侧唯一差异是「预算/次数耗尽」时的理由串（root `fallback-exhausted` vs vendor `deadline-exhausted`），系守卫不同（次数 vs 时间预算）导致的**形状差异，非契约分歧**，按铁律**不修实现**。
+- **护栏灵敏度（反向变异，仅对 tmp 拷贝操作、未动实现）**：把 vendor 拷贝的副作用屏障由 `hasProducedMessage!==false || hasUsedTools!==false` 改为仅判 `hasProducedMessage!==false`，对拍即**精确失败**（分类 8/126、决策 32/378 行分歧，退出码 1，打印分歧明细）；对拍并断言 root 计数恒 ≤ `MAX_AUTOMATIC_ATTEMPTS`。
+- **回归**：vendor 整包 `node --import tsx/esm --test 'tests/**/*.ts'` → **tests 410 / pass 409 / fail 0 / skipped 1**（本批 +3）；`npm run test:fallback-policy`（仓库根）→ **18/18**；`npm run audit:secrets` → **PASS**（0 undispositioned）。
+- **未改**：两个被测实现（`runtime/fallback-policy.mjs` SHA `fb01ca668a72156f0fac5d0f8756645aabc83894422fdecd6517f39c94bb7934`；vendor `src/acp/fallback-policy.ts` SHA `b24da9eb0cf304e82ac6118d39d3e96caf6f57e0319e7ba2247dff5b4230bbe3`，与上文一致）；根/vendor `package.json`。
