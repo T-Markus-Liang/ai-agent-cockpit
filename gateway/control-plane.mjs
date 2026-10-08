@@ -11,11 +11,14 @@ import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
 import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution, watchCezarExecution } from '../control-plane/dispatcher.mjs'
 import { handleMcpRequest } from '../interfaces/mcp/server.mjs'
-import { AuthorityError, authorizeHttpRequest, loadRequestAuthority, nativeRemoteInput, trustedApprovalDecision } from '../control-plane/request-authority.mjs'
+import { AuthorityError, authorizeHttpRequest, createLiveRequestAuthority, nativeRemoteInput, trustedApprovalDecision } from '../control-plane/request-authority.mjs'
 
 const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 4324)
 const TRUSTED_ORIGINS = new Set(['http://127.0.0.1:4321', 'http://localhost:4321'])
-const authority = await loadRequestAuthority({ file: process.env.CONTROL_PLANE_AUTH_FILE, required: process.env.CONTROL_PLANE_REQUIRE_AUTH === '1' })
+// Revalidated on every request (M02 ID-E001): rotation/revocation/expiry of the
+// on-disk authority file take effect without restarting the gateway. The loader
+// is synchronous, so no top-level await is needed here.
+const authority = createLiveRequestAuthority({ file: process.env.CONTROL_PLANE_AUTH_FILE, required: process.env.CONTROL_PLANE_REQUIRE_AUTH === '1' })
 const store = new ControlPlaneStore()
 let cache = null
 let cacheAt = 0
