@@ -14,15 +14,15 @@ macOS 本机 AI 调度控制面：可审计的执行与证据闭环。
 ![Node](https://img.shields.io/badge/node-24-brightgreen)
 ![仓库](https://img.shields.io/badge/repository-public-blue)
 
-**[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html)** · **[执行记录](EXECUTION.md)** · **[0.3.0 计划](docs/plans/0.3.0-execution.md)** · **[上游与致谢](#上游与致谢)**
+**[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html)** · **[执行记录](EXECUTION.md)** · **[0.3.0 计划](docs/plans/0.3.0-execution.md)** · **[思路与致谢](#思路与致谢)**
 
 </div>
 
 ## 简介
 
-Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面。微信是移动入口，Cezar（4321）是本地 cockpit，控制面（4324）管理 Task、SessionRef、Execution、Evidence、Approval 和 AgentCapability 契约；Worker 可插拔，涵盖 Cezar、Codex、OpenCode、Kimi CLI、WorkBuddy、Devin、Claude Code 与 Antigravity。它先建立可审计的 Task、SessionRef、Execution 和 Evidence 边界，再逐步增加 Chief 调度、审批和验证闭环。Git 仓库已命名为 personal-ai-os；本地目录与 launchd 标签将在 0.3.0 发布切换时统一迁移（见 [命名统一决策](docs/decisions/rename-personal-ai-os.md)）。
+Personal AI OS 是跑在 macOS 上的 AI 调度控制面。微信是移动入口，Cezar（4321）是本地 cockpit，控制面（4324）负责 Task、Execution、Evidence、Approval 这些可审计对象；Worker 可插拔——Cezar、Codex、OpenCode、Kimi CLI、WorkBuddy、Devin、Claude Code、Antigravity。Git 仓库已命名为 personal-ai-os，本地目录与 launchd 标签随 0.3.0 发布时迁移（见[命名决策](docs/decisions/rename-personal-ai-os.md)）。
 
-它不是把所有 App 历史复制到一个新数据库，也不是给每个 GUI App 强行套一个"已支持"的标签。索引快照声明 `readOnly=true`、`secretsRead=false`、`messageBodiesRead=false`；控制面只写自己的状态文件，不写外部 Agent 历史。任何 Agent 的恢复能力只记录原生命令提示和验证限制，不会因为"发现了可执行文件"就声称旧会话可以安全恢复。
+它不把所有 App 的历史复制进一个新数据库，也不给每个 GUI App 贴"已支持"的标签。控制面只写自己的状态文件（`readOnly=true`、`secretsRead=false`、`messageBodiesRead=false`），不写外部 Agent 的历史；发现了某个 Agent 的可执行文件，不等于旧会话可以安全恢复。
 
 ## 为什么是 Personal AI OS
 
@@ -74,23 +74,13 @@ Personal AI OS 要把这三个角色接过去。一个人加上这套系统，�
 **📱 一个微信入口** — 手机派任务、查进度、批审批；断线自动巡检补发。
 
 </td>
-<td valign="top">
+<td width="33%" valign="top">
 
 **🧩 一组可插拔 Worker** — Cezar、Codex、OpenCode、Kimi CLI 经统一适配器接入。
 
 </td>
 </tr>
 </table>
-
-## 方法论来源
-
-调度与验证设计吸收了 Lauren Tan（SpaceXAI）公开的 pstack 思路：skill-first routing、Chief + specialized workers、并行候选与顺序降级、verification-first、独立 review 与长期记忆。本项目的实现是面向个人单机的二次工程推演，不冒充来源作者的原始产品；逐项对照与参考链接见[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 第 19 节。这套思路的个人版推演，正是本项目的愿景——让一个人拥有专业团队的执行与复核能力。
-
-## 上游与致谢
-
-- [Cezar](https://github.com/open-mercato/cezar)（MIT）：本地 cockpit 与派单执行器，以 `vendor/cezar` 内嵌，控制面经 `adapters/engines/cezar.mjs` 接入；
-- wechat-acp 桥：微信 ↔ ACP 入口、共享记忆与可靠补发，以 `vendor/wechat-acp` 内嵌；
-- 方法论来源见上一节，逐项对照见[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 第 19 节。
 
 ## 系统架构
 
@@ -120,9 +110,9 @@ flowchart LR
     Goals --> CP
 ```
 
-控制面默认只监听 `127.0.0.1`。所有写操作要求幂等键；Cezar 派单还要求动作、目标、参数摘要完全匹配的审批。MCP 工具层默认只创建控制面对象，不直接启动外部 Agent。
+控制面默认只监听 `127.0.0.1`。写操作都要幂等键，Cezar 派单还要一条动作、目标、参数摘要完全对得上的审批。MCP 工具层只创建控制面对象，不直接启动外部 Agent。
 
-## 消息处理时序
+### 一条消息的一生
 
 ```mermaid
 sequenceDiagram
@@ -150,9 +140,9 @@ sequenceDiagram
     OB-->>WX: 持久补发回复
 ```
 
-回执先落盘再推进轮询游标；回复按用户顺序投递，重启不会清掉待发文本。文本补发复用同一 clientId，但不保证微信服务器 exactly-once；发送接口接受也不等于用户已读。
+回执先落盘再推进游标；回复按顺序投递，重启不丢待发文本；微信服务器不保证 exactly-once，发送接口接受也不等于用户已读。
 
-## Task 生命周期与完成门槛
+### 什么才算"做完了"
 
 ```mermaid
 stateDiagram-v2
@@ -177,15 +167,7 @@ stateDiagram-v2
     end note
 ```
 
-Task 完成门槛（全部满足才允许 `completed`）：
-
-- 全部 Execution 进入终态；
-- 至少一个 Execution `succeeded` 且 `exitCode=0`；
-- 存在与同一 artifact 匹配的 test / command Evidence；
-- 存在独立的 review Evidence（Reviewer Execution 保留 parent 关联，只创建可审计 review child，不伪装成 Worker 原上下文）；
-- 消费一条 action、target、parametersDigest 精确绑定且未消费的 Approval。
-
-缺证据或副作用不确定时进入 `BLOCKED` 并向用户说明，不自动重试、不伪造完成。
+Worker 说"做完了"不算数。允许 `completed` 之前必须凑齐：全部 Execution 进入终态、至少一个 `succeeded` 且 `exitCode=0`、同一 artifact 的 test/command 证据、另一条独立的 review 证据（Reviewer 只建可审计的 review child，不冒充 Worker 原上下文），最后消费一条精确绑定、没用过的 Approval。缺证据或副作用拿不准就进 `BLOCKED`，说清楚原因，不自动重试，也不伪造完成。
 
 ## 快速开始
 
@@ -214,7 +196,7 @@ npm run doctor
 curl -fsS http://127.0.0.1:4324/health
 ```
 
-## 运行入口
+## 本机一览
 
 | 端口 | 组件 | launchd 标签 | 职责 |
 | --- | --- | --- | --- |
@@ -228,25 +210,7 @@ curl -fsS http://127.0.0.1:4324/health
 | — | Antigravity 反代 | `com.markus.antigravity-proxy` | Provider 反代 |
 | — | keepawake | `com.markus.ai-agent-cockpit.keepawake` | 保持唤醒 |
 
-以上服务均由 launchd 定义常驻，全部只监听回环地址；关闭浏览器不影响后台运行。
-
-## 可移植性与验证状态
-
-控制面与适配器分层设计，平台相关面集中在少数边界：进程托管（launchd）、沙箱（Seatbelt）、本地判断二进制（jev-eval）。当前仅在 macOS 开发、测试与验证；其余平台未开始，不做支持承诺。
-
-| 组件 | 技术栈 | 状态 |
-| --- | --- | --- |
-| 控制面 / 网关（4324 / 4326 / 4323） | Node.js 24 | macOS 已验证；跨平台天然，未验证 |
-| wechat-acp 桥（微信 I/O） | Node.js + iLink 云 API | macOS 已验证；协议层与 OS 无关，未验证 |
-| 微信控制服务（4322） | Node.js + iLink 云 API | macOS 已验证；协议层与 OS 无关，未验证 |
-| Mem0 记忆服务（4325） | Python + Qdrant | macOS 已验证；跨平台天然，未验证 |
-| 进程托管 | launchd | macOS 已验证；其他系统需 systemd 等替代实现 |
-| 目标沙箱 | Seatbelt | macOS 已验证；其他系统需 bubblewrap / landlock 等替代 |
-| 本地判断二进制 | jev-eval | 仅 macOS 构建 |
-
-微信入口的协议交互与 macOS 基本无关：收发都走腾讯 iLink 云端 Bot API（纯 HTTPS，代码内无 AppleScript、无辅助功能、无本地客户端依赖），macOS 依赖仅存在于部署层（launchd 托管、caffeinate 保活）。下一个候选平台是 Linux（systemd 替换最直接），Windows 可能经 WSL2，均无时间表。
-
-## 目录结构
+都由 launchd 常驻，全部只监听回环地址；关掉浏览器不影响后台运行。
 
 ```text
 control-plane/       Task / Execution / Evidence / Approval 契约、存储、路由、派单、原生 ACP 执行器
@@ -265,23 +229,23 @@ evals/               不调用模型的协议级回归评估
 docs/                releases 版本说明、plans 计划、decisions、research
 ```
 
-## 核心子系统
+## 几个关键机制
 
 ### 微信入口与可靠投递
 
-桥接器先把完整服务器转写和消息元数据写入实例私有 `incoming-receipts/`，再推进轮询游标。前一轮超时后尚未开始的消息保留并继续；`recovery.enabled` 每 5 秒巡检，确认未派发的失败请求按 15/30 秒退避，最多 3 次失败后等待核对。文本补发存入私有 `reply-outbox/`，复用同一 clientId、按用户顺序投递，默认最多 96 次外层尝试，15 秒指数退避至 15 分钟。微信命令包括 `/approve`、`/reject`（含 `/批准`、`/拒绝`）与 `/消息`、`/acp-more`、`/取消`、`/新会话`；命令只改变状态，不绕过控制面执行门槛。**边界**：依赖微信返回的语音转写，无原始音频 ASR；前台仍有 5 分钟处理上限；二进制附件补发不解决；`reply_pending` 表示文本待补发，普通 `done` 表示轮次结束，都不是用户已读。详见 [0.2.2 说明](docs/releases/0.2.2.md)。
+桥先把完整转写和消息元数据写进实例私有的 `incoming-receipts/`，再推进游标；超时后没开始的消息保留继续，恢复巡检每 5 秒跑一轮，失败的请求按 15/30 秒退避，三次不成转人工核对。要补发的文本进私有 `reply-outbox/`，按顺序投递，最多重试 96 次、退避到 15 分钟。微信里可以 `/approve`、`/reject`（或 `/批准`、`/拒绝`）审批，也可以 `/消息` 看队列、`/acp-more` 续补发、`/取消`、`/新会话`。边界直说：没有原始音频 ASR（依赖微信自己的转写）、前台处理上限 5 分钟、二进制附件不补发。细节见 [0.2.2 说明](docs/releases/0.2.2.md)。
 
 ### 共享记忆（Mem0 OSS）
 
-每轮实际派发前统一注入人格规则、近期对话、较早的有损摘录和Mem0相关事实，切换fallback不更换记忆命名空间；完整正文追加到私有`conversation-archive/*.jsonl`。存储/embedding本地运行（Qdrant + SQLite + 384维多语言模型），位于`~/.local/state/personal-ai-os/mem0/`。历史基线使用Kimi生成式提炼且出现事实缺失；升级源码改用本机`jev-eval` wrapper调用**远程Jev**选择和验证完整原文句子，Mem0以infer=False存储，不生成式改写，也不是全离线。来源/软忘记已有隔离证据，更正/擦除/原生上下文重置与正式部署仍未验收，见[阶段台账](docs/plans/0.3.0-status.md)。交付语义是at-least-once，不保证断电exactly-once；永久拒绝记录留在私有`rejectedOutbox`。运维见[记忆服务文档](services/memory/README.md)。
+每轮派发前统一注入人格规则、近期对话、较早的有损摘录和 Mem0 检索到的相关事实；换 fallback 不换记忆命名空间，完整正文追加到私有 `conversation-archive/`。存储和 embedding 在本机（Qdrant + SQLite，384 维多语言模型），目录在 `~/.local/state/personal-ai-os/mem0/`。旧版用 Kimi 生成式提炼，出现过事实缺失；现在的源码改由本机 `jev-eval` 调远程 Jev 选择和校验完整原文句子，Mem0 以 infer=False 原样存储——提炼不生成式改写，但也不是全离线。投递是 at-least-once，断电窗口不保证 exactly-once；永久拒绝的记录留在私有 `rejectedOutbox`。更正、擦除、原生上下文重置与正式部署仍未验收（[阶段台账](docs/plans/0.3.0-status.md)），运维见[记忆服务文档](services/memory/README.md)。
 
 ### 持续目标（goals 4326）
 
-在仪表盘"持续目标 · 自主验证"创建草稿，查看文件范围、不可修改的验收和 token 上限，再确认启动；Kimi 规划/复核，官方 DeepSeek V4.1 Flash 提出修改，修改只应用到私有副本，真实 `node --test` 验收在 macOS Seatbelt 下运行。失败自行返工，默认最多 3 次自恢复，不逐轮请求人工批准。微信 `/目标` 抽查进度，支持查看、暂停、恢复、取消与暂停全部。**边界**：确认范围需完整 scope digest，聊天模型不能代批；只支持已有文本文件与固定 Node 验收；输入会发送给既有 provider，不是全离线。详见 [0.2.0 说明](docs/releases/0.2.0.md)。
+在仪表盘"持续目标 · 自主验证"创建草稿，看文件范围、不可修改的验收和 token 上限，确认了才启动。Kimi 规划/复核，官方 DeepSeek V4.1 Flash 提出修改，修改只落到私有副本，真实 `node --test` 验收在 macOS Seatbelt 下跑；失败了它自己返工，默认最多 3 次，不逐轮求人批。微信 `/目标` 可以抽查进度、暂停、恢复、取消。边界：确认范围要完整的 scope digest，聊天模型不能代批；只支持已有文本文件和固定 Node 验收；输入会发给既有 provider，不是全离线。详见 [0.2.0 说明](docs/releases/0.2.0.md)。
 
 ## Agent 接入现状
 
-通讯平台是“用户入口”，下表的CLI/App是“执行Worker”，两者不共用“已连接”含义。最新阶段状态见[四类状态台账](docs/plans/0.3.0-status.md)。
+通讯平台是"用户入口"，下表的 CLI/App 是"执行 Worker"，两者不共用"已连接"的含义。最新阶段状态见[四类状态台账](docs/plans/0.3.0-status.md)。
 
 | Agent | 会话元数据 | 原生恢复提示 | 目前限制 |
 | --- | --- | --- | --- |
@@ -295,9 +259,9 @@ docs/                releases 版本说明、plans 计划、decisions、research
 | Antigravity | 已发现 App/本机反代 | GUI-only / proxy | 没有稳定的本地旧会话索引 |
 | DeepSeek Harness App | Feature Map独立来源，当前unknown | 尚无已验收的原生恢复通道 | 模型provider成功不能当作Harness App或旧对话已接通 |
 
-## 社交与工作平台兼容性
+## 接微信以外的通讯平台
 
-当前只用微信接入、开发和验证。其他平台可以复用微信的持久收件/补发、身份、记忆、运行与验收规则，但需要各自的认证和消息适配；“平台有SDK”不等于本项目已支持。
+当前只有微信在跑。其他平台可以复用微信桥的持久收件、补发、身份、记忆与验收规则，但认证和消息格式各家不同——"平台有 SDK"不等于已支持。
 
 | 平台 | 当前项目状态 | 接入方向 / 边界 |
 | --- | --- | --- |
@@ -310,37 +274,45 @@ docs/                releases 版本说明、plans 计划、decisions、research
 | Signal / iMessage / QQ等个人客户端 | 未接入，暂不承诺默认支持 | 先确认可靠接口与账号边界，不把GUI外挂当稳定兼容 |
 | 手机网页 | 未接入，研究在途 | Paseo 调查（[docs/research/](docs/research/paseo-2026-10-07.md)），候选跨平台入口 |
 
-完整列表、官方依据、薄ChannelPort模板草案和验收要求见[通讯平台兼容与接入模板](docs/plans/channel-compatibility.md)。模板尚未编码，其他平台本轮未安装/登录/测试；后续扩展不为每个平台复制一套Chief或调度器，也不自动扩大0.3.0发布范围。桥的通用管线（收件、补发、记忆注入）可直接复用，但尚未抽象出平台无关的 transport 接口（当前与微信消息类型耦合）；第二个连接器尚未落地，模板化成本未实测。
+详细对比、官方依据和 ChannelPort 模板草案见[通讯平台兼容与接入模板](docs/plans/channel-compatibility.md)。模板还没编码，其他平台一个都没装过、登过、测过。桥的通用管线（收件、补发、记忆注入）能复用，但还没抽出平台无关的 transport 接口（现在和微信消息类型绑着）；第二个连接器没落地之前，"模板化成本"是估算，不是实测。
 
 ## 审核如何跟上 AI 的速度
 
-AI 的执行速度在指数增长，人的审核速度不变。如果每个动作都要等人点头，人就成了系统里唯一的瓶颈——这不是解放，是换了个地方上班。这套系统的答案是注意力经济学：人的注意力只花在不可逆的决策上，其余交给机器证据链。
+AI 的执行速度一直在涨，人的审核速度不涨。每个动作都等人点头，人就成了系统里唯一的瓶颈——这不是解放，是换了个地方上班。
 
-**三级自治**：
+所以这套系统按风险分三档。沙箱里、可逆的、只读的动作，全自动：持续目标在私有副本里自己修、自己验、自己返工（默认最多 3 次），不逐轮求人批。可逆但要花外部成本的动作，机器把关：确定性测试、独立 AI 复核、证据落盘，人只抽查。不可逆或者越出授权边界的动作，才轮到人：动作、目标、参数摘要一一对上，一次授权只生效一次。
 
-- **L1 沙箱内 / 可逆 / 只读** —— 全自动，零人审。持续目标在私有副本里自主修复、验证、返工（默认最多 3 次），不逐轮请求批准，就是这一级的活例。
-- **L2 可逆但有外部成本** —— 机器把关：确定性测试、独立 AI 复核、证据落盘；人只抽查，不站岗。
-- **L3 不可逆或越出授权边界** —— 精确绑定的人类审批：动作、目标、参数摘要一一对应，一次授权只生效一次。
+再往下放权还有两个方向。审批带额度——预授权一段有边界的自主空间（目录范围、token 预算、次数上限），像 sudo，不像门禁卡；异常才打扰——常规波动系统自己消化，越界、超预算、缺证据才举手。这两样现在都没有，排在 0.3.0 之后。今天系统在发起动作这层仍然逐次审批，是刻意的保守：放权跟着证据走，不跟着乐观走。
 
-**两条横向机制**：
+这套分档也是"一个人一支团队"能成立的前提：团队里的初级成员自查互查，人只签不可逆的那几个字。注意力是人最稀缺的资源，系统的规矩就是不浪费它。
 
-- **审批带额度**：预授权一段有边界的自主空间（目录范围、token 预算、次数上限），而不是逐次点头——像 sudo，不像门禁卡。
-- **异常才打扰**：normal-by-default。常规波动系统静默消化，只在越界、超预算、证据缺失时举手找人。
+## 在别的系统上能跑吗
 
-**诚实边界**：已实现——完成门槛由机器执行（测试证据 + 独立 AI 复核 + 一次性审批消费），人不在每一个步骤上；L1 自主返工已上线。未实现——风险分级策略引擎、审批聚合与预授权额度、异常驱动的上报模式，排在 0.3.0 之后。当前系统在"发起动作"层仍偏保守（逐次审批），这是刻意的：放权跟着证据走，不跟着乐观走。
+控制面和适配器分层设计，平台相关的部分集中在三个边界：进程托管（launchd）、沙箱（Seatbelt）、本地判断二进制（jev-eval）。目前只在 macOS 上开发、测试、验证，其他平台没有开始，也不做承诺。
 
-这套分级也是"一个人一支团队"能成立的前提：团队里的初级成员自查互查，人只签不可逆的那几个字。注意力是人最稀缺的资源，这套系统的设计就是不浪费它。
+| 组件 | 技术栈 | 状态 |
+| --- | --- | --- |
+| 控制面 / 网关（4324 / 4326 / 4323） | Node.js 24 | macOS 已验证；跨平台天然，未验证 |
+| wechat-acp 桥（微信 I/O） | Node.js + iLink 云 API | macOS 已验证；协议层与 OS 无关，未验证 |
+| 微信控制服务（4322） | Node.js + iLink 云 API | macOS 已验证；协议层与 OS 无关，未验证 |
+| Mem0 记忆服务（4325） | Python + Qdrant | macOS 已验证；跨平台天然，未验证 |
+| 进程托管 | launchd | macOS 已验证；其他系统需 systemd 等替代实现 |
+| 目标沙箱 | Seatbelt | macOS 已验证；其他系统需 bubblewrap / landlock 等替代 |
+| 本地判断二进制 | jev-eval | 仅 macOS 构建 |
 
-## 安全与隐私边界
+微信收发走腾讯 iLink 云端 Bot API（纯 HTTPS，代码里没有 AppleScript、没有辅助功能、不碰本地客户端），所以对操作系统的依赖只在部署层——launchd 托管和 caffeinate 保活。下一个候选是 Linux（systemd 替换最直接），Windows 可能走 WSL2，都没有时间表。
 
-- **回环与幂等**：所有 HTTP 服务只监听 `127.0.0.1`；所有写操作要求幂等键，派单要求参数摘要精确绑定的审批。
-- **架构原则**：
-  1. Session 由原生 Agent 管理，Task、Execution 和审计事件由控制面管理；标题不能作为会话身份，恢复必须绑定来源、profile、原生 ID 和工作目录。
-  2. Worker 报告完成后必须经过验证和 review，不能直接把任务标成最终完成。
-  3. fallback 只在尚未产生可确认副作用的启动失败、超时或协议错误边界内执行；已有副作用的执行不会被静默重试。
-  4. 工作目录不是沙箱；控制面不会通过 bypass、自动批准或复制凭据来"修复"接入失败。
-  5. 本机 Devin 与 Devin Cloud 是两个不同适配器；本机 ACP 握手成功不代表云端、认证、计费或旧会话恢复已经打通。
-- **隐私**：私有状态目录为 0700、token/状态文件为 0600；控制面只写自己的状态文件，不写外部 Agent 历史，不读取认证文件或消息正文；token、API key、二维码登录状态不进 Git；状态位于 `~/.local/state/`，控制面自身状态为 `~/.local/state/ai-agent-cockpit/control-plane.json`。
+## 安全与隐私
+
+五条原则：
+
+1. Session 归原生 Agent 管，Task、Execution 和审计归控制面管；标题不能当会话身份，恢复必须绑定来源、profile、原生 ID 和工作目录。
+2. Worker 报告完成，必须经过验证和独立 review，不能直接标成最终完成。
+3. fallback 只在还没产生副作用的边界内执行；已有副作用的执行不会被静默重试。
+4. 工作目录不是沙箱；接入失败不靠 bypass、自动批准或复制凭据来"修"。
+5. 本机 Devin 和 Devin Cloud 是两个适配器；本机 ACP 握手成功不代表云端、认证、计费或旧会话恢复已经打通。
+
+隐私底线：所有 HTTP 服务只听 `127.0.0.1`；写操作要幂等键；私有目录 0700、token/状态文件 0600；控制面只写自己的状态文件，不写外部 Agent 历史，不读认证文件和消息正文；token、API key、二维码登录状态不进 Git。控制面状态在 `~/.local/state/ai-agent-cockpit/control-plane.json`（命名批次 2 时迁移）。
 
 ## 测试与验证
 
@@ -365,7 +337,7 @@ AI 的执行速度在指数增长，人的审核速度不变。如果每个动�
 
 带 `-live` 的脚本会调用真实模型或真实服务，产生少量费用，建议在相应阶段的合成命名空间与预算内运行。
 
-2026-10-08追加隔离证据：运行层87项、权限27项、控制面21项、Goal60项、Kimi shim9项通过。真实Kimi只读工具查询已保存结果，重复/重开额外调用为零。受控工具仍只查询、创建queued子执行与规划，不派单、不审批、不写文件；生产仍为0.2.2/legacy，微信/后台/迁移尚未接管。详见[当前实施证据](docs/decisions/runtime-0.3.0.md)。
+最近的隔离证据：运行层 87 项、权限 27 项、控制面 21 项、Goal 60 项、Kimi shim 9 项全部通过；受控工具仍只查询和排队，不派单、不审批、不写文件；生产仍为 0.2.2/legacy。详见[运行时决策](docs/decisions/runtime-0.3.0.md)。
 
 ## 文档导航
 
@@ -383,10 +355,17 @@ AI 的执行速度在指数增长，人的审核速度不变。如果每个动�
 
 ## 路线图
 
-当前生产为0.2.2 / legacy；0.3.0的P0–P2正在推进，已有记忆质量/软忘记、基本运行适配、受控查询/排队/规划、权限/Goal broker、SDK重放及Kimi只读工具证据，但后台所有权、正式provider/fallback、legacy与微信/Outbox接线仍未完成。P3–P7和强制P6c待实施，完整G0–G6未通过。源码与隔离证据不等于上线，204项自动化不等于52项发布场景全部通过。
+当前生产为 0.2.2 / legacy；0.3.0 的 P0–P2 正在推进，已有记忆质量/软忘记、基本运行适配、受控查询/排队/规划、权限/Goal broker、SDK 重放及 Kimi 只读工具证据，但后台所有权、正式 provider/fallback、legacy 与微信/Outbox 接线仍未完成。P3–P7 和强制 P6c 待实施，完整 G0–G6 未通过——204 项自动化通过不等于 52 项发布场景全部通过。
 
-当前工作按[阶段台账](docs/plans/0.3.0-status.md)的已完成D、正在推进I、待办B、待验证T维护；依赖、门槛和失败退出见[执行计划](docs/plans/0.3.0-execution.md)。GitHub仓库已改名并公开为personal-ai-os；本地路径/标签/状态/微信实例的命名批次2仍待已验证切换窗口，详见[命名决策](docs/decisions/rename-personal-ai-os.md)。
+命名统一随发布切换执行：GitHub 仓库已改名并公开为 personal-ai-os，本地路径、launchd 标签、状态目录与微信实例名的批次 2 清单见[命名决策](docs/decisions/rename-personal-ai-os.md)。阶段状态按[阶段台账](docs/plans/0.3.0-status.md)维护，依赖、门槛和失败退出见[执行计划](docs/plans/0.3.0-execution.md)。
+
+## 思路与致谢
+
+调度与验证设计吸收了 Lauren Tan（SpaceXAI）公开的 pstack 思路：skill-first routing、Chief + specialized workers、并行候选与顺序降级、verification-first、独立 review 与长期记忆。这套思路的个人版推演，正是本项目的愿景——让一个人拥有专业团队的执行与复核能力。实现是面向个人单机的二次工程推演，不冒充来源作者的原始产品；逐项对照与参考链接见[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 第 19 节。
+
+- [Cezar](https://github.com/open-mercato/cezar)（MIT）：本地 cockpit 与派单执行器，以 `vendor/cezar` 内嵌，控制面经 `adapters/engines/cezar.mjs` 接入；
+- wechat-acp 桥：微信 ↔ ACP 入口、共享记忆与可靠补发，以 `vendor/wechat-acp` 内嵌。
 
 ## 许可证
 
-GitHub仓库目前公开；自有代码尚未选择项目级开源许可证。公开状态与许可证选择分开，后者列入发布待办；vendor和第三方组件保留各自许可证与版权说明，本轮未新增或变更许可证。
+GitHub 仓库目前公开；自有代码尚未选择项目级开源许可证。公开状态与许可证选择分开，后者列入发布待办；vendor 和第三方组件保留各自许可证与版权说明。
