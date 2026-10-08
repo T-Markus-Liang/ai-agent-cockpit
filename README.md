@@ -13,6 +13,32 @@ Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面。微信是移
 
 它不是把所有 App 历史复制到一个新数据库，也不是给每个 GUI App 强行套一个"已支持"的标签。索引快照声明 `readOnly=true`、`secretsRead=false`、`messageBodiesRead=false`；控制面只写自己的状态文件，不写外部 Agent 历史。任何 Agent 的恢复能力只记录原生命令提示和验证限制，不会因为"发现了可执行文件"就声称旧会话可以安全恢复。
 
+## 为什么是 Personal AI OS
+
+你大概率同时用着多个 AI Agent：Codex、Claude Code、Kimi、OpenCode、Devin……每个 Agent 有自己的会话格式、配置和记忆，彼此互不往来。于是一些麻烦反复出现：
+
+- **配置割据**：模型、key、provider 列表分散在各 Agent 的配置里，换一家供应商就改一遍；
+- **记忆不共享**：在这个 Agent 里讲清的个人背景，换个 Agent 要从头再说；
+- **历史锁死**：旧会话困在各自的私有格式里，能不能恢复、如何恢复，没有可验证的答案；
+- **完成不可信**：Agent 说"做完了"没有证据，测试、复核、审计一概缺失；
+- **入口缺失**：人离开电脑，本机 Agent 一律够不着；
+- **断线靠人盯**：长任务超时或重启，要么从头再来，要么靠人守着重试。
+
+Personal AI OS 的回答是：不迁移、不复制任何 App 的历史，而是立一个可审计的控制面，把派单、记忆、验证和入口统一管起来。
+
+## 能力一览
+
+| | | |
+| --- | --- | --- |
+| **📋 一份 Task 账本** | **🧠 一份共享记忆** | **🔍 一次诚实的发现** |
+| 派单、状态、证据、审批全部落盘可审计 | 微信与 Chief 共用 Mem0 检索事实，换 fallback 不换命名空间 | 只读索引各 Agent 会话元数据；恢复只给未验证计划 |
+| **✅ 一道完成门槛** | **📱 一个微信入口** | **🧩 一组可插拔 Worker** |
+| 测试证据、独立复核、精确审批缺一不可 | 手机派任务、查进度、批审批；断线自动巡检补发 | Cezar、Codex、OpenCode、Kimi CLI 经统一适配器接入 |
+
+## 方法论来源
+
+调度与验证设计吸收了 Lauren Tan（SpaceXAI）公开的 pstack 思路：skill-first routing、Chief + specialized workers、并行候选与顺序降级、verification-first、独立 review 与长期记忆。本项目的实现是面向个人单机的二次工程推演，不冒充来源作者的原始产品；逐项对照与参考链接见[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 第 19 节。
+
 ## 系统架构
 
 ```mermaid
