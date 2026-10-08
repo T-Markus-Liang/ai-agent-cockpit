@@ -2,6 +2,8 @@
 
 ## 当前阶段入口（2026-10-08梳理）
 
+恢复实施追加：[长期Goal Prompt](docs/plans/0.3.0-goal-prompt.md)与[检查点](docs/plans/0.3.0-resume.md)已写好；第一项M01只读旧记忆升级预检落地，新增19项和Memory83项联合102/102通过。真实113旧回执仅本机hash/统计、无输出原文/模型调用/数据写入/重启；副本converter/事实重验证尚待。旧Goal仍blocked，create_goal未覆盖旧目标，用户`/goal resume`才恢复自动续轮。
+
 [阶段台账](docs/plans/0.3.0-status.md)已按“已完成、正在推进、待办、待测试验证”重整；[执行计划](docs/plans/0.3.0-execution.md)维护依赖/交付/退出；[通讯兼容表](docs/plans/channel-compatibility.md)维护微信与候选平台，和原生Worker分开。本文以下保留按日期的历史实施记录，不再用旧A–G/旧快照充当0.3.0当前状态。
 
 名称核对：产品/npm/GitHub为Personal AI OS / personal-ai-os，远端已公开；本地仍在ai-agent-cockpit，6旧launchd前缀、状态和cezar-codex实例等待命名批次2。现役0.2.2 / legacy；10:06只读doctor为ok/微信connected，7项合成协议评估退出0。本轮仅文档/现场核对，不迁移、不重启、不安装其他通讯平台、不操作原生历史、不commit/push。
@@ -182,6 +184,20 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [ ] 验收：模拟负载下同一批任务的人工打断次数随分级下降；越界与审批重放仍被精确拦截；分级规则本身有确定性测试。
 
 时机：排在 0.3.0 之后，与 H 节（transport 抽象）并列。
+
+## J：干净环境部署验证（Codex Cloud 云沙箱，未开始，仅计划）
+
+背景（2026-10-08）：README「部署与安装」目前是"现状记录"，从未在干净机器验证。用户建议派 Codex 使用 ChatGPT 免费档的 Codex Cloud 云沙箱（或等效云容器）做部署测试：容器是全新 Linux 环境，等于零成本的第二台干净机器；仓库已公开，clone 无门槛。一次验证两个待办——部署步骤实测，加上 Linux 可移植性探测。
+
+计划（按序执行，每步独立验收）：
+
+- [ ] J1 在 Codex Cloud 沙箱中逐条执行 README 部署步骤：clone、`npm install`、vendor 微信桥构建、记忆服务 venv 与 `requirements.lock`；卡点和修复逐条记录，回写 README 部署节。
+- [ ] J2 在沙箱中运行不依赖 macOS 与凭据的测试：`npm run test:control-plane`、`npm run eval:control-plane`、`npm run test:memory-service`（本地 Qdrant/SQLite，embedding 用离线模式）；记录通过与失败的完整清单。
+- [ ] J3 整理 Linux 差异清单：launchd、Seatbelt 预期失败，标注"需替代实现"；Node/Python 层预期通过；结果回填 README「在别的系统上能跑吗」的状态表。
+- [ ] 边界：云沙箱不配置任何凭据（微信 token、API key、二维码）与私有状态目录；不测微信绑定、launchd 常驻与 Seatbelt；部分通过不降级写成"已支持 Linux"。
+- [ ] 验收：部署步骤中可在干净 Linux 容器重复执行的部分逐条有证据；macOS 专属步骤明确标注"仅 macOS，未验证"；验证后 README 部署节从"现状记录"升级为对应范围的"已验证"。
+
+时机：随时可做，不依赖 0.3.0 门槛；建议在 0.3.0 发布前完成。
 
 ## 6. 验证与记录要求
 
