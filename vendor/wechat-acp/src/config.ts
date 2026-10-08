@@ -196,8 +196,19 @@ export interface WeChatAcpConfig {
   session: {
     idleTimeoutMs: number;
     maxConcurrentUsers: number;
-    /** Maximum time a single ACP prompt may block the per-user queue. */
-    promptTimeoutMs?: number;
+    /**
+     * Foreground wait before a running turn is surfaced to the user as
+     * running in the background. Informational only: when it elapses the turn
+     * keeps running and is simply reported as background work, it is never
+     * terminated here.
+     */
+    foregroundWaitMs?: number;
+    /**
+     * Grant deadline: the only hard cap on a single ACP prompt turn. When it
+     * elapses the session is reset through the existing cancel + cleanup path
+     * so a hung provider cannot block the per-user queue forever.
+     */
+    grantDeadlineMs?: number;
     /** Maximum time to wait for an ACP process to initialize. */
     startupTimeoutMs?: number;
     /**
@@ -289,7 +300,8 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
     session: {
       idleTimeoutMs: 1440 * 60_000, // 24 hours
       maxConcurrentUsers: 10,
-      promptTimeoutMs: 5 * 60_000,
+      foregroundWaitMs: 120_000,
+      grantDeadlineMs: 30 * 60_000,
       startupTimeoutMs: 60_000,
       resume: "off",
     },

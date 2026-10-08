@@ -253,7 +253,8 @@ export class WeChatAcpBridge {
         mcpServers: this.config.agent.mcpServers,
         idleTimeoutMs: this.config.session.idleTimeoutMs,
         maxConcurrentUsers: this.config.session.maxConcurrentUsers,
-        promptTimeoutMs: this.config.session.promptTimeoutMs,
+        foregroundWaitMs: this.config.session.foregroundWaitMs,
+        grantDeadlineMs: this.config.session.grantDeadlineMs,
         startupTimeoutMs: this.config.session.startupTimeoutMs,
         progressNoticeMs: 10000,
         preparePrompt: async (userId, prompt, pending) => {
@@ -262,8 +263,12 @@ export class WeChatAcpBridge {
           return this.config.recovery?.enabled && pending?.receiptIds?.[0] ? [...enriched, { type: 'text', text: `[可靠请求关联]\n本请求 sourceRequestId=${pending.receiptIds[0]}。如需创建控制面 Task，请在 create_task 中填写此 sourceRequestId，并以本标识作为幂等键的一部分。先查询已有关联任务，不重复派单；该标识不是执行授权，审批与任务验收门槛仍须满足。` } as const] : enriched;
         },
         onNotice: (userId, token, text, generation, current, metadata) => this.sendAgentReply(userId, token, text, this.requireReplyGeneration(generation), current, metadata),
-        onTurnEvent: this.config.recovery?.enabled ? async (_userId, pending, event) => {
-          for (const id of pending.receiptIds ?? []) await this.messageInbox!.checkpoint(id, { ...event, groupIds: pending.receiptIds, ...(event.phase === 'tool_activity' ? { usedTools: true } : {}) }, event.phase === 'preparing');
+        onTurnEvent: this.config.recovery?.enabled ? async (userId, pending, event) => {
+          if (event.phase === 'background') {
+            await this.handleTurnBackground(userId, pending);
+            return;
+          }
+          for (const id of pending.receiptIds ?? []) await this.messageInbox!.checkpoint(id, { ...event, phase: event.phase as 'preparing' | 'dispatched' | 'tool_activity' | 'result_ready', groupIds: pending.receiptIds, ...(event.phase === 'tool_activity' ? { usedTools: true } : {}) }, event.phase === 'preparing');
         } : undefined,
         resumePolicy,
         getPersistedSessionId:
@@ -562,7 +567,7 @@ export class WeChatAcpBridge {
     const textItem = msg.item_list?.length === 1 ? (msg.item_list[0]?.text_item?.text ?? msg.item_list[0]?.voice_item?.text)?.trim() : undefined;
     if (textItem && /^\/消息(?:\s|$)/.test(textItem)) {
       const records = (await this.messageInbox?.list() ?? []).filter(record => record.message.from_user_id === userId);
-      const labels: Record<string, string> = { received: '已保存', queued: '排队', retry_wait: '等待自动重试', running: '处理中', uncertain: '中断/待核对', done: '对话已结束', reply_pending: '对话已结束/回复待补发', buffered: '缓冲', cancelled: '已取消', failed: '未能处理/待核对' };
+      const labels: Record<string, string> = { received: '已保存', queued: '排队', retry_wait: '等待自动重试', running: '处理中', background: '后台执行中', uncertain: '中断/待核对', done: '对话已结束', reply_pending: '对话已结束/回复待补发', buffered: '缓冲', cancelled: '已取消', failed: '未能处理/待核对' };
       const latest = records.slice(-5).map(record => `${new Date(record.receivedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}：${labels[record.status] ?? record.status}`);
       const outgoing = await this.replyOutbox?.list({ userId, statuses: ['pending', 'sending', 'blocked'] }) ?? [];
       const blocked = outgoing.filter(row => row.status === 'blocked').length;
@@ -774,6 +779,31 @@ export class WeChatAcpBridge {
   private async setReceiptStatus(ids: string[], status: MessageInboxStatus, errorKind?: string): Promise<void> {
     if (!this.messageInbox) return;
     for (const id of ids) await this.messageInbox.setStatus(id, status, errorKind ? { errorKind } : undefined);
+  }
+
+  /**
+   * A foreground wait elapsed while the turn is still running: record the turn
+   * as background work on its receipts and tell the user once (per turn) that
+   * the result will arrive later. This never dispatches, cancels, or replays
+   * work — the turn keeps running on its original ACP prompt, and its eventual
+   * result is delivered through the existing result_ready → outbox path.
+   */
+  private async handleTurnBackground(userId: string, pending: PendingMessage): Promise<void> {
+    const receiptIds = pending.receiptIds ?? [];
+    try {
+      await this.setReceiptStatus(receiptIds, 'background');
+    } catch (err) {
+      this.log(`Background receipt status update failed: ${String(err)}`);
+    }
+    const notice = '这条任务已转入后台执行，完成后的结果会照常发给你。后台期间你可以继续发新消息，也可以发 /acp-cancel 取消。';
+    if (this.replyOutbox) {
+      // A durable dedupeKey makes the notice idempotent: a repeated background
+      // event for the same turn can never deliver it twice.
+      await this.replyOutbox.put({ userId, contextToken: pending.contextToken, text: notice, receiptIds, kind: 'notice', dedupeKey: `${receiptIds[0] ?? userId}:turn-background` });
+      void this.flushReplyOutbox(userId).catch(() => this.log('Background notice queued for durable retry'));
+      return;
+    }
+    await this.sendReply(userId, pending.contextToken, notice);
   }
 
   private receiptCompletion(ids: string[]): PendingMessage['completion'] {

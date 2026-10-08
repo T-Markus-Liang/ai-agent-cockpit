@@ -598,7 +598,7 @@ test("timeout fallback reuses prepared context without archiving the user twice"
   const manager = new SessionManager({
     agentCommand: "unused", agentArgs: [], agentCwd: process.cwd(),
     idleTimeoutMs: 0, maxConcurrentUsers: 1, showThoughts: false,
-    promptTimeoutMs: 20, fallbackAgents: [{ command: "fallback", args: [] }],
+    grantDeadlineMs: 20, fallbackAgents: [{ command: "fallback", args: [] }],
     log: () => {}, sendTyping: async () => {}, onReply: async () => {},
     killAgentProcess: async () => {},
     preparePrompt: async (_id, prompt) => {

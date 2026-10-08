@@ -26,7 +26,7 @@ class ProbeBridge extends WeChatAcpBridge {
 const bridge = new ProbeBridge(config, () => {})
 bridge.failAnswerDelivery = true
 const manager = new SessionManager({ agentCommand: '/Users/markus/.kimi-code/bin/kimi', agentArgs: ['acp'], agentCwd: dir,
-  maxConcurrentUsers: 1, idleTimeoutMs: 0, promptTimeoutMs: 120000, startupTimeoutMs: 30000, showThoughts: false, log: () => {}, sendTyping: async () => {},
+  maxConcurrentUsers: 1, idleTimeoutMs: 0, foregroundWaitMs: 60000, grantDeadlineMs: 120000, startupTimeoutMs: 30000, showThoughts: false, log: () => {}, sendTyping: async () => {},
   preparePrompt: async (id, prompt, pending) => { await bridge.setReceiptStatus(pending?.receiptIds ?? [], 'running'); return bridge.enrichPromptWithMemory(id, prompt) },
   onTurnEvent: async (_id, pending, event) => { for (const id of pending.receiptIds ?? []) await bridge.messageInbox.checkpoint(id, { ...event, ...(event.phase === 'tool_activity' ? { usedTools: true } : {}) }, event.phase === 'preparing') },
   onReply: (...args) => bridge.sendAgentReply(...args), onNotice: (...args) => bridge.sendAgentReply(...args), progressNoticeMs: 5000 })

@@ -166,6 +166,8 @@ Example:
   "session": {
     "idleTimeoutMs": 86400000,
     "maxConcurrentUsers": 10,
+    "foregroundWaitMs": 120000,
+    "grantDeadlineMs": 1800000,
     "resume": "auto",
     "turnEndMessage": "✅ Turn complete"
   }
@@ -196,6 +198,17 @@ boundary visible even when the agent streamed several earlier messages or was
 silent during a long-running tool call. The bridge generates this signal, so it
 does not depend on the model following a prompt instruction. The
 `--turn-end-message` CLI option overrides the config file value.
+
+`session.foregroundWaitMs` (default `120000`) is the foreground wait. When a
+turn runs longer than this, the bridge tells the user the task moved to
+background execution and marks its receipts as `background`, but the turn keeps
+running: a later result is still delivered normally. This wait never ends a
+turn.
+
+`session.grantDeadlineMs` (default `1800000`) is the grant deadline — the only
+hard cap on a single turn. When it elapses the session is reset (cancel +
+cleanup) and the user is told the grant deadline was reached, so a hung
+provider cannot block the per-user queue forever.
 
 You can also override or add agent presets:
 

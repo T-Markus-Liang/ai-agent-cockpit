@@ -20,7 +20,7 @@ test('timeout preserves the queued voice and sends the notice after old session 
   const notices: string[] = [], completed: string[] = [], prepared: string[] = [];
   let done!: () => void; const secondDone = new Promise<void>(resolve => { done = resolve; });
   const manager = new SessionManager({ agentCommand: 'unused', agentArgs: [], agentCwd: process.cwd(), maxConcurrentUsers: 1, idleTimeoutMs: 0,
-    promptTimeoutMs: 15, showThoughts: false, killAgentProcess: async () => {}, sendTyping: async () => {}, log: () => {},
+    grantDeadlineMs: 15, showThoughts: false, killAgentProcess: async () => {}, sendTyping: async () => {}, log: () => {},
     preparePrompt: async (_id, blocks) => { prepared.push((blocks[0] as { text: string }).text); return blocks; },
     onReply: async (_id, _context, text, _generation, current) => { if (!current || current()) notices.push(text); } });
   const first = session('first', async () => new Promise(() => {}));
@@ -34,7 +34,7 @@ test('timeout preserves the queued voice and sends the notice after old session 
     await within(secondDone);
     assert.deepEqual(prepared, ['first voice', 'second voice']);
     assert.ok(completed.includes('first-failed')); assert.ok(completed.includes('second-done')); assert.ok(!completed.includes('second-rejected'));
-    assert.ok(notices.some(text => /超|中断/.test(text)), 'timeout notice must not be filtered as a stale session');
+    assert.ok(notices.some(text => /Grant 期限/.test(text)), 'the grant-deadline notice must not be filtered as a stale session');
   } finally { await manager.stop(); }
 });
 
@@ -53,7 +53,7 @@ test('timed-out active prompt with tool activity is not retried while queued wor
   let done!: () => void; const secondDone = new Promise<void>(resolve => { done = resolve; });
   let replacementPrompts = 0, created = 0;
   const manager = new SessionManager({ agentCommand: 'unused', agentArgs: [], agentCwd: process.cwd(), maxConcurrentUsers: 1, idleTimeoutMs: 0,
-    promptTimeoutMs: 15, showThoughts: false, fallbackAgents: [{ command: 'fallback', args: [] }], killAgentProcess: async () => {},
+    grantDeadlineMs: 15, showThoughts: false, fallbackAgents: [{ command: 'fallback', args: [] }], killAgentProcess: async () => {},
     sendTyping: async () => {}, log: () => {}, preparePrompt: async (_id, blocks) => { prepared.push((blocks[0] as { text: string }).text); return blocks; }, onReply: async () => {} });
   const first = session('first', async () => new Promise(() => {}), false, true);
   first.queue = [{ prompt: [{ type: 'text', text: 'first voice' }], contextToken: 'first', completion: { resolve: () => assert.fail('timeout cannot succeed'), reject: () => { completed.push('first-failed'); } } },
@@ -75,7 +75,7 @@ test('rejected cleanup retains backlog and accepts newer work without starting a
   const completed: string[] = [];
   let cleanupFails = true, created = 0;
   const manager = new SessionManager({ agentCommand: 'unused', agentArgs: [], agentCwd: process.cwd(), maxConcurrentUsers: 1, idleTimeoutMs: 0,
-    promptTimeoutMs: 15, showThoughts: false, killAgentProcess: async () => { if (cleanupFails) throw new Error('cleanup refused'); },
+    grantDeadlineMs: 15, showThoughts: false, killAgentProcess: async () => { if (cleanupFails) throw new Error('cleanup refused'); },
     sendTyping: async () => {}, log: () => {}, onReply: async () => {} });
   const first = session('first', async () => new Promise(() => {}), false, false);
   first.queue = [{ prompt: [], contextToken: 'first', completion: { resolve: () => assert.fail(), reject: () => { completed.push('first-failed'); } } },
@@ -100,7 +100,7 @@ test('messages received during timeout cleanup stay behind the retained backlog'
   const done = new Promise<void>(resolve => { finished = resolve; });
   const dispatched: string[] = [], notices: Array<{ token: string; text: string }> = [];
   const manager = new SessionManager({ agentCommand: 'unused', agentArgs: [], agentCwd: process.cwd(), maxConcurrentUsers: 1, idleTimeoutMs: 0,
-    promptTimeoutMs: 15, showThoughts: false, killAgentProcess: async () => { entered(); await cleanupGate; }, sendTyping: async () => {}, log: () => {}, onReply: async () => {},
+    grantDeadlineMs: 15, showThoughts: false, killAgentProcess: async () => { entered(); await cleanupGate; }, sendTyping: async () => {}, log: () => {}, onReply: async () => {},
     onNotice: async (_id, token, text) => { notices.push({ token, text }); },
     preparePrompt: async (_id, blocks) => { dispatched.push((blocks[0] as { text: string }).text); return blocks; } });
   const first = session('first', async () => new Promise(() => {}));
@@ -123,7 +123,7 @@ test('explicit reset during timeout cleanup discards retained work and suppresse
   const cleaning = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
   let created = 0; const rejected: string[] = [], notices: string[] = [];
   const manager = new SessionManager({ agentCommand: 'unused', agentArgs: [], agentCwd: process.cwd(), maxConcurrentUsers: 1, idleTimeoutMs: 0,
-    promptTimeoutMs: 15, showThoughts: false, killAgentProcess: async () => { entered(); await gate; }, sendTyping: async () => {}, log: () => {}, onReply: async (_id, _ctx, text) => { notices.push(text); } });
+    grantDeadlineMs: 15, showThoughts: false, killAgentProcess: async () => { entered(); await gate; }, sendTyping: async () => {}, log: () => {}, onReply: async (_id, _ctx, text) => { notices.push(text); } });
   const first = session('first', async () => new Promise(() => {})); first.processing = true;
   first.queue = [{ prompt: [], contextToken: 'first' }, { prompt: [], contextToken: 'second', completion: { resolve: () => assert.fail(), reject: error => { rejected.push((error as Error).name); } } }];
   const internal = manager as unknown as { sessions: Map<string, UserSession>; createSession: () => Promise<UserSession>; processQueue: (s: UserSession) => Promise<void>; retainedMessages: Map<string, unknown> };
@@ -139,7 +139,7 @@ test('hung ACP cancellation is bounded so later queued work can resume', { timeo
   let completed = false;
   let finish!: () => void; const secondDone = new Promise<void>(resolve => { finish = resolve; });
   const manager = new SessionManager({ agentCommand: 'unused', agentArgs: [], agentCwd: process.cwd(), maxConcurrentUsers: 1, idleTimeoutMs: 0,
-    promptTimeoutMs: 15, showThoughts: false, killAgentProcess: async () => {}, sendTyping: async () => {}, log: () => {}, onReply: async () => {} });
+    grantDeadlineMs: 15, showThoughts: false, killAgentProcess: async () => {}, sendTyping: async () => {}, log: () => {}, onReply: async () => {} });
   const first = session('first', async () => new Promise(() => {})); first.processing = true;
   first.agentInfo.connection.cancel = async () => new Promise(() => {});
   first.queue = [{ prompt: [], contextToken: 'first' }, { prompt: [], contextToken: 'second', completion: { resolve: () => { completed = true; finish(); }, reject: () => assert.fail() } }];
@@ -152,7 +152,7 @@ test('a delayed progress notice becomes invalid as soon as its active turn finis
   let release!: () => void, noticed!: () => void, current: (() => boolean) | undefined;
   const promptGate = new Promise<void>(resolve => { release = resolve; }), noticeReady = new Promise<void>(resolve => { noticed = resolve; });
   const manager = new SessionManager({ agentCommand: 'unused', agentArgs: [], agentCwd: process.cwd(), maxConcurrentUsers: 1, idleTimeoutMs: 0,
-    progressNoticeMs: 10, promptTimeoutMs: 1000, showThoughts: false, killAgentProcess: async () => {}, sendTyping: async () => {}, log: () => {}, onReply: async () => {},
+    progressNoticeMs: 10, grantDeadlineMs: 1000, showThoughts: false, killAgentProcess: async () => {}, sendTyping: async () => {}, log: () => {}, onReply: async () => {},
     onNotice: async (_id, _ctx, _text, _generation, check) => { current = check; noticed(); } });
   const first = session('first', async () => { await promptGate; return { stopReason: 'end_turn' }; }, false); first.processing = true; first.queue = [{ prompt: [], contextToken: 'first' }];
   const internal = manager as unknown as { sessions: Map<string, UserSession>; processQueue: (s: UserSession) => Promise<void> }; internal.sessions.set(first.userId, first);

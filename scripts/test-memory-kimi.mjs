@@ -38,7 +38,7 @@ class ProbeBridge extends WeChatAcpBridge {
 const bridge = new ProbeBridge(config, () => {})
 const manager = new SessionManager({
   agentCommand: '/Users/markus/.kimi-code/bin/kimi', agentArgs: ['acp'], agentCwd: process.cwd(),
-  maxConcurrentUsers: 1, idleTimeoutMs: 0, startupTimeoutMs: 30000, promptTimeoutMs: 90000,
+  maxConcurrentUsers: 1, idleTimeoutMs: 0, startupTimeoutMs: 30000, foregroundWaitMs: 60000, grantDeadlineMs: 90000,
   showThoughts: false, showDiffs: false,
   preparePrompt: async (id, prompt) => {
     const prepared = await bridge.enrichPromptWithMemory(id, prompt)

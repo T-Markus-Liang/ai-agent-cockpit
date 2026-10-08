@@ -25,6 +25,7 @@ export const MESSAGE_INBOX_STATUSES = [
   'queued',
   'buffered',
   'running',
+  'background',
   'done',
   'uncertain',
   'cancelled',
@@ -86,6 +87,7 @@ const STATUS_RANK: Record<MessageInboxStatus, number> = {
   queued: 1,
   buffered: 2,
   running: 3,
+  background: 3,
   uncertain: 3,
   done: 4,
   cancelled: 4,
@@ -536,9 +538,10 @@ export class MessageInbox {
   }
 
   /**
-   * Recover after a restart. running/buffered work becomes uncertain and is
-   * never auto-replayed. Returns pending (received/queued) and the total number
-   * of uncertain receipts.
+   * Recover after a restart. running/buffered/background work becomes uncertain
+   * (or reply_pending when a result was already journaled) and is never
+   * auto-replayed. Returns pending (received/queued) and the total number of
+   * uncertain receipts.
    */
   recover(): Promise<RecoverResult> {
     return this._enqueue(async () => {
@@ -551,7 +554,7 @@ export class MessageInbox {
         try {
           const record = await this._readRecord(id);
           if (record === null) continue;
-          if (record.status === 'running' || record.status === 'buffered') {
+          if (record.status === 'running' || record.status === 'buffered' || record.status === 'background') {
             record.status = record.execution?.phase === 'result_ready' ? 'reply_pending'
               : record.execution?.phase === 'preparing' && !record.execution.usedTools ? 'queued' : 'uncertain';
             record.updatedAt = Date.now();

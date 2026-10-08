@@ -284,6 +284,42 @@ test('recover marks running/buffered uncertain, returns pending, never replays',
   });
 });
 
+test('recover marks a background receipt uncertain so it is never auto-replayed', async () => {
+  await withInbox(async (dir) => {
+    const inbox = new MessageInbox({ dir });
+    const background = await inbox.put(msg({ message_id: 5 }));
+    await inbox.setStatus(background.record.id, 'running');
+    await inbox.checkpoint(background.record.id, { phase: 'dispatched' });
+    await inbox.setStatus(background.record.id, 'background');
+    await inbox.close();
+
+    const recovered = new MessageInbox({ dir });
+    const result = await recovered.recover();
+    assert.equal(result.pending.length, 0, 'background work must never be re-admitted');
+    assert.equal(result.uncertainCount, 1);
+    const latest = (await recovered.list()).find((r) => r.id === background.record.id);
+    assert.equal(latest?.status, 'uncertain');
+    await recovered.close();
+  });
+});
+
+test('recover keeps a background receipt that already journaled a result as reply_pending', async () => {
+  await withInbox(async (dir) => {
+    const inbox = new MessageInbox({ dir });
+    const journaled = await inbox.put(msg({ message_id: 6 }));
+    await inbox.setStatus(journaled.record.id, 'running');
+    await inbox.checkpoint(journaled.record.id, { phase: 'result_ready', resultText: 'late answer', stopReason: 'end_turn' });
+    await inbox.setStatus(journaled.record.id, 'background');
+    await inbox.close();
+
+    const recovered = new MessageInbox({ dir });
+    await recovered.recover();
+    const latest = (await recovered.list()).find((r) => r.id === journaled.record.id);
+    assert.equal(latest?.status, 'reply_pending', 'a journaled result must be recovered for delivery, never replayed');
+    await recovered.close();
+  });
+});
+
 test('list filters by status and sorts by arrival', async () => {
   await withInbox(async (dir) => {
     const inbox = new MessageInbox({ dir });

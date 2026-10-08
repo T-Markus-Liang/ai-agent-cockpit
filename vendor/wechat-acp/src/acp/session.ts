@@ -116,13 +116,23 @@ export interface SessionManagerOpts {
   mcpServers?: acp.McpServer[];
   idleTimeoutMs: number;
   maxConcurrentUsers: number;
-  /** Hard cap for one prompt turn; prevents a hung provider blocking later messages forever. */
-  promptTimeoutMs?: number;
+  /**
+   * Foreground wait: after this long the turn is surfaced to the user as
+   * running in the background, but the turn itself keeps running. It never
+   * terminates the turn.
+   */
+  foregroundWaitMs?: number;
+  /**
+   * Grant deadline: the only hard cap for one prompt turn. When it elapses the
+   * session is reset through the existing cancel + cleanup path so a hung
+   * provider cannot block later messages forever.
+   */
+  grantDeadlineMs?: number;
   startupTimeoutMs?: number;
   progressNoticeMs?: number;
   preparePrompt?: (userId: string, prompt: acp.ContentBlock[], pending?: PendingMessage) => Promise<acp.ContentBlock[]>;
   onNotice?: SessionManagerOpts['onReply'];
-  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'dispatched' | 'tool_activity' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string }) => Promise<void>;
+  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'dispatched' | 'tool_activity' | 'background' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string }) => Promise<void>;
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -204,13 +214,13 @@ export class QueuedMessageDeferredError extends Error {
   constructor() { super('Queued message preserved for safe recovery'); this.name = 'QueuedMessageDeferredError'; }
 }
 
-class PromptTimeoutError extends Error {
-  readonly timeoutMs: number;
+class GrantDeadlineError extends Error {
+  readonly deadlineMs: number;
 
-  constructor(operationName: string, timeoutMs: number) {
-    super(`${operationName} timed out after ${timeoutMs}ms`);
-    this.name = "PromptTimeoutError";
-    this.timeoutMs = timeoutMs;
+  constructor(operationName: string, deadlineMs: number) {
+    super(`${operationName} exceeded the grant deadline of ${deadlineMs}ms`);
+    this.name = "GrantDeadlineError";
+    this.deadlineMs = deadlineMs;
   }
 }
 
@@ -1278,7 +1288,16 @@ export class SessionManager {
               prompt: pending.preparedPrompt,
             }),
             "prompt response",
-            this.opts.promptTimeoutMs,
+            {
+              foregroundWaitMs: this.opts.foregroundWaitMs,
+              grantDeadlineMs: this.opts.grantDeadlineMs,
+              onForegroundWaitExpired: () =>
+                this.opts.onTurnEvent?.(session.userId, pending, {
+                  phase: 'background',
+                  sessionId: session.agentInfo.sessionId,
+                  processId: session.agentInfo.process.pid,
+                }),
+            },
           );
           if (!this.isCurrentSession(session)) {
             completionError = session.closedError ?? new SessionResetError();
@@ -1371,9 +1390,9 @@ export class SessionManager {
           }
           this.opts.log(`[${session.userId}] Agent prompt error: ${String(err)}`);
 
-          if (err instanceof PromptTimeoutError) {
+          if (err instanceof GrantDeadlineError) {
             this.opts.log(
-              `[${session.userId}] Prompt timed out after ${err.timeoutMs}ms; resetting the ACP session`,
+              `[${session.userId}] Grant deadline of ${err.deadlineMs}ms exceeded; resetting the ACP session`,
             );
             const generation = session.lifecycleGeneration ?? (this.userGenerations.get(session.userId) ?? 0);
             const kept = session.queue.splice(0);
@@ -1394,7 +1413,7 @@ export class SessionManager {
             await this.retryCleanupState(session.userId).catch((cleanupErr) => {
               cleaned = false;
               this.opts.log(
-                `[${session.userId}] Timed-out ACP cleanup deferred: ${String(cleanupErr)}`,
+                `[${session.userId}] Grant-deadline ACP cleanup deferred: ${String(cleanupErr)}`,
               );
             });
             if (cleaned && !session.client.hasProducedMessage && !session.client.hasUsedTools && (pending.automaticRetryCount ?? 0) < 1 && !this.fallbackUsers.has(session.userId) && (this.opts.fallbackAgents?.length ?? 0) > 0 && this.isUserGenerationCurrent(session.userId, generation)) {
@@ -1412,7 +1431,7 @@ export class SessionManager {
             }
             try {
               const queueCount = this.retainedMessages.get(session.userId)?.messages.length ?? kept.length;
-              await this.notice(session, pending, `上一条处理超时，未能完成，不能算作已处理。${queueCount ? `你后发的 ${queueCount} 条消息已保留，会继续处理。` : '原文已保留；已可能执行过的操作不会自动重放。'}${cleaned ? '' : '连接清理尚未确认，暂不启动新的执行。'}`);
+              await this.notice(session, pending, `上一条任务已到 Grant 期限，未能完成，不能算作已处理。${queueCount ? `你后发的 ${queueCount} 条消息已保留，会继续处理。` : '原文已保留；已可能执行过的操作不会自动重放。'}${cleaned ? '' : '连接清理尚未确认，暂不启动新的执行。'}`);
             } catch {
               // Best effort: the provider timeout must not leave the queue blocked.
             }
@@ -1615,7 +1634,11 @@ export class SessionManager {
     session: UserSession,
     operation: Promise<T>,
     operationName: string,
-    timeoutMs?: number,
+    opts?: {
+      foregroundWaitMs?: number;
+      grantDeadlineMs?: number;
+      onForegroundWaitExpired?: () => void | Promise<void>;
+    },
   ): Promise<T> {
     const process = session.agentInfo.process;
     let onExit: (() => void) | undefined;
@@ -1627,12 +1650,25 @@ export class SessionManager {
             process.once("exit", onExit);
           });
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    let operationTimeout: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = timeoutMs && timeoutMs > 0
+    let foregroundTimer: ReturnType<typeof setTimeout> | undefined;
+    let grantTimer: ReturnType<typeof setTimeout> | undefined;
+    // The foreground wait is informational only: on expiry we notify the caller
+    // (which surfaces the turn to the user as background work) but keep waiting
+    // on the same operation. It never terminates the turn.
+    if (opts?.foregroundWaitMs && opts.foregroundWaitMs > 0 && opts.onForegroundWaitExpired) {
+      foregroundTimer = setTimeout(() => {
+        foregroundTimer = undefined;
+        void Promise.resolve()
+          .then(() => opts.onForegroundWaitExpired!())
+          .catch(() => {});
+      }, opts.foregroundWaitMs);
+    }
+    const grantDeadlineMs = opts?.grantDeadlineMs;
+    const deadlinePromise = grantDeadlineMs && grantDeadlineMs > 0
       ? new Promise<never>((_resolve, reject) => {
-          operationTimeout = setTimeout(
-            () => reject(new PromptTimeoutError(operationName, timeoutMs)),
-            timeoutMs,
+          grantTimer = setTimeout(
+            () => reject(new GrantDeadlineError(operationName, grantDeadlineMs)),
+            grantDeadlineMs,
           );
         })
       : undefined;
@@ -1660,12 +1696,13 @@ export class SessionManager {
         operation,
         session.connectionClosedError,
         exitTimeout,
-        ...(timeoutPromise ? [timeoutPromise] : []),
+        ...(deadlinePromise ? [deadlinePromise] : []),
       ]);
     } finally {
       if (onExit) process.off("exit", onExit);
       if (timeout) clearTimeout(timeout);
-      if (operationTimeout) clearTimeout(operationTimeout);
+      if (foregroundTimer) clearTimeout(foregroundTimer);
+      if (grantTimer) clearTimeout(grantTimer);
     }
   }
 
