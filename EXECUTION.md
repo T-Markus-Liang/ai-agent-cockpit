@@ -1,8 +1,12 @@
 # Personal AI OS 执行文档
 
-状态：重构进行中。本文与 [设计文档 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 配套；已完成兼容期部署、微信常驻、ACP fallback、首批控制面可视化、统一契约、只读会话索引，以及第一版 Task/Execution 持久化、幂等、会话锁和重启恢复保护。2026-10-06 已部署 Mem0 OSS 共享记忆，实际微信启动参数已纠正为 Kimi，详见 6.2；原生旧会话恢复与完整 Chief 调度仍未完成。
+状态：生产仍为0.2.2，按[0.3.0升级方案](docs/plans/0.3.0-upgrade.md)继续推进。[当前证据](docs/decisions/runtime-0.3.0.md)区分历史基线、本轮隔离验证与生产部署。此前记忆服务83项、本地隐私21项、微信桥312通过/1项平台跳过、真实原文选择9例及软忘记联动已有证据；这些本轮未全部重跑。更正/永久擦除/活跃原生上下文重置、完整RuntimePort权限和后续阶段仍未完成。[52项发布矩阵](docs/plans/0.3.0-validation.md)不是单元测试数量，须逐项验收；C01–C15裁剪和P6c仍未结案。
+
+2026-10-08最新追加：任务绑定的Chief查询/queued child/原生prompt规划已接Pi，支持只读profile，不提供真实dispatch/审批/文件/shell。新工具19项与实际SIGKILL四组合4项加入原64项，联合87/87通过；权限27/27、控制面21/21、Goal60/60、shim9/9本轮均重测通过，共204项自动化。真实Kimi现役shim与临时修复shim各2轮HTTP200、1个保存查询、usage536 token，最新源码最终复测539 token；重复/重开同Submission且额外调用0，产品状态未变。原无工具canary本轮usage45 token。初期失败不删除、不算通过。源码修复和测试工件均未部署，正式后台、provider/fallback resolver、legacy、微信/Outbox、P3–P7与P6c仍未完成。HEAD`507b52d`的用户README结构保留；本轮没有commit/push。
 
 ## 1. 当前授权与范围
+
+P2权限/锁组件27项通过；本轮GoalRuntime副本读写与固定检查接入范围broker，实际沙箱11项/全Goal60项通过。旧bootstrap源码已退役，Goal前端13项、Dashboard167项与web typecheck通过；原有微信桥完整回归312通过/1项平台跳过。仍未配置/部署新身份或重启服务，Pi/真实SessionManager/native CLI接入、正式配对、迁移和发布待完成。实际边界见[当前阶段证据](docs/decisions/runtime-0.3.0.md)。
 
 用户已授权开始执行重构。本文是执行状态和验收记录，不把规划项误报为已完成。
 
@@ -15,7 +19,7 @@
 | 能力 | 当前状态 | 证据/限制 |
 | --- | --- | --- |
 | 微信入口 | 已运行 | launchd 常驻；微信 ACP 主 Kimi，已核对配置和实际启动参数；仍保留 prompt 超时与 fallback。连接器不直接承担外部派单。 |
-| 微信共享记忆 | 已部署并验证 | Mem0 OSS 2.2.1 / 4325，本地 embedding + Qdrant/SQLite；统一上下文/人格注入、完整正文归档、持久 outbox 与真实停启恢复测试已通过；提炼调用现有 Kimi API。 |
+| 微信共享记忆 | 服务已部署，事实完整性回归未通过 | Mem0 OSS 2.2.1 / 4325，本地 embedding + Qdrant/SQLite；归档、上传与停启恢复已有证据，但追加昵称提炼/召回失败，不能以接口健康代替语义验收；详见 0.2.2 记录和下一版 P1。 |
 | Cezar cockpit | 已运行 | `127.0.0.1:4321`；负责本身的 run/worktree；不是全机 App 历史控制面。 |
 | Agent fallback | 已实现第一版 | 主 ACP 启动失败/超时可切换 DeepSeek、Kimi、WorkBuddy、Devin/OpenCode 候选；provider 认证和历史恢复仍分别归各 Agent。 |
 | Dashboard / Settings | 已实现第五版 | Dashboard 首屏增加控制面 Task/Execution 和待审批动作卡片；Workflows 页面可视化 Personal AI OS Chief/Router/Worker/Reviewer/Approval 闭环；系统连接和 Settings → Local agents 读取 4324 Feature Map。 |
@@ -141,6 +145,20 @@ README 已重写为 Personal AI OS 产品说明，并明确 Devin 本机 ACP 的
 - [ ] 分开验证 Devin Cloud、GitHub Actions、GUI 与 SSH 设备接入，明确身份、计费、权限、并发与证据边界。
 - [ ] 优先迁移已验证的本地工作流，不用本机 Devin ACP 证据替代云端能力验证。
 - [ ] 验收：每类通道有独立 capability evidence；未授权支付、部署、外发与不可逆操作不执行；不支持能力明确降级而非假装已调度。
+
+## H：通讯平台 Transport 抽象与第二连接器（未开始，仅计划）
+
+背景（2026-10-08 核实）：微信 I/O 走腾讯 iLink 云 Bot API，纯 HTTPS、与 OS 无关；桥内通用管线（inbound 回执、recovery 租约与巡检、reply-outbox、inject 队列、每轮记忆注入）可复用，但与 `WeixinMessage` 类型和 `context_token` 语义耦合——`bridge.ts` 直接 import `./weixin/*`，尚无平台无关的 transport 接口（详见 README「通讯平台接入」核实结论）。
+
+计划（按序执行，每步独立验收）：
+
+- [ ] H1 抽取 `Transport` 接口（收消息 / 发文本 / 发媒体 / 回执票据），`weixin/*` 降级为第一个实现；`bridge.ts` 改依赖接口而非微信类型；现有桥接测试必须原样通过，行为零变化。
+- [ ] H2 泛化管线耦合点：`message-inbox` 记录类型、reply-outbox 的 clientId 前缀、会话/回复票据语义；补迁移测试。
+- [ ] H3 实现第二个连接器验证模板成本，候选 Telegram Bot API（最简单）或飞书开放平台；通过标准 = 管线零改动或最小改动。
+- [ ] H4 用实测结果更新 README「通讯平台接入」表；成本符合预期再排第三个平台，不夸大未验证状态。
+- [ ] 验收：微信现有行为零回归（收发、回执、补发、记忆注入）；第二平台通过真实沙盒账号收发测试；README 状态词与实际证据一致。
+
+时机：排在 0.3.0 发布与命名迁移（[命名统一决策](docs/decisions/rename-personal-ai-os.md) 批次 2）之后，不阻塞 0.3.0 门槛。
 
 ## 6. 验证与记录要求
 
