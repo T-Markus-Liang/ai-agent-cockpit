@@ -2,7 +2,7 @@ import { copyJson } from '@earendil-works/chord'
 import { indexLocalSessions } from '../../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../../control-plane/native-acp.mjs'
-import { executeNativeSessionPrompt, nativePromptPlan } from '../../control-plane/native-acp-executor.mjs'
+import { executeNativeSessionPrompt, cancelNativeExecution, nativePromptPlan } from '../../control-plane/native-acp-executor.mjs'
 import { buildRoutePlan } from '../../control-plane/router.mjs'
 import { createReviewerExecution } from '../../control-plane/reviewer.mjs'
 import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution } from '../../control-plane/dispatcher.mjs'
@@ -80,6 +80,11 @@ export const TOOL_DEFINITIONS = Object.freeze([
     name: 'prompt_native_session',
     description: '在精确 Approval 下 load 并 prompt 一个已有 ACP 会话；完成后进入 VERIFYING。',
     inputSchema: { type: 'object', required: ['taskId', 'executionId', 'approvalId', 'source', 'nativeSessionId', 'cwd', 'prompt', 'idempotencyKey'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, approvalId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, accountId: { type: 'string' }, profileId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+  },
+  {
+    name: 'cancel_native_session',
+    description: '使用精确匹配且未消费的 Approval 取消一个在途 native ACP 会话：先发 ACP session/cancel，未收尾再 SIGTERM。',
+    inputSchema: { type: 'object', required: ['executionId', 'approvalId', 'idempotencyKey'], properties: { executionId: { type: 'string' }, approvalId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'add_evidence',
@@ -228,6 +233,7 @@ export async function callTool(name, args = {}, { store, principal, requireOpera
   if (name === 'update_execution_status') return store.updateExecutionStatus(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'plan_native_prompt') return nativePromptPlan(args)
   if (name === 'prompt_native_session') return executeNativeSessionPrompt({ ...args, store, requireOperator, idempotencyKey: args.idempotencyKey })
+  if (name === 'cancel_native_session') return cancelNativeExecution({ ...args, store, requireOperator, idempotencyKey: args.idempotencyKey })
   if (name === 'add_evidence') return store.addEvidence(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'create_approval') return store.createApproval(args, { idempotencyKey: args.idempotencyKey })
   if (name === 'decide_approval') {

@@ -13,6 +13,59 @@ export const NATIVE_ACP_CLIENT_TOOL_DENIED = 'NATIVE_ACP_CLIENT_TOOL_DENIED'
 export const NATIVE_ACP_CLIENT_TOOL_UNSUPPORTED = 'NATIVE_ACP_CLIENT_TOOL_UNSUPPORTED'
 export const NATIVE_ACP_BROKER_ERROR = 'NATIVE_ACP_BROKER_ERROR'
 
+// Grace window between asking an in-flight agent to stop (ACP `session/cancel`)
+// and escalating to SIGTERM. The agent gets this long to wind the prompt down
+// itself; anything slower is force-terminated. Exported so tests can assert the
+// production value and inject a shorter one.
+export const NATIVE_CANCEL_GRACE_MS = 2000
+
+// In-flight native ACP runs, keyed by executionId. A run registers itself BEFORE
+// it spawns the native CLI and deregisters in its finally, so a cancel arriving
+// while the prompt is live always finds a handle to the real child process. The
+// registry is process-local on purpose: a control-plane restart loses it, which
+// is exactly why startup recovery (store.recoverOnStartup) still marks every
+// `running` execution `blocked` rather than pretending it can cancel a process
+// it never owned.
+const inFlightNativeExecutions = new Map()
+
+// Read-only observability into the in-flight registry. Used by the cancel
+// channel and by tests to prove a run is deregistered once it settles.
+export function nativeInFlightExecutionIds() {
+  return [...inFlightNativeExecutions.keys()]
+}
+
+// A per-run cancellation handle. `cancel()` sends the ACP `session/cancel`
+// notification exactly once and, if the child has not exited within the grace
+// window, escalates to SIGTERM. It is idempotent: a repeated call never
+// re-signals, so replaying a cancel can never double-kill a process.
+function createNativeCancelHandle({ nativeSessionId, graceMs = NATIVE_CANCEL_GRACE_MS } = {}) {
+  let child = null
+  let requested = false
+  let graceTimer = null
+  return {
+    attach(process_) { child = process_ },
+    get requested() { return requested },
+    cancel() {
+      if (requested) return { requested: true, replay: true, delivered: false }
+      requested = true
+      if (!child || child.exitCode !== null || child.signalCode !== null || !child.stdin?.writable) {
+        // Nothing to signal (already gone, or never attached): report honestly.
+        return { requested: true, replay: false, delivered: false }
+      }
+      try {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: nativeSessionId } })}\n`)
+      } catch { /* the child may already be gone; the grace timer below still applies */ }
+      graceTimer = setTimeout(() => {
+        graceTimer = null
+        if (child.exitCode === null && child.signalCode === null) { try { child.kill('SIGTERM') } catch { /* already gone */ } }
+      }, graceMs)
+      graceTimer.unref?.()
+      return { requested: true, replay: false, delivered: true }
+    },
+    dispose() { if (graceTimer) { clearTimeout(graceTimer); graceTimer = null } },
+  }
+}
+
 // ACP client-side (agent -> client) request methods this executor understands,
 // mapped to the tool kind the session permission broker adjudicates on. Any
 // other method is mapped to a kind the broker does not know, so an unrecognized
@@ -82,7 +135,7 @@ export function nativePromptPlan({ taskId, executionId, source, nativeSessionId,
   return { action: 'native.session.prompt', target: `${source}/${nativeSessionId}`, parameters, parametersDigest: parametersDigest(parameters), requiresApproval: true }
 }
 
-export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionId, prompt, command, args, timeoutMs = 120_000, sandbox, sandboxGrant = {}, permissionBroker } = {}) {
+export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionId, prompt, command, args, timeoutMs = 120_000, sandbox, sandboxGrant = {}, permissionBroker, executionId, cancelGraceMs } = {}) {
   if (!path.isAbsolute(cwd)) throw new StoreError('ABSOLUTE_CWD_REQUIRED', 'native ACP prompt requires an absolute cwd', 400)
   if (!nativeSessionId || !prompt?.trim()) throw new StoreError('NATIVE_PROMPT_REQUIRED', 'nativeSessionId and prompt are required', 400)
   const selected = command ? { command, args: args ?? [] } : nativeAcpCommand(source)
@@ -95,11 +148,25 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
   const wrap = sandbox ?? wrapWithSandbox
   const spec = nativeAcpSandboxSpec({ command: selected.command, cwd, grant: sandboxGrant })
   const wrapped = wrap(selected.command, selected.args, spec)
-  const child = spawn(wrapped.command, wrapped.args, {
-    cwd,
-    env: nativeAcpChildEnv(sandboxGrant.extraEnv),
-    stdio: ['pipe', 'pipe', 'ignore'],
-  })
+  // The in-flight run is registered BEFORE the spawn (and deregistered in the
+  // finally below), so a cancel that arrives while the prompt is live always
+  // finds a handle to the real child process. `attach` links the child in.
+  const cancelHandle = createNativeCancelHandle({ nativeSessionId, graceMs: cancelGraceMs })
+  if (executionId) inFlightNativeExecutions.set(executionId, cancelHandle)
+  let child
+  try {
+    child = spawn(wrapped.command, wrapped.args, {
+      cwd,
+      env: nativeAcpChildEnv(sandboxGrant.extraEnv),
+      stdio: ['pipe', 'pipe', 'ignore'],
+    })
+  } catch (error) {
+    // A synchronous spawn failure must not leak the registry entry.
+    if (executionId) inFlightNativeExecutions.delete(executionId)
+    cancelHandle.dispose()
+    throw responseError('spawn', source, error.message, 502)
+  }
+  cancelHandle.attach(child)
   const rl = readline.createInterface({ input: child.stdout })
   const pending = new Map()
   const notifications = []
@@ -154,6 +221,19 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
   }
 
   const processFailure = new Promise((_, reject) => child.once('error', (error) => reject(responseError('spawn', source, error.message, 502))))
+  // A cancel the agent ignored is escalated to SIGTERM; when the child then
+  // exits with the prompt request still pending, settle that request honestly
+  // (NATIVE_ACP_CANCELLED) instead of letting it hang until the request timeout.
+  // Only the cancel path is handled here: an unexpected death keeps its prior
+  // (timeout-bounded) behaviour, so the existing spawn-failure NATIVE_ACP_ERROR
+  // path is byte-for-byte unchanged.
+  child.once('close', () => {
+    if (!cancelHandle.requested) return
+    for (const [id, resolver] of pending) {
+      pending.delete(id)
+      resolver.reject(new StoreError('NATIVE_ACP_CANCELLED', `${source} process was terminated after the ACP session/cancel was not honoured`, 502))
+    }
+  })
   rl.on('line', (line) => {
     let message
     try { message = JSON.parse(line) } catch { return }
@@ -206,6 +286,8 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
     const promptResult = await request('session/prompt', { sessionId: nativeSessionId, prompt: [{ type: 'text', text: prompt }] })
     return { source, nativeSessionId, cwd, agentInfo: initialized?.agentInfo, agentCapabilities, stopReason: promptResult?.stopReason, text: textParts.join(''), notifications, brokerErrors }
   } finally {
+    if (executionId) inFlightNativeExecutions.delete(executionId)
+    cancelHandle.dispose()
     rl.close()
     // Let any inbound client-request adjudications that are still writing their
     // response finish before the child is torn down.
@@ -238,7 +320,7 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
 // second attach is intentionally dropped, so there is a single idempotency-
 // keyed attach step. Each store step keeps its own `${idempotencyKey ?? executionId}:<step>`
 // key, so replaying one step never collides with another.
-export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false } = {}) {
+export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false, cancelGraceMs } = {}) {
   if (!store) throw new StoreError('STORE_REQUIRED', 'control-plane store is required', 500)
   const aggregate = await store.getTask(taskId)
   const execution = aggregate.executions.find((candidate) => candidate.id === executionId)
@@ -264,9 +346,19 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
       idempotencyKey: step('approval'),
       requireOperator,
     })
-    // (4) approved: only now is the native CLI actually spawned.
+    // (4) approved: only now is the native CLI actually spawned. The executionId
+    // is threaded through so the live run registers itself in the in-flight
+    // registry and an operator cancel can reach the child process.
     launched = true
-    const result = await runNativeAcpPrompt({ source, nativeSessionId, cwd, prompt, command, args, sandbox, sandboxGrant, permissionBroker })
+    const result = await runNativeAcpPrompt({ source, nativeSessionId, cwd, prompt, command, args, sandbox, sandboxGrant, permissionBroker, executionId, cancelGraceMs })
+    // A cancelled prompt is a terminal, honest outcome — never a completed one.
+    // The operator cancel path (cancelNativeExecution) also marks the execution
+    // cancelled; whichever writes first, the other is an idempotent no-op.
+    if (result.stopReason === 'cancelled') {
+      await store.addEvidence(executionId, { kind: 'message', summary: 'native ACP prompt was cancelled (stopReason=cancelled)', source: `${source}:acp`, redacted: true }, { idempotencyKey: step('evidence') })
+      const cancelled = await store.updateExecutionStatus(executionId, { status: 'cancelled', outcome: 'native ACP prompt was cancelled through ACP session/cancel' }, { idempotencyKey: step('cancelled') })
+      return { execution: cancelled.execution, reply: result.text, stopReason: 'cancelled', cancelled: true, agentInfo: result.agentInfo }
+    }
     const text = result.text ?? ''
     const summary = text.trim().length > 0
       ? (text.length > 4000 ? `${text.slice(0, 3997)}...` : text)
@@ -275,6 +367,12 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
     const updated = await store.updateExecutionStatus(executionId, { status: 'verifying', outcome: `native ACP prompt completed (${result.stopReason ?? 'unknown'})` }, { idempotencyKey: step('verifying') })
     return { execution: updated.execution, reply: result.text, stopReason: result.stopReason, agentInfo: result.agentInfo }
   } catch (error) {
+    // A cancel the agent ignored (the process was force-terminated) is recorded
+    // honestly as cancelled, never as a generic failure and never as a success.
+    if (error?.code === 'NATIVE_ACP_CANCELLED') {
+      await store.updateExecutionStatus(executionId, { status: 'cancelled', outcome: 'native ACP prompt was cancelled; the agent did not honour session/cancel and the process was terminated' }, { idempotencyKey: step('cancelled') }).catch(() => {})
+      throw error
+    }
     // The outcome is honest about the phase: an unlaunched failure is an
     // unauthorized/refused launch (the stored engine ref is retained exactly as
     // the un-authorized launch-intent record it is), a post-spawn failure is an
@@ -285,4 +383,65 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
     await store.updateExecutionStatus(executionId, { status: 'blocked', outcome }, { idempotencyKey: step('blocked') }).catch(() => {})
     throw error
   }
+}
+
+// ---------------------------------------------------------------------------
+// Native ACP cancellation channel
+//
+// Mirrors cancelCezarExecution: the cancellation is bound to an approval that
+// covers the EXACT native cancel plan (action `native.session.cancel`, target
+// `<source>:<nativeSessionId>`, digest over {executionId, target}). Once the
+// approval is consumed, an in-flight run is asked to stop over ACP
+// (`session/cancel`, escalating to SIGTERM after NATIVE_CANCEL_GRACE_MS). When
+// there is no live process the cancellation is recorded HONESTLY from store
+// state — no kill is ever faked.
+// ---------------------------------------------------------------------------
+
+const TERMINAL_EXECUTION_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'blocked'])
+const CANCELLABLE_EXECUTION_STATUSES = new Set(['queued', 'running'])
+
+export function nativeCancelPlan({ executionId, engineRef } = {}) {
+  if (!executionId || typeof executionId !== 'string' || !engineRef || typeof engineRef.id !== 'string' || !engineRef.id) {
+    throw new StoreError('NATIVE_CANCEL_PLAN_INVALID', 'executionId and engineRef.id are required', 400)
+  }
+  const parameters = { executionId, target: engineRef.id }
+  return { action: 'native.session.cancel', target: engineRef.id, parameters, parametersDigest: parametersDigest(parameters), requiresApproval: true }
+}
+
+export async function cancelNativeExecution({ store, executionId, approvalId, idempotencyKey, requireOperator = false } = {}) {
+  if (!store) throw new StoreError('STORE_REQUIRED', 'control-plane store is required', 500)
+  const execution = await store.getExecution(executionId)
+  if (execution.engineRef?.engine !== 'native-acp') throw new StoreError('NATIVE_REF_REQUIRED', 'execution has no native ACP engine reference', 409)
+  if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'cancellation requires an approved approval id', 403)
+  // An already-terminal execution has nothing to cancel. Return honestly rather
+  // than burning the approval or faking a kill, so a replay of the same request
+  // is a pure read and never re-signals a (long gone) process.
+  if (TERMINAL_EXECUTION_STATUSES.has(execution.status)) {
+    return {
+      replay: true,
+      alreadyTerminal: true,
+      cancelled: execution.status === 'cancelled',
+      liveProcess: false,
+      delivered: false,
+      execution,
+      outcome: `execution is already ${execution.status}; no cancel was performed`,
+    }
+  }
+  const live = inFlightNativeExecutions.get(executionId)
+  // A non-terminal execution that is neither live nor queued/running cannot move
+  // to `cancelled` under the store state machine (e.g. a `verifying` run with no
+  // process). Refuse honestly instead of forcing an illegal transition.
+  if (!live && !CANCELLABLE_EXECUTION_STATUSES.has(execution.status)) {
+    throw new StoreError('EXECUTION_NOT_CANCELLABLE', `execution is ${execution.status}; only queued or running native executions may be cancelled`, 409)
+  }
+  const plan = nativeCancelPlan({ executionId, engineRef: execution.engineRef })
+  await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: `${idempotencyKey ?? executionId}:approval`, requireOperator })
+  const signal = live ? live.cancel() : null
+  const outcome = signal?.delivered
+    ? 'native ACP session/cancel delivered to the in-flight process; execution marked cancelled'
+    : live
+      ? 'in-flight process found but session/cancel could not be delivered; execution marked cancelled'
+      : 'no live process found; marked cancelled from store state (no process kill was performed)'
+  const updated = await store.updateExecutionStatus(executionId, { status: 'cancelled', outcome }, { idempotencyKey: `${idempotencyKey ?? executionId}:cancel` })
+  return { replay: false, alreadyTerminal: false, liveProcess: Boolean(live), delivered: Boolean(signal?.delivered), execution: updated.execution, outcome }
 }

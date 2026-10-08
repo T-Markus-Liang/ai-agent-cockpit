@@ -36,10 +36,14 @@ test('roles separate proposal, proof and operator approval; forged subjects fail
   const subjects = Object.fromEntries(Object.entries(TOKENS).map(([role, token]) => [role, auth.authenticate({ authorization: `Bearer ${token}` })]));
   authorizeHttpRequest(subjects.chief, 'POST', '/api/control-plane/tasks');
   authorizeHttpRequest(subjects.coordinator, 'POST', '/api/control-plane/executions/execution/status');
+  // The chief may drive the native ACP cancel channel (same regex family as
+  // native/plan, native/prompt and the cezar actions); lower roles may not.
+  authorizeHttpRequest(subjects.chief, 'POST', '/api/control-plane/executions/execution/native/cancel');
   authorizeHttpRequest(subjects.operator, 'POST', '/api/control-plane/approvals/approval/decision');
   for (const role of ['chief', 'viewer', 'coordinator']) assert.throws(() => authorizeHttpRequest(subjects[role], 'POST', '/api/control-plane/approvals/approval/decision'), error => error.code === 'AUTH_FORBIDDEN');
   assert.throws(() => authorizeHttpRequest(subjects.viewer, 'POST', '/api/control-plane/tasks'), error => error.code === 'AUTH_FORBIDDEN');
   assert.throws(() => authorizeHttpRequest(subjects.viewer, 'GET', '/api/control-plane/native-sessions'), error => error.code === 'AUTH_FORBIDDEN');
+  for (const role of ['viewer', 'coordinator']) assert.throws(() => authorizeHttpRequest(subjects[role], 'POST', '/api/control-plane/executions/execution/native/cancel'), error => error.code === 'AUTH_FORBIDDEN');
   assert.throws(() => authorizeHttpRequest({ authenticated: true, role: 'operator' }, 'POST', '/api/control-plane/tasks'), error => error.code === 'AUTH_REQUIRED');
   assert.deepEqual(trustedApprovalDecision({ decision: 'approved' }, subjects.operator), { decision: 'approved', approvedBy: 'operator-test' });
   assert.throws(() => trustedApprovalDecision({ decision: 'approved', approvedBy: 'model' }, subjects.operator), error => error.code === 'APPROVER_MISMATCH');

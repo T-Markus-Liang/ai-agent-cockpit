@@ -3,7 +3,7 @@ import http from 'node:http'
 import { indexLocalSessions } from '../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
-import { executeNativeSessionPrompt, nativePromptPlan } from '../control-plane/native-acp-executor.mjs'
+import { executeNativeSessionPrompt, nativePromptPlan, cancelNativeExecution } from '../control-plane/native-acp-executor.mjs'
 import { buildRoutePlan } from '../control-plane/router.mjs'
 import { createReviewerExecution } from '../control-plane/reviewer.mjs'
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
@@ -187,6 +187,11 @@ const server = http.createServer(async (req, res) => {
     if (nativePromptExecutionId && req.method === 'POST') {
       const input = nativeRemoteInput(await body(req), { approval: true })
       return send(res, 202, await executeNativeSessionPrompt({ ...input, store, requireOperator: authority.mode === 'strict', executionId: nativePromptExecutionId, idempotencyKey: idempotencyKey(req) }))
+    }
+    const nativeCancelExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/native/cancel')
+    if (nativeCancelExecutionId && req.method === 'POST') {
+      const input = await body(req)
+      return send(res, 200, await cancelNativeExecution({ ...input, store, requireOperator: authority.mode === 'strict', executionId: nativeCancelExecutionId, idempotencyKey: idempotencyKey(req) }))
     }
     const cezarPlanExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/plan')
     if (cezarPlanExecutionId && req.method === 'POST') {

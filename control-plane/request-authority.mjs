@@ -190,7 +190,7 @@ export function authorizeHttpRequest(principal, method, pathname) {
       (['/api/control-plane/route-plan', '/api/control-plane/tasks', '/api/control-plane/approvals', '/api/control-plane/events'].includes(pathname) ||
        /^\/api\/control-plane\/tasks\/[^/]+\/(executions|reviews|complete)$/.test(pathname) ||
        /^\/api\/control-plane\/sessions\/[^/]+\/(lock|unlock)$/.test(pathname) ||
-       /^\/api\/control-plane\/executions\/[^/]+\/(native\/(plan|prompt)|cezar\/(plan|dispatch|cancel-plan|cancel))$/.test(pathname))) return;
+       /^\/api\/control-plane\/executions\/[^/]+\/(native\/(plan|prompt|cancel)|cezar\/(plan|dispatch|cancel-plan|cancel))$/.test(pathname))) return;
   throw new AuthorityError('AUTH_FORBIDDEN');
 }
 

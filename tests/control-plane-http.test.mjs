@@ -162,6 +162,7 @@ test('HTTP control plane covers task lifecycle, approval, audit and MCP boundari
     const toolNames = mcpTools.body.result.tools.map((tool) => tool.name)
     assert.ok(toolNames.includes('plan_route'))
     assert.ok(toolNames.includes('prompt_native_session'))
+    assert.ok(toolNames.includes('cancel_native_session'))
     assert.ok(toolNames.includes('complete_task'))
 
     const route = await request('/api/control-plane/route-plan', {

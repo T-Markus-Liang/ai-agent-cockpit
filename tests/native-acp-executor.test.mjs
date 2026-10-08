@@ -16,13 +16,17 @@ import {
   NATIVE_ACP_BROKER_ERROR,
   NATIVE_ACP_CLIENT_TOOL_DENIED,
   NATIVE_ACP_CLIENT_TOOL_UNSUPPORTED,
+  NATIVE_CANCEL_GRACE_MS,
+  cancelNativeExecution,
   executeNativeSessionPrompt,
   nativeAcpChildEnv,
   nativeAcpSandboxSpec,
+  nativeCancelPlan,
+  nativeInFlightExecutionIds,
   nativePromptPlan,
   runNativeAcpPrompt,
 } from '../control-plane/native-acp-executor.mjs'
-import { ControlPlaneStore } from '../control-plane/store.mjs'
+import { ControlPlaneStore, parametersDigest } from '../control-plane/store.mjs'
 
 const MAC = { skip: process.platform !== 'darwin' }
 
@@ -439,4 +443,295 @@ test('consumeApproval executionGuard refuses a non-running execution and a one-s
       )
     } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
   }
+})
+
+// ---------------------------------------------------------------------------
+// Native ACP cancellation channel (P4 Wave3 step 6)
+//
+// A synthetic ACP agent that stays in flight on `session/prompt` until it is
+// cancelled: on `session/cancel` it either finishes the prompt with
+// `stopReason: 'cancelled'` (graceful) or ignores it, forcing the executor's
+// SIGTERM escalation. Still no real CLI, no network, no user files, and the
+// store lives under a scratch state dir.
+// ---------------------------------------------------------------------------
+
+function fakeCancelAgentScript({ behavior = 'graceful' } = {}) {
+  return `
+const readline = require('node:readline')
+const fs = require('node:fs')
+const rl = readline.createInterface({ input: process.stdin })
+const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n')
+const behavior = ${JSON.stringify(behavior)}
+let promptRequest = null
+rl.on('line', (line) => {
+  let m; try { m = JSON.parse(line) } catch { return }
+  if (m.method === 'initialize') { send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: 1, agentInfo: { name: 'fake-cancel-agent' }, agentCapabilities: { loadSession: true } } }); return }
+  if (m.method === 'session/load') { send({ jsonrpc: '2.0', id: m.id, result: { configOptions: [] } }); return }
+  if (m.method === 'session/prompt') {
+    promptRequest = m.id
+    if (process.env.PROMPT_SENTINEL) fs.writeFileSync(process.env.PROMPT_SENTINEL, 'prompting\\n')
+    return
+  }
+  if (m.method === 'session/cancel') {
+    if (process.env.CANCEL_SENTINEL) fs.writeFileSync(process.env.CANCEL_SENTINEL, 'session/cancel\\n')
+    if (behavior === 'graceful' && promptRequest !== null) send({ jsonrpc: '2.0', id: promptRequest, result: { stopReason: 'cancelled' } })
+    return
+  }
+})
+`
+}
+
+async function waitFor(predicate, { timeout = 4000, interval = 10 } = {}) {
+  const started = Date.now()
+  for (;;) {
+    if (await predicate()) return
+    if (Date.now() - started > timeout) throw new Error('waitFor: condition not met in time')
+    await new Promise((resolve) => setTimeout(resolve, interval))
+  }
+}
+
+const fileHas = async (file, needle) => { try { return (await fs.readFile(file, 'utf8')).includes(needle) } catch { return false } }
+
+// A fresh store with one queued execution and the two approvals a cancel flow
+// needs: the prompt approval (for the in-flight run) and the cancel approval
+// (bound to nativeCancelPlan for the engine ref the run will attach).
+async function cancelFixture({ nativeSessionId = 'native-1' } = {}) {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-cancel-'))
+  const store = new ControlPlaneStore({ stateDir })
+  const task = await store.createTask({ goal: 'native cancel' }, { idempotencyKey: 'nc-task' })
+  const created = await store.createExecution(task.task.id, { workerId: 'fake:native', sessionRefId: `session:fake:${nativeSessionId}` }, { idempotencyKey: 'nc-exec' })
+  const executionId = created.execution.id
+  const promptPlan = nativePromptPlan({ taskId: task.task.id, executionId, source: 'fake', nativeSessionId, cwd: '/tmp', prompt: '继续' })
+  const promptApproval = await store.createApproval({ action: promptPlan.action, target: promptPlan.target, parametersDigest: promptPlan.parametersDigest }, { idempotencyKey: 'nc-prompt-approval' })
+  await store.decideApproval(promptApproval.approval.id, { decision: 'approved', approvedBy: 'tester' }, { idempotencyKey: 'nc-prompt-decide' })
+  const cancelPlan = nativeCancelPlan({ executionId, engineRef: { id: `fake:${nativeSessionId}` } })
+  const cancelApproval = await store.createApproval({ action: cancelPlan.action, target: cancelPlan.target, parametersDigest: cancelPlan.parametersDigest }, { idempotencyKey: 'nc-cancel-approval' })
+  await store.decideApproval(cancelApproval.approval.id, { decision: 'approved', approvedBy: 'tester' }, { idempotencyKey: 'nc-cancel-decide' })
+  return {
+    stateDir, store, taskId: task.task.id, executionId,
+    promptApprovalId: promptApproval.approval.id,
+    cancelApprovalId: cancelApproval.approval.id,
+    promptPlan, cancelPlan,
+    promptInput: { taskId: task.task.id, executionId, source: 'fake', nativeSessionId, cwd: '/tmp', prompt: '继续' },
+    promptArgs: ['-e', fakeCancelAgentScript({ behavior: 'graceful' })],
+  }
+}
+
+// A native execution that is `running` in the store with NO live process, so the
+// "not in flight" honest paths can be exercised without spawning anything.
+async function idleNativeExecution() {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-cancel-idle-'))
+  const store = new ControlPlaneStore({ stateDir })
+  const task = await store.createTask({ goal: 'native cancel idle' }, { idempotencyKey: 'idle-task' })
+  const created = await store.createExecution(task.task.id, { workerId: 'fake:native' }, { idempotencyKey: 'idle-exec' })
+  const executionId = created.execution.id
+  await store.attachExecutionRef(executionId, { engine: 'native-acp', id: 'fake:native-1', source: 'fake', nativeSessionId: 'native-1', cwd: '/tmp' }, { idempotencyKey: 'idle-attach' })
+  await store.updateExecutionStatus(executionId, { status: 'running' }, { idempotencyKey: 'idle-running' })
+  return { stateDir, store, executionId, plan: nativeCancelPlan({ executionId, engineRef: { id: 'fake:native-1' } }) }
+}
+
+async function approveCancel(store, plan, { idempotencyKey, action = plan.action, target = plan.target, digest = plan.parametersDigest } = {}) {
+  const approval = await store.createApproval({ action, target, parametersDigest: digest }, { idempotencyKey })
+  await store.decideApproval(approval.approval.id, { decision: 'approved', approvedBy: 'tester' }, { idempotencyKey: `${idempotencyKey}-decision` })
+  return approval.approval.id
+}
+
+// Count how many times the executor touches specific store methods, so a replayed
+// cancel can be shown to neither re-consume the approval nor re-write state.
+function countingStore(store, counts) {
+  const names = ['getExecution', 'consumeApproval', 'updateExecutionStatus']
+  return new Proxy(store, {
+    get(target, prop) {
+      if (typeof target[prop] !== 'function') return target[prop]
+      if (!names.includes(prop)) return target[prop].bind(target)
+      return (...args) => { counts[prop] = (counts[prop] ?? 0) + 1; return target[prop].apply(target, args) }
+    },
+  })
+}
+
+test('nativeCancelPlan binds the cancel action to the native engine ref id', () => {
+  const plan = nativeCancelPlan({ executionId: 'exec-1', engineRef: { id: 'fake:native-1' } })
+  assert.equal(plan.action, 'native.session.cancel')
+  assert.equal(plan.target, 'fake:native-1')
+  assert.deepEqual(plan.parameters, { executionId: 'exec-1', target: 'fake:native-1' })
+  assert.equal(plan.parametersDigest, parametersDigest({ executionId: 'exec-1', target: 'fake:native-1' }))
+  assert.equal(plan.requiresApproval, true)
+  assert.equal(NATIVE_CANCEL_GRACE_MS, 2000, 'the production grace window is 2s')
+  assert.throws(() => nativeCancelPlan({ executionId: 'exec-1' }), (error) => error.code === 'NATIVE_CANCEL_PLAN_INVALID')
+})
+
+test('cancelNativeExecution requires a native engine ref and an approval id', async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-cancel-ref-'))
+  try {
+    const store = new ControlPlaneStore({ stateDir })
+    const task = await store.createTask({ goal: 'wrong engine' }, { idempotencyKey: 'ref-task' })
+    const created = await store.createExecution(task.task.id, { workerId: 'cezar:codex' }, { idempotencyKey: 'ref-exec' })
+    await store.attachExecutionRef(created.execution.id, { engine: 'cezar', id: 'run-1' }, { idempotencyKey: 'ref-attach' })
+    await assert.rejects(
+      () => cancelNativeExecution({ store, executionId: created.execution.id, approvalId: 'irrelevant' }),
+      (error) => error.code === 'NATIVE_REF_REQUIRED',
+    )
+  } finally { await fs.rm(stateDir, { recursive: true, force: true }) }
+
+  const f = await idleNativeExecution()
+  try {
+    await assert.rejects(
+      () => cancelNativeExecution({ store: f.store, executionId: f.executionId }),
+      (error) => error.code === 'APPROVAL_REQUIRED',
+    )
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('cancelNativeExecution refuses an approval that does not cover the exact cancel plan', async () => {
+  const f = await idleNativeExecution()
+  try {
+    const wrong = await approveCancel(f.store, f.plan, { idempotencyKey: 'scope-approval', target: 'fake:some-other-session' })
+    await assert.rejects(
+      () => cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId: wrong, idempotencyKey: 'scope-cancel' }),
+      (error) => error.code === 'APPROVAL_SCOPE_MISMATCH',
+    )
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'running', 'a refused cancel leaves the execution untouched')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('cancelNativeExecution refuses an approval that has already been consumed', async () => {
+  const f = await idleNativeExecution()
+  try {
+    const approvalId = await approveCancel(f.store, f.plan, { idempotencyKey: 'used-approval' })
+    await f.store.consumeApproval(approvalId, { action: f.plan.action, target: f.plan.target, parametersDigest: f.plan.parametersDigest }, { idempotencyKey: 'used-consume' })
+    await assert.rejects(
+      () => cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId, idempotencyKey: 'used-cancel' }),
+      (error) => error.code === 'APPROVAL_ALREADY_USED',
+    )
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('cancelNativeExecution records an honest cancelled state when there is no live process', async () => {
+  const f = await idleNativeExecution()
+  try {
+    const approvalId = await approveCancel(f.store, f.plan, { idempotencyKey: 'nolive-approval' })
+    const result = await cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId, idempotencyKey: 'nolive-cancel' })
+    assert.equal(result.liveProcess, false, 'no process was found')
+    assert.equal(result.delivered, false)
+    assert.match(result.outcome, /no live process found/, 'the outcome is honest about not killing anything')
+    assert.equal(result.execution.status, 'cancelled')
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'cancelled')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('cancelNativeExecution refuses to force a non-terminal execution with no live process', async () => {
+  const f = await idleNativeExecution()
+  try {
+    await f.store.updateExecutionStatus(f.executionId, { status: 'verifying' }, { idempotencyKey: 'nc-verifying' })
+    const approvalId = await approveCancel(f.store, f.plan, { idempotencyKey: 'verifying-approval' })
+    await assert.rejects(
+      () => cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId, idempotencyKey: 'verifying-cancel' }),
+      (error) => error.code === 'EXECUTION_NOT_CANCELLABLE',
+    )
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'verifying', 'the execution is not forced into an illegal transition')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('cancelNativeExecution on an already-terminal execution returns idempotently without consuming the approval', async () => {
+  const f = await idleNativeExecution()
+  try {
+    const approvalId = await approveCancel(f.store, f.plan, { idempotencyKey: 'term-approval' })
+    await cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId, idempotencyKey: 'term-cancel' })
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'cancelled')
+    // A second call (with a fresh, unused approval) is a pure read: the terminal
+    // guard returns before any consumption, so nothing is burned or re-signalled.
+    const replayApproval = await approveCancel(f.store, f.plan, { idempotencyKey: 'term-replay-approval' })
+    const replay = await cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId: replayApproval, idempotencyKey: 'term-replay-cancel' })
+    assert.equal(replay.replay, true)
+    assert.equal(replay.alreadyTerminal, true)
+    assert.equal(replay.liveProcess, false)
+    assert.equal((await f.store.getApproval(replayApproval)).usedAt, undefined, 'a terminal replay never consumes the approval')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('cancelNativeExecution cancels an in-flight prompt over ACP and drains the registry', async () => {
+  const f = await cancelFixture()
+  try {
+    const cancelSentinel = path.join(f.stateDir, 'cancel-sentinel')
+    const promptSentinel = path.join(f.stateDir, 'prompt-sentinel')
+    const promptPromise = executeNativeSessionPrompt({
+      store: f.store, ...f.promptInput, approvalId: f.promptApprovalId,
+      command: process.execPath, args: f.promptArgs, sandbox: makeSandbox().sandbox,
+      sandboxGrant: { extraEnv: { CANCEL_SENTINEL: cancelSentinel, PROMPT_SENTINEL: promptSentinel } },
+      idempotencyKey: 'nc-live-prompt',
+    })
+    await waitFor(async () => nativeInFlightExecutionIds().includes(f.executionId))
+    await waitFor(() => fileHas(promptSentinel, 'prompting'))
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'running')
+
+    const result = await cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId: f.cancelApprovalId, idempotencyKey: 'nc-live-cancel' })
+    assert.equal(result.liveProcess, true)
+    assert.equal(result.delivered, true, 'the ACP session/cancel was delivered to the live process')
+    assert.equal(result.execution.status, 'cancelled')
+
+    await waitFor(() => fileHas(cancelSentinel, 'session/cancel'))
+    const promptResult = await promptPromise
+    assert.equal(promptResult.stopReason, 'cancelled')
+    assert.equal(promptResult.cancelled, true)
+    assert.equal(promptResult.execution.status, 'cancelled', 'a cancelled prompt never reports a verifying/completed transition')
+
+    await waitFor(async () => nativeInFlightExecutionIds().length === 0)
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'cancelled')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('a cancel the agent ignores escalates to SIGTERM and is recorded as cancelled, never as a failure', async () => {
+  const f = await cancelFixture()
+  try {
+    const cancelSentinel = path.join(f.stateDir, 'cancel-sentinel')
+    const promptSentinel = path.join(f.stateDir, 'prompt-sentinel')
+    const promptPromise = executeNativeSessionPrompt({
+      store: f.store, ...f.promptInput, approvalId: f.promptApprovalId,
+      command: process.execPath, args: ['-e', fakeCancelAgentScript({ behavior: 'ignore' })], sandbox: makeSandbox().sandbox,
+      sandboxGrant: { extraEnv: { CANCEL_SENTINEL: cancelSentinel, PROMPT_SENTINEL: promptSentinel } },
+      cancelGraceMs: 150,
+      idempotencyKey: 'nc-ignore-prompt',
+    })
+    // Attach a handler immediately so the eventual rejection is never unhandled.
+    const rejection = promptPromise.then(() => null, (error) => error)
+    await waitFor(() => fileHas(promptSentinel, 'prompting'))
+
+    const result = await cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId: f.cancelApprovalId, idempotencyKey: 'nc-ignore-cancel' })
+    assert.equal(result.liveProcess, true)
+    assert.equal(result.delivered, true)
+
+    assert.ok(await fileHas(cancelSentinel, 'session/cancel'), 'the ACP session/cancel reached the (ignoring) agent')
+    const error = await rejection
+    assert.equal(error?.code, 'NATIVE_ACP_CANCELLED', 'the forced termination is surfaced honestly')
+    await waitFor(async () => nativeInFlightExecutionIds().length === 0)
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'cancelled', 'a force-terminated prompt is cancelled, not blocked')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('replaying a cancel never re-consumes the approval nor re-enters the kill path', async () => {
+  const f = await cancelFixture()
+  try {
+    const cancelSentinel = path.join(f.stateDir, 'cancel-sentinel')
+    const promptSentinel = path.join(f.stateDir, 'prompt-sentinel')
+    const promptPromise = executeNativeSessionPrompt({
+      store: f.store, ...f.promptInput, approvalId: f.promptApprovalId,
+      command: process.execPath, args: f.promptArgs, sandbox: makeSandbox().sandbox,
+      sandboxGrant: { extraEnv: { CANCEL_SENTINEL: cancelSentinel, PROMPT_SENTINEL: promptSentinel } },
+      idempotencyKey: 'nc-replay-prompt',
+    })
+    await waitFor(() => fileHas(promptSentinel, 'prompting'))
+    const counts = {}
+    const store = countingStore(f.store, counts)
+    const first = await cancelNativeExecution({ store, executionId: f.executionId, approvalId: f.cancelApprovalId, idempotencyKey: 'nc-replay' })
+    assert.equal(first.liveProcess, true)
+    assert.equal(first.delivered, true)
+    await promptPromise
+    const second = await cancelNativeExecution({ store, executionId: f.executionId, approvalId: f.cancelApprovalId, idempotencyKey: 'nc-replay' })
+    assert.equal(second.replay, true)
+    assert.equal(second.alreadyTerminal, true)
+    assert.equal(second.liveProcess, false, 'the replay never finds (or signals) a live process')
+    assert.equal(counts.consumeApproval, 1, 'the approval is consumed exactly once across the replay')
+    assert.equal(counts.updateExecutionStatus, 1, 'only the first cancel writes state; the replay is a pure read')
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'cancelled')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
 })
