@@ -1,8 +1,19 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { LocaleProvider } from '@/components/locale-provider'
 import { ContinuousGoals } from './continuous-goals'
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+// The card is fully localized (English source strings + a zh-CN table, see locale-provider).
+// Force zh-CN here so every existing assertion — written against the Chinese the card renders
+// today — keeps checking that Chinese wording byte-for-byte; the `locale=en` case has its own
+// test below.
+beforeEach(() => { window.localStorage.setItem('cez-locale', 'zh-CN') })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.localStorage.clear() })
+
+function ui(client: QueryClient) {
+  return <LocaleProvider><QueryClientProvider client={client}><ContinuousGoals /></QueryClientProvider></LocaleProvider>
+}
 const TEST_CREDENTIAL = 'A'.repeat(43)
 const goal = { id: 'goal_test', specDigest: 'sha256:scope', status: 'draft', iterations: 0, tokensUsed: 0, workspaceDir: '/private/work', spec: { title: '测试目标', objective: 'repair add', sourceDir: '/source', readPaths: ['app.mjs', 'check.test.mjs'], writePaths: ['app.mjs'], checks: [{ name: 'test', args: ['--test', 'check.test.mjs'] }], limits: { maxTokens: 80000, maxIterations: 10 } } }
 type Recorded = { url: string; method?: string; headers?: Record<string, string>; body?: Record<string, unknown> }
@@ -15,7 +26,7 @@ function setup(status = 'draft', extra: Record<string, unknown> = {}) {
     if (init?.method === 'POST') return Response.json({ goal: { ...goal, status: 'ready' } })
     return Response.json({ goals: [{ ...goal, status, ...extra }] })
   }))
-  const view = render(<QueryClientProvider client={client}><ContinuousGoals /></QueryClientProvider>)
+  const view = render(ui(client))
   return { client, requests, view }
 }
 function connect() {
@@ -83,14 +94,14 @@ it('creates a draft with immutable checks rather than running immediately', asyn
 it('reports unavailable goal service without pretending it is running', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({}, { status: 503 })))
-  render(<QueryClientProvider client={client}><ContinuousGoals /></QueryClientProvider>)
+  render(ui(client))
   connect()
   expect(await screen.findByText(/持续目标服务暂不可用/)).toBeTruthy(); client.clear()
 })
 it('shows authentication failure distinctly from service unavailability', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'AUTH_REQUIRED' }, { status: 401 })))
-  render(<QueryClientProvider client={client}><ContinuousGoals /></QueryClientProvider>)
+  render(ui(client))
   connect()
   expect(await screen.findByText(/目标服务认证失败/)).toBeTruthy()
   expect(screen.getByRole('status').textContent).toBe('认证失败')
@@ -120,7 +131,7 @@ it('unmount cancels requests and clears all instance query data before another m
   view.unmount()
   expect(client.getQueryCache().findAll({ queryKey: ['continuous-goals'] }).length).toBe(0)
   const count = requests.length
-  render(<QueryClientProvider client={client}><ContinuousGoals /></QueryClientProvider>)
+  render(ui(client))
   expect(screen.queryByText('测试目标')).toBeNull()
   await new Promise(resolve => setTimeout(resolve, 20)); expect(requests.length).toBe(count)
   client.clear()
@@ -223,6 +234,39 @@ it('shows a short reason unchanged, without truncation', async () => {
   connect()
   await screen.findByText('测试目标')
   expect(screen.getByText('token 预算已耗尽')).toBeTruthy()
+  client.clear()
+})
+
+// i18n: the card's source strings are English, mapped to the SAME Chinese under zh-CN. The two
+// cases below pin both halves — an `en` render is the English source verbatim, a `zh-CN` render
+// is the wording the card has always shown.
+it('renders the English source strings under locale=en', async () => {
+  window.localStorage.setItem('cez-locale', 'en')
+  const { client } = setup()
+  expect(screen.getByRole('button', { name: 'New continuous goal' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Connect' })).toBeTruthy()
+  expect(screen.getByLabelText('Access credential')).toBeTruthy()
+  expect(screen.getByRole('status').textContent).toContain('Not connected')
+  expect(screen.getByText('Continuous goals · autonomous verification')).toBeTruthy()
+  client.clear()
+})
+
+it('renders the same Chinese wording under locale=zh-CN', async () => {
+  const { client } = setup()
+  expect(screen.getByRole('button', { name: '新建持续目标' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: '连接' })).toBeTruthy()
+  expect(screen.getByLabelText('访问凭据')).toBeTruthy()
+  expect(screen.getByRole('status').textContent).toContain('未连接')
+  expect(screen.getByText('持续目标 · 自主验证')).toBeTruthy()
+  client.clear()
+})
+
+it('exposes aria-labels on the recovery badges', async () => {
+  const { client } = setup('waiting', { needsRecovery: true, recoveryCount: 1 })
+  connect()
+  await screen.findByText('测试目标')
+  expect(screen.getByLabelText('恢复状态：待恢复')).toBeTruthy()
+  expect(screen.getByLabelText('恢复状态：已自动恢复 1 次')).toBeTruthy()
   client.clear()
 })
 

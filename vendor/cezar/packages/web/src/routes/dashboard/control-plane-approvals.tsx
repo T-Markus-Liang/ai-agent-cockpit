@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckIcon, CircleAlertIcon, ShieldCheckIcon, XIcon } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { useLocale } from '@/components/locale-provider'
+import { fill, useLocale } from '@/components/locale-provider'
 
 type Approval = { id: string; action: string; target: string; parametersDigest: string; decision: string; createdAt: string; expiresAt?: string }
 type ApprovalsResponse = { approvals?: Approval[] }
@@ -32,10 +32,10 @@ export function ControlPlaneApprovals() {
   if (query.isError || (!query.isPending && approvals.length === 0)) return null
   return <Card data-dashboard-module="control-plane-approvals" className="gap-0 overflow-hidden py-0">
     <div className="flex items-center justify-between border-b px-4 py-3">
-      <div><h2 className="flex items-center gap-2 text-sm font-semibold"><ShieldCheckIcon className="size-4" />{t('待审批动作')}</h2><p className="text-xs text-muted-foreground">{t('批准前会校验目标、参数摘要和有效期')}</p></div>
-      <span className="text-xs text-warning">{approvals.length} 个</span>
+      <div><h2 className="flex items-center gap-2 text-sm font-semibold"><ShieldCheckIcon className="size-4" aria-hidden="true" />{t('Pending approvals')}</h2><p className="text-xs text-muted-foreground">{t('Target, parameter digest and expiry are verified before approving')}</p></div>
+      <span className="text-xs text-warning">{fill(t('{count} items'), { count: approvals.length })}</span>
     </div>
-    <div className="divide-y">{approvals.map((approval) => <div key={approval.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{approval.action} · {approval.target}</p><p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{approval.parametersDigest} · {approval.id}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" disabled={decide.isPending} onClick={() => decide.mutate({ id: approval.id, decision: 'rejected' })}><XIcon className="mr-1 size-3.5" />{t('拒绝')}</Button><Button size="sm" disabled={decide.isPending} onClick={() => decide.mutate({ id: approval.id, decision: 'approved' })}><CheckIcon className="mr-1 size-3.5" />{t('批准')}</Button></div></div>)}</div>
-    {decide.isError ? <p className="flex items-center gap-2 px-4 py-2 text-xs text-danger"><CircleAlertIcon className="size-3.5" />{decide.error.message}</p> : null}
+    <div className="divide-y">{approvals.map((approval) => <div key={approval.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{approval.action} · {approval.target}</p><p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{approval.parametersDigest} · {approval.id}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" disabled={decide.isPending} aria-label={fill(t('Reject {action} · {target}'), { action: approval.action, target: approval.target })} onClick={() => decide.mutate({ id: approval.id, decision: 'rejected' })}><XIcon className="mr-1 size-3.5" aria-hidden="true" />{t('Reject')}</Button><Button size="sm" disabled={decide.isPending} aria-label={fill(t('Approve {action} · {target}'), { action: approval.action, target: approval.target })} onClick={() => decide.mutate({ id: approval.id, decision: 'approved' })}><CheckIcon className="mr-1 size-3.5" aria-hidden="true" />{t('Approve')}</Button></div></div>)}</div>
+    {decide.isError ? <p className="flex items-center gap-2 px-4 py-2 text-xs text-danger"><CircleAlertIcon className="size-3.5" aria-hidden="true" />{decide.error.message}</p> : null}
   </Card>
 }

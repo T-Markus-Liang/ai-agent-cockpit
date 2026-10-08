@@ -51,9 +51,14 @@ function selectTask() {
   fireEvent.click(screen.getByRole('button', { name: /展开任务 task_1/ }))
 }
 
+// These modules are localized (English source strings + a zh-CN table). Force zh-CN so the
+// existing assertions keep checking the Chinese they were written against; the `locale=en`
+// cases below cover the English source.
+beforeEach(() => { window.localStorage.setItem('cez-locale', 'zh-CN') })
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  window.localStorage.clear()
 })
 
 describe('Personal AI OS dashboard modules', () => {
@@ -174,5 +179,34 @@ describe('Personal AI OS dashboard modules', () => {
     expect(await screen.findByText(/完成条件暂不可达/)).toBeTruthy()
     expect(screen.queryByText('worker-a')).toBeNull()
     expect(screen.getAllByRole('button', { name: /重试/ }).length).toBe(2)
+  })
+
+  // aria: the approval decision buttons name the action and target they decide on, rather than
+  // relying on the bare verb a screen-reader user hears repeated across rows.
+  it('labels each approval decision button with its action and target', async () => {
+    renderWithQuery(<ControlPlaneApprovals />)
+    expect(await screen.findByText('cezar.dispatch · execution_1')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '拒绝 cezar.dispatch · execution_1' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '批准 cezar.dispatch · execution_1' })).toBeTruthy()
+  })
+
+  // i18n en: every module renders the English source strings verbatim.
+  it('renders English source strings under locale=en', async () => {
+    window.localStorage.setItem('cez-locale', 'en')
+    renderWithQuery(<ControlPlaneTasks />)
+    expect(await screen.findByText('修复控制面')).toBeTruthy()
+    expect(screen.getByText('Control-plane tasks')).toBeTruthy()
+    expect(screen.getByText('Running')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Show execution details for task task_1' }))
+    expect(await screen.findByText('worker-a')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Show evidence for execution execution_1' })).toBeTruthy()
+  })
+
+  it('labels approval buttons in English under locale=en', async () => {
+    window.localStorage.setItem('cez-locale', 'en')
+    renderWithQuery(<ControlPlaneApprovals />)
+    expect(await screen.findByText('cezar.dispatch · execution_1')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Reject cezar.dispatch · execution_1' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Approve cezar.dispatch · execution_1' })).toBeTruthy()
   })
 })

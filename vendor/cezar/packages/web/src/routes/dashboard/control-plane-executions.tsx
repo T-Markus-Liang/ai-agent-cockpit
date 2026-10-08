@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronDownIcon, ChevronRightIcon, CircleAlertIcon, LoaderCircleIcon, PackageCheckIcon, RefreshCwIcon } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { fill, useLocale } from '@/components/locale-provider'
 import { Pill } from '@/components/pill'
 import { StatusDot, type StatusDotTone } from '@/components/status-dot'
 import { cn } from '@/lib/utils'
@@ -56,19 +57,21 @@ async function readCompletionPlan(taskId: string): Promise<CompletionPlan> {
 
 /* The eight Execution states (control-plane/contracts.mjs EXECUTION_STATUSES). The word is
  * neutral; the colour lives in the dot, per the design system's single-carrier rule. `pulse`
- * marks the states that are still transitioning — a run that has neither succeeded nor failed. */
+ * marks the states that are still transitioning — a run that has neither succeeded nor failed.
+ * The label itself is an ENGLISH source string translated at render (see locale-provider `t`). */
 const EXECUTION_STATUS_LABELS: Record<string, string> = {
-  queued: '排队中', running: '执行中', verifying: '验证中', reviewing: '复核中',
-  succeeded: '已成功', failed: '失败', blocked: '已阻塞', cancelled: '已取消',
+  queued: 'Queued', running: 'Running', verifying: 'Verifying', reviewing: 'Reviewing',
+  succeeded: 'Succeeded', failed: 'Failed', blocked: 'Blocked', cancelled: 'Cancelled',
 }
 const EXECUTION_STATUS_TONES: Record<string, { tone: StatusDotTone; pulse?: boolean }> = {
   queued: { tone: 'pending' }, running: { tone: 'pending', pulse: true }, verifying: { tone: 'pending', pulse: true },
   reviewing: { tone: 'violet', pulse: true }, succeeded: { tone: 'success' }, failed: { tone: 'danger' },
   blocked: { tone: 'danger' }, cancelled: { tone: 'neutral' },
 }
-/* The seven Evidence kinds (control-plane/contracts.mjs createEvidence). */
+/* The seven Evidence kinds (control-plane/contracts.mjs createEvidence) — also English source
+ * strings translated at render. */
 const EVIDENCE_KIND_LABELS: Record<string, string> = {
-  command: '命令', test: '测试', diff: '差异', log: '日志', screenshot: '截图', review: '复核', message: '消息',
+  command: 'Command', test: 'Test', diff: 'Diff', log: 'Log', screenshot: 'Screenshot', review: 'Review', message: 'Message',
 }
 
 function truncate(value: string, max: number): string {
@@ -82,21 +85,23 @@ function stamp(value: string): string {
 }
 
 function ExecutionStatusBadge({ status }: { status: string }) {
-  const label = EXECUTION_STATUS_LABELS[status] ?? status
+  const { t } = useLocale()
+  const label = t(EXECUTION_STATUS_LABELS[status] ?? status)
   const presentation = EXECUTION_STATUS_TONES[status] ?? { tone: 'neutral' as StatusDotTone }
-  return <Pill dot={presentation.tone} pulse={presentation.pulse} aria-label={`执行状态：${label}`}>{label}</Pill>
+  return <Pill dot={presentation.tone} pulse={presentation.pulse} aria-label={fill(t('Execution status: {status}'), { status: label })}>{label}</Pill>
 }
 
 function EvidenceRow({ item }: { item: Evidence }) {
-  const kind = EVIDENCE_KIND_LABELS[item.kind] ?? item.kind
+  const { t } = useLocale()
+  const kind = t(EVIDENCE_KIND_LABELS[item.kind] ?? item.kind)
   return <li className="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-1.5 text-xs">
     <span className="font-medium">{kind}</span>
     {item.verdict ? <span className={cn('inline-flex items-center gap-1', item.verdict === 'passed' ? 'text-success' : 'text-danger')}>
-      <StatusDot tone={item.verdict === 'passed' ? 'success' : 'danger'} role="img" aria-label={`判定：${item.verdict === 'passed' ? '通过' : '失败'}`} />
-      {item.verdict === 'passed' ? '通过' : '失败'}
+      <StatusDot tone={item.verdict === 'passed' ? 'success' : 'danger'} role="img" aria-label={fill(t('Verdict: {verdict}'), { verdict: t(item.verdict === 'passed' ? 'Passed' : 'Failed') })} />
+      {t(item.verdict === 'passed' ? 'Passed' : 'Failed')}
     </span> : null}
-    {typeof item.exitCode === 'number' ? <span className="font-mono text-muted-foreground">退出码 {item.exitCode}</span> : null}
-    {item.artifactRef ? <span className="font-mono text-muted-foreground" title={item.artifactRef}>副本 {truncate(item.artifactRef, 24)}</span> : null}
+    {typeof item.exitCode === 'number' ? <span className="font-mono text-muted-foreground">{fill(t('Exit code {code}'), { code: item.exitCode })}</span> : null}
+    {item.artifactRef ? <span className="font-mono text-muted-foreground" title={item.artifactRef}>{fill(t('Copy {ref}'), { ref: truncate(item.artifactRef, 24) })}</span> : null}
     <span className="text-muted-foreground">{truncate(item.summary, 160)}</span>
     <span className="ml-auto font-mono text-[10px] text-muted-foreground">{stamp(item.capturedAt)}</span>
   </li>
@@ -108,26 +113,28 @@ function ExecutionRow({ execution, evidence, expanded, onToggle }: {
   expanded: boolean
   onToggle: () => void
 }) {
+  const { t } = useLocale()
   return <div className="border-t px-4 py-2 first:border-t-0">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       <ExecutionStatusBadge status={execution.status} />
       <span className="font-mono text-xs">{execution.workerId}</span>
-      <span className="text-xs text-muted-foreground">第 {execution.attempt} 次</span>
-      {execution.parentExecutionId ? <span className="text-xs text-info" title={execution.parentExecutionId}>复核子执行 · 父执行 {shortId(execution.parentExecutionId)}</span> : null}
-      {execution.artifactRef ? <span className="font-mono text-[10px] text-muted-foreground" title={execution.artifactRef}>副本 {truncate(execution.artifactRef, 24)}</span> : null}
+      <span className="text-xs text-muted-foreground">{fill(t('Attempt {attempt}'), { attempt: execution.attempt })}</span>
+      {execution.parentExecutionId ? <span className="text-xs text-info" title={execution.parentExecutionId}>{fill(t('Review child · parent {id}'), { id: shortId(execution.parentExecutionId) })}</span> : null}
+      {execution.artifactRef ? <span className="font-mono text-[10px] text-muted-foreground" title={execution.artifactRef}>{fill(t('Copy {ref}'), { ref: truncate(execution.artifactRef, 24) })}</span> : null}
       <span className="font-mono text-[10px] text-muted-foreground">{shortId(execution.id)}</span>
-      <Button size="sm" variant="ghost" className="ml-auto" aria-expanded={expanded} aria-label={`${expanded ? '收起' : '展开'}执行 ${execution.id} 的证据`} onClick={onToggle}>
+      <Button size="sm" variant="ghost" className="ml-auto" aria-expanded={expanded} aria-label={fill(t(expanded ? 'Hide evidence for execution {id}' : 'Show evidence for execution {id}'), { id: execution.id })} onClick={onToggle}>
         {expanded ? <ChevronDownIcon className="mr-1 size-3.5" aria-hidden="true" /> : <ChevronRightIcon className="mr-1 size-3.5" aria-hidden="true" />}
-        证据 {evidence.length}
+        {fill(t('Evidence {count}'), { count: evidence.length })}
       </Button>
     </div>
     {expanded ? (evidence.length === 0
-      ? <p className="mt-1 pl-1 text-xs text-muted-foreground">该执行暂无证据。</p>
-      : <ul aria-label="证据列表" className="mt-1 border-l pl-3">{evidence.map((item) => <EvidenceRow key={item.id} item={item} />)}</ul>) : null}
+      ? <p className="mt-1 pl-1 text-xs text-muted-foreground">{t('No evidence for this execution.')}</p>
+      : <ul aria-label={t('Evidence list')} className="mt-1 border-l pl-3">{evidence.map((item) => <EvidenceRow key={item.id} item={item} />)}</ul>) : null}
   </div>
 }
 
 export function ControlPlaneTaskDetail({ taskId }: { taskId: string }) {
+  const { t } = useLocale()
   const detail = useQuery({ queryKey: ['personal-ai-os-control-plane-task', taskId], queryFn: () => readTaskDetail(taskId), refetchInterval: 10_000, retry: false })
   const plan = useQuery({ queryKey: ['personal-ai-os-control-plane-completion-plan', taskId], queryFn: () => readCompletionPlan(taskId), refetchInterval: 10_000, retry: false })
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -136,29 +143,29 @@ export function ControlPlaneTaskDetail({ taskId }: { taskId: string }) {
   const evidenceFor = (executionId: string) => allEvidence.filter((item) => item.executionId === executionId)
 
   return <div className="border-t bg-muted/20">
-    <section role="region" aria-label="Execution 列表" className="px-4 py-3">
-      <h3 className="text-xs font-semibold">Execution 列表 · 任务 {shortId(taskId)}</h3>
-      {detail.isPending ? <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />正在读取执行详情…</p>
-        : detail.isError ? <div className="mt-2 flex items-center gap-2 text-xs text-warning"><CircleAlertIcon className="size-3.5" aria-hidden="true" />控制面暂不可达，无法读取该任务的执行详情
-          <Button size="sm" variant="outline" className="ml-2" onClick={() => void detail.refetch()}><RefreshCwIcon className="mr-1 size-3.5" aria-hidden="true" />重试</Button></div>
-        : executions.length === 0 ? <p className="mt-2 text-xs text-muted-foreground">该任务暂无 Execution。</p>
+    <section role="region" aria-label={t('Execution list')} className="px-4 py-3">
+      <h3 className="text-xs font-semibold">{fill(t('Execution list · task {id}'), { id: shortId(taskId) })}</h3>
+      {detail.isPending ? <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />{t('Loading execution details…')}</p>
+        : detail.isError ? <div className="mt-2 flex items-center gap-2 text-xs text-warning"><CircleAlertIcon className="size-3.5" aria-hidden="true" />{t("The control-plane is unreachable; cannot read this task's execution details")}
+          <Button size="sm" variant="outline" className="ml-2" onClick={() => void detail.refetch()}><RefreshCwIcon className="mr-1 size-3.5" aria-hidden="true" />{t('Retry')}</Button></div>
+        : executions.length === 0 ? <p className="mt-2 text-xs text-muted-foreground">{t('No Execution for this task.')}</p>
         : <div className="mt-2">{executions.map((execution) => <ExecutionRow key={execution.id} execution={execution} evidence={evidenceFor(execution.id)} expanded={Boolean(expanded[execution.id])}
             onToggle={() => setExpanded((current) => ({ ...current, [execution.id]: !current[execution.id] }))} />)}</div>}
     </section>
 
-    <section role="region" aria-label="完成验收条件" className="border-t px-4 py-3">
-      <h3 className="flex items-center gap-2 text-xs font-semibold"><PackageCheckIcon className="size-3.5" aria-hidden="true" />完成验收条件</h3>
-      {plan.isPending ? <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />正在读取完成条件…</p>
-        : plan.isError ? <div className="mt-2 flex items-center gap-2 text-xs text-warning"><CircleAlertIcon className="size-3.5" aria-hidden="true" />完成条件暂不可达，无法判断该任务是否可以完成
-          <Button size="sm" variant="outline" className="ml-2" onClick={() => void plan.refetch()}><RefreshCwIcon className="mr-1 size-3.5" aria-hidden="true" />重试</Button></div>
-        : plan.data?.ready ? <p className="mt-2 text-xs text-success">满足固定验收条件：全部 Execution 已进入终态，存在 succeeded 的 root worker，且 artifactRef 与独立 review 证据齐备。完成操作需另行审批，本页不会触发。</p>
+    <section role="region" aria-label={t('Completion acceptance conditions')} className="border-t px-4 py-3">
+      <h3 className="flex items-center gap-2 text-xs font-semibold"><PackageCheckIcon className="size-3.5" aria-hidden="true" />{t('Completion acceptance conditions')}</h3>
+      {plan.isPending ? <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />{t('Loading completion conditions…')}</p>
+        : plan.isError ? <div className="mt-2 flex items-center gap-2 text-xs text-warning"><CircleAlertIcon className="size-3.5" aria-hidden="true" />{t('Completion conditions are unreachable; cannot tell whether this task can be completed')}
+          <Button size="sm" variant="outline" className="ml-2" onClick={() => void plan.refetch()}><RefreshCwIcon className="mr-1 size-3.5" aria-hidden="true" />{t('Retry')}</Button></div>
+        : plan.data?.ready ? <p className="mt-2 text-xs text-success">{t('The fixed acceptance conditions are met: every Execution has reached a terminal state, a succeeded root worker exists, and the artifactRef and independent review evidence are all present. Completing requires separate approval; this page will not trigger it.')}</p>
         : <div className="mt-2 text-xs">
-          <p className="text-muted-foreground">尚不满足完成条件：</p>
+          <p className="text-muted-foreground">{t('Completion conditions not met yet:')}</p>
           {(plan.data?.reasons ?? []).length === 0
-            ? <p className="mt-1 text-muted-foreground">控制面未给出具体原因，请查看该任务的执行记录。</p>
-            : <ul aria-label="未满足的完成条件" className="mt-1 list-disc space-y-0.5 pl-4">{(plan.data?.reasons ?? []).map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
+            ? <p className="mt-1 text-muted-foreground">{t("The control-plane gave no specific reason; check this task's execution records.")}</p>
+            : <ul aria-label={t('Unmet completion conditions')} className="mt-1 list-disc space-y-0.5 pl-4">{(plan.data?.reasons ?? []).map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
         </div>}
-      {plan.data?.parametersDigest ? <p className="mt-2 font-mono text-[10px] text-muted-foreground" title={plan.data.parametersDigest}>参数摘要 {truncate(plan.data.parametersDigest, 32)}</p> : null}
+      {plan.data?.parametersDigest ? <p className="mt-2 font-mono text-[10px] text-muted-foreground" title={plan.data.parametersDigest}>{fill(t('Parameter digest {digest}'), { digest: truncate(plan.data.parametersDigest, 32) })}</p> : null}
     </section>
   </div>
 }

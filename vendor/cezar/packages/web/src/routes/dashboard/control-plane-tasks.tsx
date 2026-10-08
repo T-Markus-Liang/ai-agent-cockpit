@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ActivityIcon, CircleAlertIcon, LoaderCircleIcon } from 'lucide-react'
 import { useState } from 'react'
 import { Card } from '@/components/ui/card'
-import { useLocale } from '@/components/locale-provider'
+import { fill, useLocale } from '@/components/locale-provider'
 import { ControlPlaneTaskDetail } from './control-plane-executions'
 
 type Task = { id: string; goal: string; status: string; updatedAt: string; executionIds?: string[] }
@@ -14,9 +14,11 @@ async function readTasks(): Promise<TasksResponse> {
   return response.json() as Promise<TasksResponse>
 }
 
+// ENGLISH source strings, translated at render via `t` — an unknown status falls through to its
+// raw value (control-plane statuses are a closed enum, but the card never invents a label).
 const STATUS_LABELS: Record<string, string> = {
-  draft: '草稿', planned: '已规划', queued: '排队中', running: '执行中', verifying: '验证中',
-  reviewing: 'Review 中', ready: '待交付', blocked: '已阻塞', failed: '失败', cancelled: '已取消', completed: '已完成',
+  draft: 'Draft', planned: 'Planned', queued: 'Queued', running: 'Running', verifying: 'Verifying',
+  reviewing: 'In review', ready: 'Ready to deliver', blocked: 'Blocked', failed: 'Failed', cancelled: 'Cancelled', completed: 'Completed',
 }
 
 export function ControlPlaneTasks() {
@@ -26,15 +28,15 @@ export function ControlPlaneTasks() {
   const tasks = query.data?.tasks ?? []
   return <Card data-dashboard-module="control-plane-tasks" className="gap-0 overflow-hidden py-0">
     <div className="flex items-center justify-between border-b px-4 py-3">
-      <div><h2 className="flex items-center gap-2 text-sm font-semibold"><ActivityIcon className="size-4" />{t('控制面任务')}</h2><p className="text-xs text-muted-foreground">{t('Personal AI OS Task / Execution 状态')}</p></div>
-      <span className="text-xs text-muted-foreground">{tasks.length} 个</span>
+      <div><h2 className="flex items-center gap-2 text-sm font-semibold"><ActivityIcon className="size-4" aria-hidden="true" />{t('Control-plane tasks')}</h2><p className="text-xs text-muted-foreground">{t('Personal AI OS Task / Execution state')}</p></div>
+      <span className="text-xs text-muted-foreground">{fill(t('{count} items'), { count: tasks.length })}</span>
     </div>
-    {query.isPending ? <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" />{t('正在读取控制面…')}</div> : query.isError ? <div className="flex items-center gap-2 p-4 text-xs text-warning"><CircleAlertIcon className="size-3.5" />{t('控制面暂不可用；不会影响 Cezar 原生任务')}</div> : tasks.length === 0 ? <p className="p-4 text-xs text-muted-foreground">{t('暂无控制面任务')}</p> : <div className="divide-y">{tasks.slice(0, 5).map((task) => {
+    {query.isPending ? <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />{t('Reading control-plane…')}</div> : query.isError ? <div className="flex items-center gap-2 p-4 text-xs text-warning"><CircleAlertIcon className="size-3.5" aria-hidden="true" />{t("The control-plane is unavailable; Cezar's native tasks are unaffected")}</div> : tasks.length === 0 ? <p className="p-4 text-xs text-muted-foreground">{t('No control-plane tasks')}</p> : <div className="divide-y">{tasks.slice(0, 5).map((task) => {
       const selected = task.id === selectedId
       return <div key={task.id}>
-        <button type="button" className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none" aria-expanded={selected} aria-label={`${selected ? '收起' : '展开'}任务 ${task.id} 的执行详情`} onClick={() => setSelectedId(selected ? null : task.id)}>
-          <div className="min-w-0"><p className="truncate text-sm">{task.goal}</p><p className="mt-1 font-mono text-[10px] text-muted-foreground">{task.id} · {task.executionIds?.length ?? 0} 次执行</p></div>
-          <span className="shrink-0 text-xs text-muted-foreground">{STATUS_LABELS[task.status] ?? task.status}</span>
+        <button type="button" className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none" aria-expanded={selected} aria-label={fill(t(selected ? 'Hide execution details for task {id}' : 'Show execution details for task {id}'), { id: task.id })} onClick={() => setSelectedId(selected ? null : task.id)}>
+          <div className="min-w-0"><p className="truncate text-sm">{task.goal}</p><p className="mt-1 font-mono text-[10px] text-muted-foreground">{task.id} · {fill(t('{count} executions'), { count: task.executionIds?.length ?? 0 })}</p></div>
+          <span className="shrink-0 text-xs text-muted-foreground">{t(STATUS_LABELS[task.status] ?? task.status)}</span>
         </button>
         {selected ? <ControlPlaneTaskDetail taskId={task.id} /> : null}
       </div>
