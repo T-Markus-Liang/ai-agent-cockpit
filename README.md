@@ -1,11 +1,22 @@
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/logo-dark.svg">
+  <img src="docs/img/logo-light.svg" width="110" alt="Personal AI OS logo">
+</picture>
+
 # Personal AI OS
+
+macOS 本机 AI 调度控制面：可审计的执行与证据闭环。
 
 ![版本](https://img.shields.io/badge/version-0.2.2-blue)
 ![平台](https://img.shields.io/badge/platform-macOS-lightgrey)
 ![Node](https://img.shields.io/badge/node-24-brightgreen)
-![发布](https://img.shields.io/badge/release-private-red)
+![仓库](https://img.shields.io/badge/repository-public-blue)
 
-macOS 本机 AI 调度控制面：可审计的执行与证据闭环。
+**[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html)** · **[执行记录](EXECUTION.md)** · **[0.3.0 计划](docs/plans/0.3.0-execution.md)** · **[上游与致谢](#上游与致谢)**
+
+</div>
 
 ## 简介
 
@@ -28,12 +39,42 @@ Personal AI OS 的回答是：不迁移、不复制任何 App 的历史，而是
 
 ## 能力一览
 
-| | | |
-| --- | --- | --- |
-| **📋 一份 Task 账本** | **🧠 一份共享记忆** | **🔍 一次诚实的发现** |
-| 派单、状态、证据、审批全部落盘可审计 | 微信与 Chief 共用 Mem0 检索事实，换 fallback 不换命名空间 | 只读索引各 Agent 会话元数据；恢复只给未验证计划 |
-| **✅ 一道完成门槛** | **📱 一个微信入口** | **🧩 一组可插拔 Worker** |
-| 测试证据、独立复核、精确审批缺一不可 | 手机派任务、查进度、批审批；断线自动巡检补发 | Cezar、Codex、OpenCode、Kimi CLI 经统一适配器接入 |
+<table>
+<tr>
+<td width="33%" valign="top">
+
+**📋 一份 Task 账本** — 派单、状态、证据、审批全部落盘可审计。
+
+</td>
+<td width="33%" valign="top">
+
+**🧠 一份共享记忆** — 微信与 Chief 共用 Mem0 检索事实，换 fallback 不换命名空间。
+
+</td>
+<td width="33%" valign="top">
+
+**🔍 一次诚实的发现** — 只读索引各 Agent 会话元数据；恢复只给未验证计划。
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**✅ 一道完成门槛** — 测试证据、独立复核、精确审批缺一不可。
+
+</td>
+<td valign="top">
+
+**📱 一个微信入口** — 手机派任务、查进度、批审批；断线自动巡检补发。
+
+</td>
+<td valign="top">
+
+**🧩 一组可插拔 Worker** — Cezar、Codex、OpenCode、Kimi CLI 经统一适配器接入。
+
+</td>
+</tr>
+</table>
 
 ## 方法论来源
 
@@ -199,21 +240,6 @@ curl -fsS http://127.0.0.1:4324/health
 
 微信入口的协议交互与 macOS 基本无关：收发都走腾讯 iLink 云端 Bot API（纯 HTTPS，代码内无 AppleScript、无辅助功能、无本地客户端依赖），macOS 依赖仅存在于部署层（launchd 托管、caffeinate 保活）。下一个候选平台是 Linux（systemd 替换最直接），Windows 可能经 WSL2，均无时间表。
 
-## 通讯平台接入
-
-桥接层按"通用管线 + 应用专属 I/O"组织：inbound 回执、恢复巡检、reply-outbox 补发、每轮记忆注入为通用管线；具体 App 的消息读写为 I/O 层。新平台 = 复用管线 + 新 I/O 适配器。
-
-| 平台 | 状态 | 接入路径 |
-| --- | --- | --- |
-| 微信 | 已验证 | iLink 云 Bot API 长轮询收发；回执落盘、outbox 补发、共享记忆 |
-| 飞书 | 设计可接入，未开始 | 开放平台事件订阅 + 发送 API；管线可复用，需新 I/O 层 |
-| Telegram | 设计可接入，未开始 | Bot API，技术上最简单的候选 |
-| WhatsApp | 未开始 | 需 Business API 或 bridge 方案 |
-| 钉钉 / Slack / Discord | 未开始 | 同一模板：复用管线 + I/O 适配器 |
-| 手机网页 | 研究在途 | Paseo 调查（[docs/research/](docs/research/paseo-2026-10-07.md)），候选跨平台入口 |
-
-通用管线可直接复用，但尚未抽象出平台无关的 transport 接口（当前与微信消息类型耦合）；第二个连接器尚未落地，模板化成本未实测。
-
 ## 目录结构
 
 ```text
@@ -241,7 +267,7 @@ docs/                releases 版本说明、plans 计划、decisions、research
 
 ### 共享记忆（Mem0 OSS）
 
-每轮实际派发前统一注入人格规则、近期对话、较早的有损摘录和 Mem0 检索到的相关事实，切换 fallback 不更换记忆命名空间。完整对话正文追加到私有 `conversation-archive/*.jsonl`。存储与 embedding 本地运行（Qdrant + SQLite + 384 维多语言模型），目录位于 `~/.local/state/personal-ai-os/mem0/`；**事实提炼走现有 Kimi API，不是全离线**。质量闸门先屏蔽常见 token 格式，再把原文句子交给本地 `jev-eval` 判断资格与完整性，不生成式改写。交付语义是 at-least-once，不保证断电窗口 exactly-once；永久拒绝的记录保留在私有 `rejectedOutbox`。安装与运维见 [记忆服务文档](services/memory/README.md)。
+每轮实际派发前统一注入人格规则、近期对话、较早的有损摘录和Mem0相关事实，切换fallback不更换记忆命名空间；完整正文追加到私有`conversation-archive/*.jsonl`。存储/embedding本地运行（Qdrant + SQLite + 384维多语言模型），位于`~/.local/state/personal-ai-os/mem0/`。历史基线使用Kimi生成式提炼且出现事实缺失；升级源码改用本机`jev-eval` wrapper调用**远程Jev**选择和验证完整原文句子，Mem0以infer=False存储，不生成式改写，也不是全离线。来源/软忘记已有隔离证据，更正/擦除/原生上下文重置与正式部署仍未验收，见[阶段台账](docs/plans/0.3.0-status.md)。交付语义是at-least-once，不保证断电exactly-once；永久拒绝记录留在私有`rejectedOutbox`。运维见[记忆服务文档](services/memory/README.md)。
 
 ### 持续目标（goals 4326）
 
@@ -249,15 +275,36 @@ docs/                releases 版本说明、plans 计划、decisions、research
 
 ## Agent 接入现状
 
+通讯平台是“用户入口”，下表的CLI/App是“执行Worker”，两者不共用“已连接”含义。最新阶段状态见[四类状态台账](docs/plans/0.3.0-status.md)。
+
 | Agent | 会话元数据 | 原生恢复提示 | 目前限制 |
 | --- | --- | --- | --- |
-| Codex | SQLite + 显式 ACP `session/list` 只读索引 | ACP `session/load` / `session/resume` 已被 capability probe 证实存在 | 未执行恢复、prompt 或工具调用 |
+| Codex | SQLite + 显式ACP `session/list`只读索引 | load/resume能力已探测；历史一次选定session/load probe成功 | 不等于真实prompt/多Worker闭环；用户旧会话仍须精确范围 |
+| Codex App | Feature Map独立来源，当前unknown | 与Codex CLI分开核对 | App占用、准确旧会话与GUI恢复未单独验收 |
 | OpenCode | SQLite + ACP `session/list` 只读索引 | ACP load/resume capability 已实测 | 未执行 load、prompt 或消息读取 |
 | Kimi CLI | `session_index.jsonl` + ACP `session/list` | ACP load/resume capability 已实测 | 新建隔离 ACP 会话的真实 prompt/记忆召回已通过；用户旧会话恢复仍未验收 |
 | WorkBuddy | 已发现 App/`codebuddy --acp`，ACP initialize 成功 | 声明 loadSession/MCP，但未声明 session/list | 旧会话不能由控制面猜测或静默创建 |
 | Devin | App/ACP `session/list` 已实测 | 声明 loadSession，未声明 resume | 真实 prompt、认证、load 和云端能力仍待验证 |
 | Claude Code | 已发现本地入口 | 原生 session 机制 | 本版本不读取 `~/.claude` 历史 |
 | Antigravity | 已发现 App/本机反代 | GUI-only / proxy | 没有稳定的本地旧会话索引 |
+| DeepSeek Harness App | Feature Map独立来源，当前unknown | 尚无已验收的原生恢复通道 | 模型provider成功不能当作Harness App或旧对话已接通 |
+
+## 社交与工作平台兼容性
+
+当前只用微信接入、开发和验证。其他平台可以复用微信的持久收件/补发、身份、记忆、运行与验收规则，但需要各自的认证和消息适配；“平台有SDK”不等于本项目已支持。
+
+| 平台 | 当前项目状态 | 接入方向 / 边界 |
+| --- | --- | --- |
+| 微信（现有wechat-acp通道） | 已接入0.2.2，本轮connected | 二维码绑定、文字与服务器语音转写；新Pi后台联动待做 |
+| 飞书 / Lark | 未接入，优先候选 | 官方SDK长连接bot；应用/租户授权与审批回调需单独验证 |
+| WhatsApp | 未接入，候选 | 优先官方Business Cloud API/webhook；不默认接管个人客户端 |
+| Telegram | 未接入，候选 | 官方Bot API长轮询或webhook；身份/游标/媒体逐项验 |
+| Slack | 未接入，候选 | 官方bot/Socket Mode；不是只有单向通知webhook |
+| Discord / 钉钉 / 企业微信 / Teams / LINE | 未接入，待专项调研 | 官方bot/应用候选；权限、收件与投递规则各自核对 |
+| Signal / iMessage / QQ等个人客户端 | 未接入，暂不承诺默认支持 | 先确认可靠接口与账号边界，不把GUI外挂当稳定兼容 |
+| 手机网页 | 未接入，研究在途 | Paseo 调查（[docs/research/](docs/research/paseo-2026-10-07.md)），候选跨平台入口 |
+
+完整列表、官方依据、薄ChannelPort模板草案和验收要求见[通讯平台兼容与接入模板](docs/plans/channel-compatibility.md)。模板尚未编码，其他平台本轮未安装/登录/测试；后续扩展不为每个平台复制一套Chief或调度器，也不自动扩大0.3.0发布范围。桥的通用管线（收件、补发、记忆注入）可直接复用，但尚未抽象出平台无关的 transport 接口（当前与微信消息类型耦合）；第二个连接器尚未落地，模板化成本未实测。
 
 ## 安全与隐私边界
 
@@ -302,6 +349,8 @@ docs/                releases 版本说明、plans 计划、decisions、research
 | [0.2.0](docs/releases/0.2.0.md) · [0.2.1](docs/releases/0.2.1.md) · [0.2.2](docs/releases/0.2.2.md) | 三个版本的机制、验证与边界 |
 | [0.3.0 升级方案](docs/plans/0.3.0-upgrade.md) · [执行计划](docs/plans/0.3.0-execution.md) · [验收矩阵](docs/plans/0.3.0-validation.md) · [裁剪清单](docs/plans/0.3.0-pruning.md) · [可视化概览](docs/plans/0.3.0-overview.html) | 0.3.0 边界、实施与退出条件 |
 | [运行时决策](docs/decisions/runtime-0.3.0.md) | P0/P1/P2 证据与决定 |
+| [阶段台账](docs/plans/0.3.0-status.md) · [四类状态可视化](docs/plans/0.3.0-overview.html) | 已完成、正在推进、待办、待测试验证；名称/现场与证据日期 |
+| [通讯平台兼容表](docs/plans/channel-compatibility.md) | 微信已接入、其他平台候选；复用模板与平台差异 |
 | [Paseo 源码调查](docs/research/paseo-2026-10-07.md) · [可视化](docs/research/paseo-2026-10-07.html) | 手机端、外部 CLI、权限边界；尚未部署 |
 | [执行文档](EXECUTION.md) | 每个阶段的实际状态、验证命令、证据边界与未完成项 |
 | [架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) | 产品边界、Task/Session/Execution 模型与路线图 |
@@ -309,8 +358,10 @@ docs/                releases 版本说明、plans 计划、decisions、research
 
 ## 路线图
 
-当前在 0.3.0：P0–P2 隔离实现进行中（已写但**未提交**），G0/G1/G2 发布门槛尚未全部通过，P3–P7 待执行，P6c 强制裁剪尚未达到物理删除标准。运行时基础、权限/身份/锁及无工具 Kimi 探测已通过，但完整 Goal 委派/OS 权限、后台生命周期、记忆生命周期、迁移回退仍待验收；现役运行版本未切换，严格身份与 broker 尚未接管微信。命名统一随发布切换执行：Git 仓库已改名为 personal-ai-os，本地目录、launchd 标签、状态目录与微信实例名的迁移清单见[命名统一决策](docs/decisions/rename-personal-ai-os.md)。详见 [0.3.0 执行计划](docs/plans/0.3.0-execution.md)。
+当前生产为0.2.2 / legacy；0.3.0的P0–P2正在推进，已有记忆质量/软忘记、基本运行适配、受控查询/排队/规划、权限/Goal broker、SDK重放及Kimi只读工具证据，但后台所有权、正式provider/fallback、legacy与微信/Outbox接线仍未完成。P3–P7和强制P6c待实施，完整G0–G6未通过。源码与隔离证据不等于上线，204项自动化不等于52项发布场景全部通过。
+
+当前工作按[阶段台账](docs/plans/0.3.0-status.md)的已完成D、正在推进I、待办B、待验证T维护；依赖、门槛和失败退出见[执行计划](docs/plans/0.3.0-execution.md)。GitHub仓库已改名并公开为personal-ai-os；本地路径/标签/状态/微信实例的命名批次2仍待已验证切换窗口，详见[命名决策](docs/decisions/rename-personal-ai-os.md)。
 
 ## 许可证
 
-当前为私有个人项目，未附加开源许可证；在未获许可前保留所有权利。
+GitHub仓库目前公开；自有代码尚未选择项目级开源许可证。公开状态与许可证选择分开，后者列入发布待办；vendor和第三方组件保留各自许可证与版权说明，本轮未新增或变更许可证。
