@@ -9,16 +9,21 @@ import { GoalStore, GoalError } from '../control-plane/goal-store.mjs'
 import { ControlPlaneStore } from '../control-plane/store.mjs'
 import { GoalRuntime } from '../control-plane/goal-runtime.mjs'
 import { prepareWorkspace } from '../control-plane/goal-workspace.mjs'
+import { createLiveRequestAuthority, AuthorityError } from '../control-plane/request-authority.mjs'
 
 const ORIGINS = new Set(['http://127.0.0.1:4321', 'http://localhost:4321'])
 export async function createGoalServer({ stateDir, goals = new GoalStore({ stateDir }), tasks, runtime, wechatStateFile = path.join(os.homedir(), '.wechat-acp/instances/cezar-codex/state.json') } = {}) {
   const root = goals.stateDir
   await fs.mkdir(root, { recursive: true, mode: 0o700 }); await fs.chmod(root, 0o700)
-  const tokenFile = path.join(root, 'api-token')
-  await fs.writeFile(tokenFile, crypto.randomBytes(32).toString('base64url'), { flag: 'wx', mode: 0o600 }).catch(error => { if (error.code !== 'EEXIST') throw error })
-  await fs.chmod(tokenFile, 0o600)
-  const token = (await fs.readFile(tokenFile, 'utf8')).trim()
-  if (!token) throw new Error('goal API token is empty')
+  // Per-client principal authentication (0.3.0 M02 / goals wave 1.6). The
+  // authority document is produced out-of-band by identity-pairing's
+  // exportPrincipals() and written atomically via writeAuthorityFile(); this
+  // service only consumes it. It is revalidated on every request, so token
+  // rotation, revocation and expiry take effect without a restart. A missing or
+  // invalid configuration fails closed (AUTH_CONFIGURATION 500) rather than
+  // falling back to any shared token.
+  const authFile = process.env.GOALS_AUTH_FILE ?? path.join(root, 'authority.json')
+  const authority = createLiveRequestAuthority({ file: authFile, required: true })
   const ownerFile = path.join(root, 'wechat-owner')
   let owner = await fs.readFile(ownerFile, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error })
   if (!owner) {
@@ -57,9 +62,13 @@ export async function createGoalServer({ stateDir, goals = new GoalStore({ state
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
         throw new GoalError('BOOTSTRAP_RETIRED', 'bootstrap endpoint is retired', 410)
       }
-      const supplied = req.headers.authorization ?? ''
-      const expected = `Bearer ${token}`
-      if (Buffer.byteLength(supplied) !== Buffer.byteLength(expected) || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) throw new GoalError('AUTH_REQUIRED', 'goal API authentication required', 401)
+      let principal
+      try { principal = authority.authenticate(req.headers) }
+      catch (error) {
+        if (error instanceof AuthorityError) throw new GoalError(error.code, error.status === 401 ? 'goal API authentication required' : 'goal API authority configuration is invalid', error.status)
+        throw error
+      }
+      if (principal?.authenticated !== true) throw new GoalError('AUTH_REQUIRED', 'goal API authentication required', 401)
       const actor = req.headers['x-goal-actor'] ?? 'local'
       if (actor !== 'local' && (!owner || actor !== owner)) throw new GoalError('OWNER_REQUIRED', 'only the bound WeChat owner may manage goals', 403)
       if (req.method === 'GET' && url.pathname === '/api/goals') return respond(res, 200, { goals: await goals.list(), paused: await goals.isPaused(), version: '0.2.2' }, origin)
@@ -102,7 +111,7 @@ export async function createGoalServer({ stateDir, goals = new GoalStore({ state
       return respond(res, 200, { goal }, origin)
     } catch (error) { respond(res, error.status ?? 500, { error: error.code ?? 'GOAL_ERROR', message: error instanceof GoalError ? error.message : '目标操作失败，请检查本机范围或服务状态' }, origin) }
   })
-  return { server, goals, engine, tokenFile, start: () => engine.start(), stop: () => engine.stop() }
+  return { server, goals, engine, authFile, start: () => engine.start(), stop: () => engine.stop() }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

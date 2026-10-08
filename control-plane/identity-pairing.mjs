@@ -26,6 +26,12 @@ const CODE_BYTES = 24; // 24 random bytes -> 32 char base64url pairing code
 const TOKEN_BYTES = 32; // 32 random bytes -> 43 char base64url bearer token
 const PRINCIPAL_ID_BYTES = 8; // 8 random bytes -> 16 hex chars after `p_`
 
+// control-plane/request-authority.mjs refuses a configuration document with
+// more than 16 principals. exportPrincipals() refuses to exceed that ceiling
+// (PairingError `export-overflow`) rather than silently truncating or dropping
+// entries. Pruning revoked records to stay under the ceiling is a later item.
+const EXPORT_MAX_PRINCIPALS = 16;
+
 const HEX = /^[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9:_-]{1,200}$/;
 
@@ -185,17 +191,27 @@ export function createPairingAuthority({ now = Date.now, random = crypto.randomB
     },
 
     // Configuration document consumed verbatim by
-    // control-plane/request-authority.mjs (loadRequestAuthority). Active
-    // principals only; shape is exactly { version: 1, principals: [...] }.
+    // control-plane/request-authority.mjs (createRequestAuthority /
+    // createLiveRequestAuthority). Carries the M02 ID-E001 lifecycle fields so
+    // a consumer inherits expiry and revocation instead of a static snapshot:
+    //   - active principals   -> { id, role, tokenDigest, expiresAt }
+    //   - revoked principals  -> { id, role, tokenDigest, expiresAt, revoked: true }
+    //     (revoked records are retained as revocation evidence, never dropped)
+    //   - expired-but-not-revoked principals are omitted (no longer active)
+    // request-authority caps a document at 16 principals; exceeding it is an
+    // honest `export-overflow` refusal, not a silent truncation. The returned
+    // document and every entry are frozen. Never any plaintext secret.
     exportPrincipals() {
-      return {
-        version: 1,
-        principals: [...principals.values()].filter(isActive).map(principal => ({
-          id: principal.id,
-          role: principal.role,
-          tokenDigest: principal.tokenDigest,
-        })),
-      };
+      const exported = [];
+      for (const principal of principals.values()) {
+        if (principal.revoked) {
+          exported.push({ id: principal.id, role: principal.role, tokenDigest: principal.tokenDigest, expiresAt: principal.expiresAt, revoked: true });
+        } else if (isActive(principal)) {
+          exported.push({ id: principal.id, role: principal.role, tokenDigest: principal.tokenDigest, expiresAt: principal.expiresAt });
+        }
+      }
+      if (exported.length > EXPORT_MAX_PRINCIPALS) throw new PairingError('export-overflow');
+      return Object.freeze({ version: 1, principals: Object.freeze(exported.map(entry => Object.freeze(entry))) });
     },
   };
 }

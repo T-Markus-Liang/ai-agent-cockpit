@@ -132,6 +132,40 @@ export function createLiveRequestAuthority({ file, required = false, clock = Dat
   });
 }
 
+// M02 goals-per-client-token wave (completes the D40 handoff gap "file
+// production side not wired"): produce the authority document that
+// createLiveRequestAuthority / loadRequestAuthority consume. The snapshot is
+// validated with createRequestAuthority first, so an invalid document is never
+// written. The write is atomic — a mode-0600 tmp file in the target directory,
+// then rename over the target — so a concurrent reader never observes a
+// half-written file (matching the live reload contract above). Used to feed
+// per-client principals exported by identity-pairing's exportPrincipals().
+export async function writeAuthorityFile(file, snapshot) {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) throw new AuthorityError('AUTH_CONFIGURATION', 500);
+  createRequestAuthority(snapshot); // structural validation; throws AUTH_CONFIGURATION before any write
+  const serialized = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized) > MAX_AUTHORITY_BYTES) throw new AuthorityError('AUTH_CONFIGURATION', 500);
+  const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  let handle;
+  try {
+    handle = await fs.open(tmp, 'wx', 0o600);
+    await handle.chmod(0o600);
+    await handle.writeFile(serialized);
+    await handle.sync();
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw error instanceof AuthorityError ? error : new AuthorityError('AUTH_CONFIGURATION', 500);
+  }
+  await handle.close();
+  try {
+    await fs.rename(tmp, file);
+  } catch (error) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw error instanceof AuthorityError ? error : new AuthorityError('AUTH_CONFIGURATION', 500);
+  }
+}
+
 export function authorizeHttpRequest(principal, method, pathname) {
   if (principal?.authenticated !== true || !ROLES.has(principal.role) || typeof principal.id !== 'string' || !ID.test(principal.id)) throw new AuthorityError('AUTH_REQUIRED', 401);
   if (method === 'GET') {

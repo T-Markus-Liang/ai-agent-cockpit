@@ -99,32 +99,45 @@ test('8: an expired principal stops authenticating', () => {
   assert.equal(authority.authenticate(token), undefined);
 });
 
-test('9: exportPrincipals emits only active principals in request-authority shape', () => {
+test('9: exportPrincipals emits active principals and retained revoked entries in request-authority shape', () => {
   const { authority, clock } = makeAuthority();
   const active = authority.completePairing(authority.beginPairing({ role: 'chief' }).pairingCode);
   const revoked = authority.completePairing(authority.beginPairing({ role: 'viewer' }).pairingCode);
   const expired = authority.completePairing(authority.beginPairing({ role: 'operator' }).pairingCode);
   authority.revoke(revoked.principalId);
-  clock.advance(PRINCIPAL_TTL_MS); // expires active + expired (revoked stays revoked)
+  clock.advance(PRINCIPAL_TTL_MS); // expires active + expired; revoked stays revoked
 
   const document = authority.exportPrincipals();
   assert.equal(document.version, 1);
   assert.deepEqual(Object.keys(document).sort(), ['principals', 'version']);
-  assert.equal(document.principals.length, 0);
-  for (const entry of document.principals) {
-    assert.deepEqual(Object.keys(entry).sort(), ['id', 'role', 'tokenDigest']);
-    assert.match(entry.tokenDigest, /^[a-f0-9]{64}$/);
-  }
+  assert.ok(Object.isFrozen(document) && Object.isFrozen(document.principals));
+  // active and expired-but-not-revoked are dropped; the revoked record is kept
+  // as evidence and carries revoked:true with its lifecycle expiresAt.
+  assert.equal(document.principals.length, 1);
+  const retained = document.principals[0];
+  assert.ok(Object.isFrozen(retained));
+  assert.deepEqual(Object.keys(retained).sort(), ['expiresAt', 'id', 'revoked', 'role', 'tokenDigest']);
+  assert.equal(retained.id, revoked.principalId);
+  assert.equal(retained.role, 'viewer');
+  assert.equal(retained.revoked, true);
+  assert.equal(typeof retained.expiresAt, 'number');
+  assert.match(retained.tokenDigest, /^[a-f0-9]{64}$/);
 
-  // A fresh authority with one live principal must be accepted verbatim.
+  // A fresh authority gains one live chief; active entries carry expiresAt and
+  // no revoked flag, and the consuming authority accepts it verbatim.
   const live = authority.completePairing(authority.beginPairing({ role: 'chief' }).pairingCode);
   const single = authority.exportPrincipals();
-  assert.equal(single.principals.length, 1);
-  assert.equal(single.principals[0].id, live.principalId);
-  assert.equal(single.principals[0].role, 'chief');
-  const requestAuthority = createRequestAuthority(single); // throws if the shape is wrong
+  assert.equal(single.principals.length, 2); // retained revoked + new active
+  const liveEntry = single.principals.find(entry => entry.id === live.principalId);
+  assert.deepEqual(Object.keys(liveEntry).sort(), ['expiresAt', 'id', 'role', 'tokenDigest']);
+  assert.equal(liveEntry.role, 'chief');
+  assert.equal(liveEntry.revoked, undefined);
+  const requestAuthority = createRequestAuthority(single, { clock: clock.now }); // throws if the shape is wrong
   assert.deepEqual(requestAuthority.authenticate({ authorization: `Bearer ${live.token}` }),
     { id: live.principalId, role: 'chief', authenticated: true });
+  // the retained revoked entry stays revoked for the consumer too
+  assert.throws(() => requestAuthority.authenticate({ authorization: `Bearer ${revoked.token}` }),
+    error => error.code === 'AUTH_REQUIRED');
 });
 
 test('10: a serialized snapshot round-trips authentication, roles, revocation and expiry', () => {
