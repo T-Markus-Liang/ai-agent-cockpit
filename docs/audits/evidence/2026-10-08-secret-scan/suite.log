@@ -1,0 +1,12 @@
+npm test -- packages/cezar/src/core/secret-redaction.test.ts packages/cezar/src/core/agent-env.test.ts packages/cezar/src/runs/run-secrets.test.ts packages/cezar/src/runs/store.test.ts
+RUN v4.1.10 /Users/markus/ai-agent-cockpit/vendor/cezar
+Test Files 4 passed (4)
+Tests 188 passed (188)
+Start at 18:08:13
+Duration 433ms
+Exit 0
+
+npm run typecheck:server
+npm run typecheck -w @open-mercato/cezar
+tsc --noEmit -p tsconfig.test.json
+Exit 0
