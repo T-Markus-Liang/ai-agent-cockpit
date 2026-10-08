@@ -51,7 +51,7 @@ import {
   updatePersistedSession,
 } from "./storage/state.js";
 import { ConversationMemoryStore } from "./storage/memory.js";
-import { MessageInbox, type MessageInboxStatus } from './storage/message-inbox.js';
+import { MessageInbox, type MessageInboxStatus, type MessageInboxRecord } from './storage/message-inbox.js';
 import { ReplyOutbox } from './storage/reply-outbox.js';
 import { RecoveryLease } from './storage/recovery-lease.js';
 import { SubmissionRegistry, computePayloadDigest } from './storage/submission-registry.js';
@@ -568,7 +568,9 @@ export class WeChatAcpBridge {
     if (textItem && /^\/消息(?:\s|$)/.test(textItem)) {
       const records = (await this.messageInbox?.list() ?? []).filter(record => record.message.from_user_id === userId);
       const labels: Record<string, string> = { received: '已保存', queued: '排队', retry_wait: '等待自动重试', running: '处理中', background: '后台执行中', uncertain: '中断/待核对', done: '对话已结束', reply_pending: '对话已结束/回复待补发', buffered: '缓冲', cancelled: '已取消', failed: '未能处理/待核对' };
-      const latest = records.slice(-5).map(record => `${new Date(record.receivedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}：${labels[record.status] ?? record.status}`);
+      const displayed = records.slice(-5);
+      const reviewing = await this.resolveReviewingReceiptIds(displayed);
+      const latest = displayed.map(record => `${new Date(record.receivedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}：${labels[record.status] ?? record.status}${reviewing.has(record.id) ? '，任务验收中' : ''}`);
       const outgoing = await this.replyOutbox?.list({ userId, statuses: ['pending', 'sending', 'blocked'] }) ?? [];
       const blocked = outgoing.filter(row => row.status === 'blocked').length;
       await this.sendReply(userId, contextToken, (latest.length ? latest.join('\n') : '暂时还没有新的可靠收件记录。') + (outgoing.length ? `\n待补发文本 ${outgoing.length} 段${blocked ? `，其中 ${blocked} 段已到重试上限；发 /acp-more 可重试补发` : '，会自动补发'}` : ''));
@@ -939,6 +941,38 @@ export class WeChatAcpBridge {
         text: `中断后的关联任务已有完成、测试和复核记录，我不再重复执行，现补发结果：\n${matching.map(task => task.goal.slice(0, 600)).join('\n')}` });
       return true;
     } catch { return false; }
+  }
+
+  /**
+   * Display-layer derivation for /消息: which of the shown receipts have a linked
+   * control-plane task currently in 验收 (verifying/reviewing). Purely derived —
+   * no receipt schema or status is persisted, and a query failure/timeout or a
+   * non-loopback control plane silently yields no extra label (never fabricated).
+   * Mirrors reconcileLinkedTask's loopback-only + bounded-timeout + fail-closed
+   * query pattern. At most 5 deduplicated sourceRequestId queries per render.
+   */
+  private async resolveReviewingReceiptIds(records: MessageInboxRecord[]): Promise<Set<string>> {
+    const reviewing = new Set<string>();
+    if (!this.config.controlPlaneUrl || !records.length) return reviewing;
+    let base: URL;
+    try { base = new URL(this.config.controlPlaneUrl); } catch { return reviewing; }
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) return reviewing;
+    const bySource = new Map<string, string[]>();
+    for (const record of records) {
+      const sourceRequestId = record.execution?.groupIds?.[0] ?? record.id;
+      const ids = bySource.get(sourceRequestId) ?? []; ids.push(record.id); bySource.set(sourceRequestId, ids);
+    }
+    await Promise.all([...bySource.entries()].slice(0, 5).map(async ([sourceRequestId, receiptIds]) => {
+      try {
+        const query = new URL('/api/control-plane/tasks', base); query.searchParams.set('sourceRequestId', sourceRequestId); query.searchParams.set('limit', '50');
+        const response = await fetch(query, { signal: AbortSignal.timeout(3000) });
+        if (!response.ok) return;
+        const body = await response.json() as { tasks?: Array<{ sourceRequestId?: string; status: string }> };
+        const matching = body.tasks?.filter(task => task.sourceRequestId === sourceRequestId) ?? [];
+        if (matching.some(task => task.status === 'verifying' || task.status === 'reviewing')) for (const id of receiptIds) reviewing.add(id);
+      } catch { /* Unreachable/slow/malformed control plane: keep original labels. */ }
+    }));
+    return reviewing;
   }
 
   private flushReplyOutbox(userId: string, force = false): Promise<void> {
