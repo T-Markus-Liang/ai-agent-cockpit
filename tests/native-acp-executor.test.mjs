@@ -17,6 +17,8 @@ import {
   NATIVE_ACP_CLIENT_TOOL_DENIED,
   NATIVE_ACP_CLIENT_TOOL_UNSUPPORTED,
   NATIVE_CANCEL_GRACE_MS,
+  REVIEWER_READONLY_APPLIED,
+  applyReviewerReadonlyConstraint,
   cancelNativeExecution,
   executeNativeSessionPrompt,
   nativeAcpChildEnv,
@@ -239,11 +241,11 @@ test('a synthetic prompt completes through the real Seatbelt wrapper (no spy inj
 // Build a fresh store with one queued execution and one approval bound to the
 // plan for the canonical synthetic prompt. Overrides let a case pre-decide the
 // approval differently or extend the plan (e.g. a different cwd).
-async function launchFixture({ decision = 'approved', expiresAt, promptCwd = '/tmp', planCwd = '/tmp', sessionRefId = 'session:fake:native-1', executionSessionRefId = sessionRefId } = {}) {
+async function launchFixture({ decision = 'approved', expiresAt, promptCwd = '/tmp', planCwd = '/tmp', sessionRefId = 'session:fake:native-1', executionSessionRefId = sessionRefId, role } = {}) {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-launch-'))
   const store = new ControlPlaneStore({ stateDir })
   const task = await store.createTask({ goal: 'launch intent guard' }, { idempotencyKey: 'li-task' })
-  const created = await store.createExecution(task.task.id, { workerId: 'fake:native', sessionRefId: executionSessionRefId }, { idempotencyKey: 'li-exec' })
+  const created = await store.createExecution(task.task.id, { workerId: 'fake:native', ...(role === undefined ? {} : { role }), sessionRefId: executionSessionRefId }, { idempotencyKey: 'li-exec' })
   const executionId = created.execution.id
   const plan = nativePromptPlan({ taskId: task.task.id, executionId, source: 'fake', nativeSessionId: 'native-1', sessionRefId, cwd: planCwd, prompt: '继续' })
   const approval = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest, ...(expiresAt ? { expiresAt } : {}) }, { idempotencyKey: 'li-approval' })
@@ -852,5 +854,84 @@ test('a cancel approval bound to one session cannot cancel another session', asy
     )
     assert.equal((await f.store.getExecution(f.executionId)).status, 'running', 'a wrong-session cancel leaves the execution untouched')
     assert.equal((await f.store.getApproval(approvalId)).usedAt, undefined, 'the wrong-session cancel approval is never consumed')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------------------
+// Reviewer read-only enforcement (P4 Wave3 step 8, gap 8)
+//
+// A reviewer execution must be able to READ the artifact under review but must
+// never rewrite it. When the execution's role is `reviewer` the native sandbox
+// spec's writeLiterals is FORCED empty — even when the caller explicitly granted
+// write paths — and the downgrade is reported in the run result and (for the
+// store-backed path) recorded as an auditable Evidence log line. Fully synthetic:
+// fake ACP agent, spy sandbox, scratch store dir; no real CLI, no network.
+// ---------------------------------------------------------------------------
+
+test('applyReviewerReadonlyConstraint strips writeLiterals only for a reviewer and never mutates the input', () => {
+  const spec = nativeAcpSandboxSpec({ command: '/bin/echo', cwd: '/synthetic/ws', grant: { readLiterals: ['/r.txt'], writeLiterals: ['/w.txt'], denyNetwork: true } })
+  const reviewer = applyReviewerReadonlyConstraint(spec, 'reviewer')
+  assert.deepEqual(reviewer.spec.writeLiterals, [], 'the reviewer write literals are forced empty')
+  assert.deepEqual(reviewer.spec.readLiterals, ['/r.txt'], 'read access is preserved (the reviewer must read the artifact)')
+  assert.equal(reviewer.spec.denyNetwork, true, 'the network policy is untouched')
+  assert.deepEqual(spec.writeLiterals, ['/w.txt'], 'the input spec is not mutated')
+  assert.equal(reviewer.readonly.applied, true)
+  assert.equal(reviewer.readonly.code, REVIEWER_READONLY_APPLIED)
+  assert.deepEqual(reviewer.readonly.strippedWriteLiterals, ['/w.txt'])
+  for (const role of [undefined, 'worker']) {
+    const out = applyReviewerReadonlyConstraint(spec, role)
+    assert.equal(out.spec, spec, 'a non-reviewer spec is passed through untouched')
+    assert.equal(out.readonly.applied, false)
+  }
+})
+
+test('a reviewer native prompt forces writeLiterals empty in the sandbox spec and reports the marker', async () => {
+  const { calls, sandbox } = makeSandbox()
+  const result = await runPrompt({
+    nativeSessionId: 'native-reviewer',
+    role: 'reviewer',
+    sandbox,
+    sandboxGrant: { readLiterals: ['/tmp/artifact.txt'], writeLiterals: ['/tmp/must-not-write.txt'], denyNetwork: true },
+  })
+  assert.equal(calls.length, 1, 'the sandbox port is invoked exactly once')
+  assert.deepEqual(calls[0].spec.writeLiterals, [], 'a caller write grant on a reviewer run is stripped at the sandbox port')
+  assert.deepEqual(calls[0].spec.readLiterals, ['/tmp/artifact.txt'], 'the reviewer keeps read access to the artifact')
+  assert.equal(calls[0].spec.denyNetwork, true, 'the network policy is unchanged')
+  assert.equal(result.reviewerReadonly.applied, true)
+  assert.equal(result.reviewerReadonly.code, REVIEWER_READONLY_APPLIED)
+  assert.deepEqual(result.reviewerReadonly.strippedWriteLiterals, ['/tmp/must-not-write.txt'])
+  assert.equal(result.stopReason, 'end_turn', 'the prompt still runs, just read-only')
+})
+
+test('a worker native prompt passes writeLiterals through unchanged', async () => {
+  const { calls, sandbox } = makeSandbox()
+  const result = await runPrompt({
+    nativeSessionId: 'native-worker',
+    sandbox,
+    sandboxGrant: { writeLiterals: ['/tmp/write.txt'] },
+  })
+  assert.deepEqual(calls[0].spec.writeLiterals, ['/tmp/write.txt'], 'a non-reviewer keeps its write grant verbatim')
+  assert.equal(result.reviewerReadonly.applied, false)
+})
+
+test('executeNativeSessionPrompt takes the role from the stored execution and records the read-only constraint', async () => {
+  const f = await launchFixture({ role: 'reviewer' })
+  try {
+    const { calls, sandbox } = makeSandbox()
+    const result = await executeNativeSessionPrompt({
+      store: f.store, ...f.input, approvalId: f.approvalId,
+      command: process.execPath, args: FAKE_OK, sandbox,
+      sandboxGrant: { readLiterals: ['/tmp/artifact.txt'], writeLiterals: ['/tmp/must-not-write.txt'] },
+      idempotencyKey: 'ro-reviewer',
+    })
+    assert.equal(calls.length, 1)
+    assert.deepEqual(calls[0].spec.writeLiterals, [], 'the stored reviewer role strips the write grant at the sandbox port')
+    assert.equal(result.execution.status, 'verifying')
+    assert.equal(result.reviewerReadonly.applied, true)
+    assert.equal(result.reviewerReadonly.code, REVIEWER_READONLY_APPLIED)
+    const evidence = (await f.store.getTask(f.taskId)).evidence
+    const log = evidence.find((item) => item.kind === 'log' && item.summary.includes(REVIEWER_READONLY_APPLIED))
+    assert.ok(log, 'the read-only downgrade is recorded as an auditable Evidence log line')
+    assert.match(log.summary, /must-not-write\.txt/)
   } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
 })

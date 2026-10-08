@@ -13,6 +13,13 @@ export const NATIVE_ACP_CLIENT_TOOL_DENIED = 'NATIVE_ACP_CLIENT_TOOL_DENIED'
 export const NATIVE_ACP_CLIENT_TOOL_UNSUPPORTED = 'NATIVE_ACP_CLIENT_TOOL_UNSUPPORTED'
 export const NATIVE_ACP_BROKER_ERROR = 'NATIVE_ACP_BROKER_ERROR'
 
+// Stable, machine-readable marker recording that a reviewer execution's sandbox
+// grant was forced to read-only. It is surfaced BOTH in the run result and (for
+// the store-backed path) as an Evidence log line, so the constraint is visible
+// and auditable rather than silently applied. Tests and logs key off the code,
+// never off a human message.
+export const REVIEWER_READONLY_APPLIED = 'REVIEWER_READONLY_APPLIED'
+
 // Grace window between asking an in-flight agent to stop (ACP `session/cancel`)
 // and escalating to SIGTERM. The agent gets this long to wind the prompt down
 // itself; anything slower is force-terminated. Exported so tests can assert the
@@ -117,6 +124,23 @@ export function nativeAcpSandboxSpec({ command, cwd, grant = {} } = {}) {
   }
 }
 
+// Reviewer read-only enforcement (P4 gap 8). A reviewer execution exists to READ
+// and judge an artifact, never to rewrite it, so its sandbox spec's writeLiterals
+// is FORCED empty — even when the caller's grant explicitly supplied write paths.
+// This is a deliberate forced downgrade WITH an audit trail, not a silent accept:
+// the stripped paths are reported back so the operator can see exactly what was
+// dropped. Read access (the artifact under review) and the network policy are
+// left untouched. A caller passing an explicit write grant to a reviewer is NOT
+// rejected — the run proceeds read-only and the downgrade is recorded.
+export function applyReviewerReadonlyConstraint(spec, role) {
+  if (role !== 'reviewer') return { spec, readonly: { code: REVIEWER_READONLY_APPLIED, applied: false } }
+  const strippedWriteLiterals = Array.isArray(spec?.writeLiterals) ? [...spec.writeLiterals] : []
+  return {
+    spec: { ...spec, writeLiterals: [] },
+    readonly: { code: REVIEWER_READONLY_APPLIED, applied: true, strippedWriteLiterals },
+  }
+}
+
 function waitForClose(child) {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
   return new Promise((resolve) => child.once('close', resolve))
@@ -141,7 +165,7 @@ export function nativePromptPlan({ taskId, executionId, source, nativeSessionId,
   return { action: 'native.session.prompt', target: `${source}/${nativeSessionId}`, parameters, parametersDigest: parametersDigest(parameters), requiresApproval: true }
 }
 
-export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionId, prompt, command, args, timeoutMs = 120_000, sandbox, sandboxGrant = {}, permissionBroker, executionId, cancelGraceMs } = {}) {
+export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionId, prompt, command, args, timeoutMs = 120_000, sandbox, sandboxGrant = {}, permissionBroker, executionId, cancelGraceMs, role } = {}) {
   if (!path.isAbsolute(cwd)) throw new StoreError('ABSOLUTE_CWD_REQUIRED', 'native ACP prompt requires an absolute cwd', 400)
   if (!nativeSessionId || !prompt?.trim()) throw new StoreError('NATIVE_PROMPT_REQUIRED', 'nativeSessionId and prompt are required', 400)
   const selected = command ? { command, args: args ?? [] } : nativeAcpCommand(source)
@@ -152,7 +176,11 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
   // passthrough spy. The spec's exec whitelist is derived from the selected
   // command, the workspace from cwd, and read/write/network from the grant.
   const wrap = sandbox ?? wrapWithSandbox
-  const spec = nativeAcpSandboxSpec({ command: selected.command, cwd, grant: sandboxGrant })
+  // The spec is derived from the selected command, cwd and grant, then passed
+  // through the reviewer read-only constraint: a reviewer run has writeLiterals
+  // forced empty (with the stripped paths reported in `reviewerReadonly`), while
+  // every other role passes the grant through unchanged.
+  const { spec, readonly } = applyReviewerReadonlyConstraint(nativeAcpSandboxSpec({ command: selected.command, cwd, grant: sandboxGrant }), role)
   const wrapped = wrap(selected.command, selected.args, spec)
   // The in-flight run is registered BEFORE the spawn (and deregistered in the
   // finally below), so a cancel that arrives while the prompt is live always
@@ -290,7 +318,7 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
     if (!agentCapabilities.loadSession) throw new StoreError('NATIVE_ACP_LOAD_UNSUPPORTED', `${source} did not advertise session/load`, 501)
     await request('session/load', { cwd, mcpServers: [], sessionId: nativeSessionId })
     const promptResult = await request('session/prompt', { sessionId: nativeSessionId, prompt: [{ type: 'text', text: prompt }] })
-    return { source, nativeSessionId, cwd, agentInfo: initialized?.agentInfo, agentCapabilities, stopReason: promptResult?.stopReason, text: textParts.join(''), notifications, brokerErrors }
+    return { source, nativeSessionId, cwd, agentInfo: initialized?.agentInfo, agentCapabilities, stopReason: promptResult?.stopReason, text: textParts.join(''), notifications, brokerErrors, reviewerReadonly: readonly }
   } finally {
     if (executionId) inFlightNativeExecutions.delete(executionId)
     cancelHandle.dispose()
@@ -329,6 +357,12 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
 // and the SESSION_LOCKED / SESSION_BUSY guards (keyed on execution.sessionRefId)
 // guard exactly the session this prompt is bound to. See
 // docs/handoffs/p4-plan-scope-sessionref-r1.md.
+//
+// Reviewer read-only (P4 gap 8): the role is read from the STORED execution and
+// passed to runNativeAcpPrompt, where a `reviewer` run has its sandbox
+// writeLiterals forced empty regardless of the grant. The downgrade is recorded
+// in the run result and as an Evidence log line — never silently accepted. See
+// docs/handoffs/p4-reviewer-readonly-r1.md.
 //
 // The engine ref is attached exactly ONCE (step 2); the previous post-spawn
 // second attach is intentionally dropped, so there is a single idempotency-
@@ -372,14 +406,25 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
     // is threaded through so the live run registers itself in the in-flight
     // registry and an operator cancel can reach the child process.
     launched = true
-    const result = await runNativeAcpPrompt({ source, nativeSessionId, cwd, prompt, command, args, sandbox, sandboxGrant, permissionBroker, executionId, cancelGraceMs })
+    const result = await runNativeAcpPrompt({ source, nativeSessionId, cwd, prompt, command, args, sandbox, sandboxGrant, permissionBroker, executionId, cancelGraceMs, role: execution.role })
+    // The role comes from the STORED execution (authoritative), never from the
+    // caller, so a reviewer can never launder away its read-only constraint by
+    // omitting an argument. When the constraint fired, record it once as a
+    // durable, auditable Evidence log line (the run result carries it too).
+    if (result.reviewerReadonly?.applied) {
+      const stripped = result.reviewerReadonly.strippedWriteLiterals ?? []
+      const summary = stripped.length > 0
+        ? `${REVIEWER_READONLY_APPLIED}: reviewer execution forced read-only; stripped caller-supplied writeLiterals [${stripped.join(', ')}]`
+        : `${REVIEWER_READONLY_APPLIED}: reviewer execution forced read-only; no writeLiterals were granted`
+      await store.addEvidence(executionId, { kind: 'log', summary, source: `${source}:acp`, redacted: true }, { idempotencyKey: step('readonly') })
+    }
     // A cancelled prompt is a terminal, honest outcome — never a completed one.
     // The operator cancel path (cancelNativeExecution) also marks the execution
     // cancelled; whichever writes first, the other is an idempotent no-op.
     if (result.stopReason === 'cancelled') {
       await store.addEvidence(executionId, { kind: 'message', summary: 'native ACP prompt was cancelled (stopReason=cancelled)', source: `${source}:acp`, redacted: true }, { idempotencyKey: step('evidence') })
       const cancelled = await store.updateExecutionStatus(executionId, { status: 'cancelled', outcome: 'native ACP prompt was cancelled through ACP session/cancel' }, { idempotencyKey: step('cancelled') })
-      return { execution: cancelled.execution, reply: result.text, stopReason: 'cancelled', cancelled: true, agentInfo: result.agentInfo }
+      return { execution: cancelled.execution, reply: result.text, stopReason: 'cancelled', cancelled: true, agentInfo: result.agentInfo, reviewerReadonly: result.reviewerReadonly }
     }
     const text = result.text ?? ''
     const summary = text.trim().length > 0
@@ -387,7 +432,7 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
       : `native ACP prompt returned no text (stopReason=${result.stopReason ?? 'unknown'})`
     await store.addEvidence(executionId, { kind: 'message', summary, source: `${source}:acp`, redacted: true }, { idempotencyKey: step('evidence') })
     const updated = await store.updateExecutionStatus(executionId, { status: 'verifying', outcome: `native ACP prompt completed (${result.stopReason ?? 'unknown'})` }, { idempotencyKey: step('verifying') })
-    return { execution: updated.execution, reply: result.text, stopReason: result.stopReason, agentInfo: result.agentInfo }
+    return { execution: updated.execution, reply: result.text, stopReason: result.stopReason, agentInfo: result.agentInfo, reviewerReadonly: result.reviewerReadonly }
   } catch (error) {
     // A cancel the agent ignored (the process was force-terminated) is recorded
     // honestly as cancelled, never as a generic failure and never as a success.

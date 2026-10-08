@@ -7,6 +7,6 @@ export async function createReviewerExecution({ store, taskId, sourceExecutionId
   const source = aggregate.executions.find((execution) => execution.id === sourceExecutionId)
   if (!source) throw new StoreError('EXECUTION_TASK_MISMATCH', `execution ${sourceExecutionId} is not attached to task ${taskId}`, 409)
   if (!['succeeded', 'verifying', 'reviewing'].includes(source.status)) throw new StoreError('SOURCE_NOT_REVIEWABLE', `execution is ${source.status}; review requires succeeded/verifying/reviewing`, 409)
-  const execution = await store.createExecution(taskId, { workerId: reviewerId, sessionRefId, parentExecutionId: sourceExecutionId, artifactRef: source.artifactRef }, { idempotencyKey })
+  const execution = await store.createExecution(taskId, { workerId: reviewerId, role: 'reviewer', sessionRefId, parentExecutionId: sourceExecutionId, artifactRef: source.artifactRef }, { idempotencyKey })
   return { ...execution, reviewOf: sourceExecutionId, independent: reviewerId !== source.workerId }
 }

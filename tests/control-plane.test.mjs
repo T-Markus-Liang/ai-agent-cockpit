@@ -37,6 +37,15 @@ test('contracts reject empty goals and invalid approvals', () => {
   assert.throws(() => createApproval({ action: 'send', target: 'wechat', parametersDigest: 'x', decision: 'maybe' }), ContractError)
 })
 
+test('Execution.role is an optional worker|reviewer enum and is never fabricated', () => {
+  const base = { taskId: 'task-1', workerId: 'w1' }
+  assert.equal('role' in createExecution(base), false, 'role is absent by default (worker semantics; no back-fill)')
+  assert.equal(createExecution({ ...base, role: 'worker' }).role, 'worker')
+  assert.equal(createExecution({ ...base, role: 'reviewer' }).role, 'reviewer')
+  assert.throws(() => createExecution({ ...base, role: 'chief' }), ContractError)
+  assert.throws(() => createExecution({ ...base, role: '' }), ContractError)
+})
+
 test('session index is read-only and returns normalized metadata', async () => {
   const snapshot = await indexLocalSessions({ home: os.homedir(), providers: ['kimi'], limit: 2 })
   assert.equal(snapshot.type, 'SessionIndexSnapshot')
@@ -356,6 +365,27 @@ test('reviewer execution is an independent auditable child', async () => {
     assert.equal(review.reviewOf, source.execution.id)
     assert.equal(review.independent, true)
     assert.equal(review.execution.parentExecutionId, source.execution.id)
+    assert.equal(review.execution.role, 'reviewer', 'a reviewer child is marked with the reviewer role')
+    assert.equal('role' in source.execution, false, 'the source worker execution carries no role (worker is implicit)')
+  } finally {
+    await fs.rm(stateDir, { recursive: true, force: true })
+  }
+})
+
+test('store.createExecution passes role through and rejects an illegal role', async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'personal-ai-os-role-'))
+  try {
+    const store = new ControlPlaneStore({ stateDir })
+    const task = await store.createTask({ goal: 'role passthrough' }, { idempotencyKey: 'role-task' })
+    const worker = await store.createExecution(task.task.id, { workerId: 'w1' }, { idempotencyKey: 'role-worker' })
+    assert.equal('role' in worker.execution, false, 'an execution without a role keeps worker semantics (no fabrication)')
+    const reviewer = await store.createExecution(task.task.id, { workerId: 'r1', role: 'reviewer' }, { idempotencyKey: 'role-reviewer' })
+    assert.equal(reviewer.execution.role, 'reviewer')
+    await assert.rejects(
+      () => store.createExecution(task.task.id, { workerId: 'x1', role: 'chief' }, { idempotencyKey: 'role-bad' }),
+      (error) => error instanceof ContractError,
+      'an illegal role is refused by the contract even through the store',
+    )
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }

@@ -27,6 +27,13 @@ export const EXECUTION_STATUSES = Object.freeze([
   'blocked',
 ])
 
+// Execution role: what an Execution is FOR. `worker` is the implicit default
+// (the field is simply absent, matching every pre-role record); `reviewer` marks
+// an independent review child and, downstream, is what flips a native run to a
+// strictly read-only sandbox. The field is NEVER fabricated: an Execution
+// without it keeps worker semantics.
+export const EXECUTION_ROLES = Object.freeze(['worker', 'reviewer'])
+
 export const CAPABILITY_STATES = Object.freeze(['available', 'unknown', 'unavailable'])
 
 export class ContractError extends Error {
@@ -145,12 +152,17 @@ export function createSessionRef(input = {}) {
 }
 
 export function createExecution(input = {}) {
+  // role is OPTIONAL and never fabricated: when absent the field is left out
+  // entirely (worker semantics, and old records are not back-filled); when
+  // present it must be a legal EXECUTION_ROLES value or the document is refused.
+  const role = input.role === undefined ? undefined : enumValue(input.role, 'role', EXECUTION_ROLES)
   return {
     contractVersion: CONTRACT_VERSION,
     type: 'Execution',
     id: base(input.id, 'execution'),
     taskId: string(input.taskId, 'taskId'),
     workerId: string(input.workerId, 'workerId'),
+    ...(role === undefined ? {} : { role }),
     status: enumValue(input.status ?? 'queued', 'status', EXECUTION_STATUSES),
     attempt: Number.isInteger(input.attempt) && input.attempt > 0 ? input.attempt : 1,
     sessionRefId: string(input.sessionRefId, 'sessionRefId', { optional: true }),
