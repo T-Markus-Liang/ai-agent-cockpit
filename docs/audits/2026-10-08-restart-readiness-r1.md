@@ -47,6 +47,8 @@
 
 RR-F003/RR-F004属于既有源码/隔离返工授权范围，**执行方可立即做，不需要Markus代做技术选择**。本线程不代修。RR-F001/RR-F002的生产落盘/原文外呼/切换则仍按具体授权处理；不是所有源码都等待人类决定。
 
+交接后观察到`gateway/goals.mjs`、`control-plane/request-authority.mjs`及相关测试出现新的未提交改动。它们是后续WIP，不由本r1签收；本文反例仍严格绑定上表SHA256，返工应交新revision再复核。没有因为新改动出现就把生产重启判为可行。
+
 ## 本轮验证与限定接受
 
 1. `node --test tests/goal-per-client-token.test.mjs`（根目录）：6/6通过；其缺文件场景明确断言业务500、health200。这不覆盖viewer写权限及缓存chmod漂移；独立反例正是补这两项。
