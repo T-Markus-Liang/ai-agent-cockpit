@@ -2,11 +2,10 @@
  * ACP Client implementation for WeChat.
  *
  * Implements the acp.Client interface: handles session updates (accumulates
- * text chunks), auto-allows all permission requests, and provides filesystem
- * access for the agent.
+ * text chunks), defaults permissions to deny, and delegates filesystem access
+ * only to an explicitly configured trusted host broker.
  */
 
-import fs from "node:fs";
 import type * as acp from "@agentclientprotocol/sdk";
 import {
   type AgentFile,
@@ -275,6 +274,12 @@ export const AUDIO_MIME_EXTENSIONS: Readonly<Record<string, string>> = {
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 export interface WeChatAcpClientOpts {
+  /** Host process wiring only; never construct these callbacks from model output. */
+  permissionBroker?: { authorizePermission(params: acp.RequestPermissionRequest): Promise<string | undefined> };
+  filesystemBroker?: {
+    readTextFile?: (params: acp.ReadTextFileRequest) => Promise<acp.ReadTextFileResponse>;
+    writeTextFile?: (params: acp.WriteTextFileRequest) => Promise<acp.WriteTextFileResponse>;
+  };
   sendTyping: () => Promise<void>;
   onThoughtFlush: (text: string) => Promise<void>;
   onMessageFlush: (text: string) => Promise<void>;
@@ -347,6 +352,10 @@ export class WeChatAcpClient implements acp.Client {
   }
   get hasUsedTools(): boolean { return this.turn.usedTools; }
   get agentResponseText(): string { return this.turn.nativeText.join(''); }
+  get filesystemCapabilities(): { readTextFile: boolean; writeTextFile: boolean } {
+    const broker = this.turn.opts.filesystemBroker;
+    return { readTextFile: typeof broker?.readTextFile === 'function', writeTextFile: typeof broker?.writeTextFile === 'function' };
+  }
 
   /** Reset the produced-message flag on the current turn. Exposed for tests;
    * production code starts turns via beginTurn, which creates fresh state. */
@@ -433,25 +442,19 @@ export class WeChatAcpClient implements acp.Client {
   async requestPermission(
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
-    this.turn.usedTools = true;
-    try { await this.turn.opts.onToolActivity?.(); }
-    catch { return { outcome: { outcome: 'cancelled' } }; }
-    // Auto-allow: find first "allow" option
-    const allowOpt = params.options.find(
-      (o) => o.kind === "allow_once" || o.kind === "allow_always",
-    );
-    const optionId = allowOpt?.optionId ?? params.options[0]?.optionId ?? "allow";
-
-    this.turn.opts.log(
-      `[permission] auto-allowed: ${params.toolCall?.title ?? "unknown"} → ${optionId}`,
-    );
-
-    return {
-      outcome: {
-        outcome: "selected",
-        optionId,
-      },
-    };
+    const turn = this.turn;
+    turn.usedTools = true;
+    const denied: acp.RequestPermissionResponse = { outcome: { outcome: 'cancelled' } };
+    try {
+      await turn.opts.onToolActivity?.();
+      if (!turn.opts.permissionBroker) return denied;
+      const snapshot = structuredClone(params);
+      const options = snapshot.options.map(option => ({ optionId: option.optionId, kind: option.kind }));
+      const optionId = await turn.opts.permissionBroker.authorizePermission(snapshot);
+      if (this.turn !== turn || typeof optionId !== 'string' || options.filter(option => option.optionId === optionId).length !== 1 ||
+          !options.some(option => option.optionId === optionId && option.kind === 'allow_once')) return denied;
+      return { outcome: { outcome: 'selected', optionId } };
+    } catch { return denied; }
   }
 
   /** Run `task` after all previously enqueued tasks. The slot is reserved
@@ -667,21 +670,15 @@ export class WeChatAcpClient implements acp.Client {
   }
 
   async readTextFile(params: acp.ReadTextFileRequest): Promise<acp.ReadTextFileResponse> {
-    try {
-      const content = await fs.promises.readFile(params.path, "utf-8");
-      return { content };
-    } catch (err) {
-      throw new Error(`Failed to read file ${params.path}: ${String(err)}`);
-    }
+    const broker = this.turn.opts.filesystemBroker?.readTextFile;
+    if (!broker) throw new Error('Authorized file read broker required');
+    return broker(params);
   }
 
   async writeTextFile(params: acp.WriteTextFileRequest): Promise<acp.WriteTextFileResponse> {
-    try {
-      await fs.promises.writeFile(params.path, params.content, "utf-8");
-      return {};
-    } catch (err) {
-      throw new Error(`Failed to write file ${params.path}: ${String(err)}`);
-    }
+    const broker = this.turn.opts.filesystemBroker?.writeTextFile;
+    if (!broker) throw new Error('Authorized file write broker required');
+    return broker(params);
   }
 
   /** Get accumulated text and reset the buffer. Also flushes any remaining thoughts. */

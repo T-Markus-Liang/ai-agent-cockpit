@@ -65,12 +65,14 @@ async function buildIndependentProof(store, { workerArtifact = GIT_A } = {}) {
 
 async function approveCompletion(store, taskId) {
   const plan = await store.completionPlan(taskId)
-  const approval = await store.createApproval({
+  const created = await store.createApproval({
     action: 'task.complete',
     target: taskId,
     parametersDigest: plan.parametersDigest,
+  }, { idempotencyKey: key() })
+  const approval = await store.decideApproval(created.approval.id, {
     decision: 'approved',
-    approvedBy: 'chief',
+    approvedBy: 'trusted-test-operator',
   }, { idempotencyKey: key() })
   return { plan, approval }
 }

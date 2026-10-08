@@ -8,7 +8,7 @@ import http from 'node:http'
 import { createGoalServer } from '../gateway/goals.mjs'
 import { ControlPlaneStore } from '../control-plane/store.mjs'
 
-test('goal HTTP authentication, host/origin, owner, grant, pause, resume and revision', async t => {
+async function startServer(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'goal-http-'))
   const stateFile = path.join(dir, 'wechat.json')
   await fs.writeFile(stateFile, JSON.stringify({ lastActiveUserId: 'owner', users: { owner: {} } }))
@@ -18,20 +18,49 @@ test('goal HTTP authentication, host/origin, owner, grant, pause, resume and rev
   t.after(async () => { app.server.closeAllConnections(); await new Promise(resolve => app.server.close(resolve)); await fs.rm(dir, { recursive: true, force: true }) })
   const root = `http://127.0.0.1:${app.server.address().port}`
   const token = (await fs.readFile(app.tokenFile, 'utf8')).trim()
+  const request = async (endpoint, options = {}) => {
+    const response = await fetch(root + endpoint, { signal: AbortSignal.timeout(3000), ...options })
+    const text = await response.text()
+    let body
+    try { body = JSON.parse(text) } catch { body = text }
+    return { status: response.status, body, text, response }
+  }
+  return { app, root, token, request }
+}
+
+test('retired bootstrap never returns a token under spoofed Origin/header or valid auth', async t => {
+  const { token, request } = await startServer(t)
+  const forgedCockpit = { Origin: 'http://127.0.0.1:4321', 'X-AI-OS-Client': 'cockpit' }
+  const spoofed = await request('/api/bootstrap', { headers: forgedCockpit })
+  assert.equal(spoofed.status, 410)
+  assert.equal(spoofed.body.error, 'BOOTSTRAP_RETIRED')
+  assert.equal('token' in spoofed.body, false)
+  assert.equal(spoofed.text.includes(token), false)
+  const withAuth = await request('/api/bootstrap', { headers: { ...forgedCockpit, Authorization: `Bearer ${token}` } })
+  assert.equal(withAuth.status, 410)
+  assert.equal(withAuth.body.error, 'BOOTSTRAP_RETIRED')
+  assert.equal('token' in withAuth.body, false)
+  assert.equal(withAuth.text.includes(token), false)
+  const untrusted = await request('/api/bootstrap', { headers: { Origin: 'https://evil.example', 'X-AI-OS-Client': 'cockpit' } })
+  assert.notEqual(untrusted.status, 200)
+  assert.equal('token' in untrusted.body, false)
+  assert.equal(untrusted.text.includes(token), false)
+  const noOrigin = await request('/api/bootstrap', { headers: { 'X-AI-OS-Client': 'cockpit' } })
+  assert.equal(noOrigin.status, 410)
+  assert.equal('token' in noOrigin.body, false)
+  assert.equal(noOrigin.text.includes(token), false)
+})
+
+test('goal HTTP authentication, host/origin, owner, grant, pause, resume and revision', async t => {
+  const { app, token, request } = await startServer(t)
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
   const payload = { title: 'API test', objective: 'repair add', sourceDir: path.resolve('tests/fixtures/goal-pilot'), readPaths: ['calculator.mjs', 'calculator.test.mjs'], writePaths: ['calculator.mjs'], checks: [{ name: 'add', args: ['--test', 'calculator.test.mjs'] }] }
-  const request = async (endpoint, options = {}) => {
-    const response = await fetch(root + endpoint, { signal: AbortSignal.timeout(3000), ...options }); return { status: response.status, body: await response.json(), response }
-  }
   assert.equal((await request('/api/goals')).status, 401)
-  assert.equal((await request('/api/bootstrap')).status, 403)
   assert.equal((await request('/health', { headers: { Origin: 'https://evil.example' } })).status, 403)
   const badHost = await new Promise((resolve, reject) => {
-    http.get(`${root}/health`, { headers: { Host: 'evil.example' } }, response => { response.resume(); resolve(response.statusCode) }).once('error', reject)
+    http.get(`http://127.0.0.1:${app.server.address().port}/health`, { headers: { Host: 'evil.example' } }, response => { response.resume(); resolve(response.statusCode) }).once('error', reject)
   })
   assert.equal(badHost, 403)
-  const bootstrap = await request('/api/bootstrap', { headers: { Origin: 'http://127.0.0.1:4321', 'X-AI-OS-Client': 'cockpit' } })
-  assert.equal(bootstrap.body.token, token); assert.equal(bootstrap.response.headers.get('access-control-allow-origin'), 'http://127.0.0.1:4321')
   assert.equal((await fs.stat(app.tokenFile)).mode & 511, 384)
   const ownerActor = `wechat-${crypto.createHash('sha256').update('owner').digest('hex')}`
   assert.equal((await request('/api/goals', { headers: { ...auth, 'X-Goal-Actor': 'wechat-stranger' } })).status, 403)

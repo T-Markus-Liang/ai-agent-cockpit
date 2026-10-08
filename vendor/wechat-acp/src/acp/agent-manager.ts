@@ -144,10 +144,7 @@ export async function spawnAgent(params: {
           version: packageJson.version,
         },
         clientCapabilities: {
-          fs: {
-            readTextFile: true,
-            writeTextFile: true,
-          },
+          fs: client.filesystemCapabilities,
         },
       })),
       signal,
