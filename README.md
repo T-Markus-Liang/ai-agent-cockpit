@@ -183,6 +183,37 @@ curl -fsS http://127.0.0.1:4324/health
 
 以上服务均由 launchd 定义常驻，全部只监听回环地址；关闭浏览器不影响后台运行。
 
+## 可移植性与验证状态
+
+控制面与适配器分层设计，平台相关面集中在少数边界：进程托管（launchd）、沙箱（Seatbelt）、本地判断二进制（jev-eval）。当前仅在 macOS 开发、测试与验证；其余平台未开始，不做支持承诺。
+
+| 组件 | 技术栈 | 状态 |
+| --- | --- | --- |
+| 控制面 / 网关（4324 / 4326 / 4323） | Node.js 24 | macOS 已验证；跨平台天然，未验证 |
+| wechat-acp 桥（微信 I/O） | Node.js + iLink 云 API | macOS 已验证；协议层与 OS 无关，未验证 |
+| 微信控制服务（4322） | Node.js + iLink 云 API | macOS 已验证；协议层与 OS 无关，未验证 |
+| Mem0 记忆服务（4325） | Python + Qdrant | macOS 已验证；跨平台天然，未验证 |
+| 进程托管 | launchd | macOS 已验证；其他系统需 systemd 等替代实现 |
+| 目标沙箱 | Seatbelt | macOS 已验证；其他系统需 bubblewrap / landlock 等替代 |
+| 本地判断二进制 | jev-eval | 仅 macOS 构建 |
+
+微信入口的协议交互与 macOS 基本无关：收发都走腾讯 iLink 云端 Bot API（纯 HTTPS，代码内无 AppleScript、无辅助功能、无本地客户端依赖），macOS 依赖仅存在于部署层（launchd 托管、caffeinate 保活）。下一个候选平台是 Linux（systemd 替换最直接），Windows 可能经 WSL2，均无时间表。
+
+## 通讯平台接入
+
+桥接层按"通用管线 + 应用专属 I/O"组织：inbound 回执、恢复巡检、reply-outbox 补发、每轮记忆注入为通用管线；具体 App 的消息读写为 I/O 层。新平台 = 复用管线 + 新 I/O 适配器。
+
+| 平台 | 状态 | 接入路径 |
+| --- | --- | --- |
+| 微信 | 已验证 | iLink 云 Bot API 长轮询收发；回执落盘、outbox 补发、共享记忆 |
+| 飞书 | 设计可接入，未开始 | 开放平台事件订阅 + 发送 API；管线可复用，需新 I/O 层 |
+| Telegram | 设计可接入，未开始 | Bot API，技术上最简单的候选 |
+| WhatsApp | 未开始 | 需 Business API 或 bridge 方案 |
+| 钉钉 / Slack / Discord | 未开始 | 同一模板：复用管线 + I/O 适配器 |
+| 手机网页 | 研究在途 | Paseo 调查（[docs/research/](docs/research/paseo-2026-10-07.md)），候选跨平台入口 |
+
+通用管线可直接复用，但尚未抽象出平台无关的 transport 接口（当前与微信消息类型耦合）；第二个连接器尚未落地，模板化成本未实测。
+
 ## 目录结构
 
 ```text
