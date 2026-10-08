@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { ActivityIcon, CircleAlertIcon, LoaderCircleIcon } from 'lucide-react'
+import { useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { useLocale } from '@/components/locale-provider'
+import { ControlPlaneTaskDetail } from './control-plane-executions'
 
 type Task = { id: string; goal: string; status: string; updatedAt: string; executionIds?: string[] }
 type TasksResponse = { tasks?: Task[] }
@@ -20,12 +22,22 @@ const STATUS_LABELS: Record<string, string> = {
 export function ControlPlaneTasks() {
   const { t } = useLocale()
   const query = useQuery({ queryKey: ['personal-ai-os-control-plane-tasks'], queryFn: readTasks, refetchInterval: 10_000, retry: false })
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const tasks = query.data?.tasks ?? []
   return <Card data-dashboard-module="control-plane-tasks" className="gap-0 overflow-hidden py-0">
     <div className="flex items-center justify-between border-b px-4 py-3">
       <div><h2 className="flex items-center gap-2 text-sm font-semibold"><ActivityIcon className="size-4" />{t('控制面任务')}</h2><p className="text-xs text-muted-foreground">{t('Personal AI OS Task / Execution 状态')}</p></div>
       <span className="text-xs text-muted-foreground">{tasks.length} 个</span>
     </div>
-    {query.isPending ? <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" />{t('正在读取控制面…')}</div> : query.isError ? <div className="flex items-center gap-2 p-4 text-xs text-warning"><CircleAlertIcon className="size-3.5" />{t('控制面暂不可用；不会影响 Cezar 原生任务')}</div> : tasks.length === 0 ? <p className="p-4 text-xs text-muted-foreground">{t('暂无控制面任务')}</p> : <div className="divide-y">{tasks.slice(0, 5).map((task) => <div key={task.id} className="flex items-center justify-between gap-3 px-4 py-3"><div className="min-w-0"><p className="truncate text-sm">{task.goal}</p><p className="mt-1 font-mono text-[10px] text-muted-foreground">{task.id} · {task.executionIds?.length ?? 0} 次执行</p></div><span className="shrink-0 text-xs text-muted-foreground">{STATUS_LABELS[task.status] ?? task.status}</span></div>)}</div>}
+    {query.isPending ? <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" />{t('正在读取控制面…')}</div> : query.isError ? <div className="flex items-center gap-2 p-4 text-xs text-warning"><CircleAlertIcon className="size-3.5" />{t('控制面暂不可用；不会影响 Cezar 原生任务')}</div> : tasks.length === 0 ? <p className="p-4 text-xs text-muted-foreground">{t('暂无控制面任务')}</p> : <div className="divide-y">{tasks.slice(0, 5).map((task) => {
+      const selected = task.id === selectedId
+      return <div key={task.id}>
+        <button type="button" className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none" aria-expanded={selected} aria-label={`${selected ? '收起' : '展开'}任务 ${task.id} 的执行详情`} onClick={() => setSelectedId(selected ? null : task.id)}>
+          <div className="min-w-0"><p className="truncate text-sm">{task.goal}</p><p className="mt-1 font-mono text-[10px] text-muted-foreground">{task.id} · {task.executionIds?.length ?? 0} 次执行</p></div>
+          <span className="shrink-0 text-xs text-muted-foreground">{STATUS_LABELS[task.status] ?? task.status}</span>
+        </button>
+        {selected ? <ControlPlaneTaskDetail taskId={task.id} /> : null}
+      </div>
+    })}</div>}
   </Card>
 }
