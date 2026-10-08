@@ -46,6 +46,7 @@
     "test:route-binding-store": "node --test tests/route-binding-store.test.mjs",
     "test:snapshot-orchestrator": "node --test tests/snapshot-orchestrator.test.mjs",
     "test:state-converter": "node --test tests/state-converter.test.mjs",
+    "test:migration-drill": "node --test tests/migration-rollback-drill.test.mjs",
     "test:legacy-adapter": "node --test tests/legacy-adapter.test.mjs",
     "test:kimi-shim": "python3 -m unittest discover -s tests -p 'kimi_shim_test.py' -v",
     "test:runtime-policy": "npm --prefix vendor/wechat-acp run build && node --test tests/request-authority.test.mjs tests/approval-authority.test.mjs tests/acp-permission-broker.test.mjs tests/control-plane-lock.test.mjs",
