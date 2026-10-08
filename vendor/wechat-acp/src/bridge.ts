@@ -54,6 +54,7 @@ import { ConversationMemoryStore } from "./storage/memory.js";
 import { MessageInbox, type MessageInboxStatus } from './storage/message-inbox.js';
 import { ReplyOutbox } from './storage/reply-outbox.js';
 import { RecoveryLease } from './storage/recovery-lease.js';
+import { SubmissionRegistry, computePayloadDigest } from './storage/submission-registry.js';
 import { WeChatGoalClient } from "./goals.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 
@@ -138,6 +139,7 @@ export class WeChatAcpBridge {
   private readonly messageInbox?: MessageInbox;
   private readonly replyOutbox?: ReplyOutbox;
   private readonly recoveryLease?: RecoveryLease;
+  private readonly submissionRegistry?: SubmissionRegistry;
   private recoveryTimer?: ReturnType<typeof setInterval>;
   private recoverySweep?: Promise<void>;
   private readonly incomingInFlight = new Set<string>();
@@ -152,7 +154,10 @@ export class WeChatAcpBridge {
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
     this.config = config;
     this.log = log ?? ((msg: string) => console.log(`[wechat-acp] ${msg}`));
-    if (config.inbound?.enabled || config.recovery?.enabled) this.messageInbox = new MessageInbox({ dir: config.inbound?.dir ?? path.join(config.storage.dir, 'incoming-receipts') });
+    if (config.inbound?.enabled || config.recovery?.enabled) {
+      this.messageInbox = new MessageInbox({ dir: config.inbound?.dir ?? path.join(config.storage.dir, 'incoming-receipts') });
+      this.submissionRegistry = new SubmissionRegistry({ dir: path.join(config.storage.dir, 'submission-registry') });
+    }
     if (config.recovery?.enabled) {
       this.replyOutbox = new ReplyOutbox({ dir: path.join(config.storage.dir, 'reply-outbox'), maxAttempts: config.recovery.replyMaxAttempts, maxDelayMs: config.recovery.replyMaxDelayMs });
       this.recoveryLease = new RecoveryLease(config.storage.dir);
@@ -370,6 +375,9 @@ export class WeChatAcpBridge {
       this.sessionManager.start();
       await this.replyOutbox?.recover();
       await this.recoverIncoming();
+      // Backfill a runtime Submission for every inbox receipt admitted before
+      // this registry existed (idempotent; never drops a receipt).
+      await this.reconcileSubmissions();
       if (this.replyOutbox) {
         const sweepMs = Math.max(1000, this.config.recovery?.sweepMs ?? 5000);
         this.recoveryTimer = setInterval(() => { void this.runRecoverySweep().catch(() => this.log('Recovery sweep deferred; private state retained')); }, sweepMs);
@@ -447,6 +455,7 @@ export class WeChatAcpBridge {
     while (this.receiptTasks.size) await Promise.allSettled([...this.receiptTasks]);
     await Promise.allSettled([...this.sendChains.values()]);
     await this.messageInbox?.close();
+    await this.submissionRegistry?.close();
     await this.replyOutbox?.close();
     await this.recoveryLease?.close();
     await this.conversationMemory.close();
@@ -710,13 +719,49 @@ export class WeChatAcpBridge {
 
   private async admitIncoming(msg: WeixinMessage): Promise<boolean> {
     if (!this.incomingGenerations.has(msg)) this.incomingGenerations.set(msg, this.messageGenerationForUser(msg.from_user_id!));
-    if (!this.messageInbox || this.receiptIds.has(msg)) return true;
+    if (!this.messageInbox) return true;
+    // Already admitted in this process, or seeded by the recovery sweep (which
+    // sets receiptIds before re-admitting): the receipt is already durable, so
+    // re-register idempotently instead of returning early — a retry after a
+    // failed registration re-runs the registration, never silently skips it.
+    if (this.receiptIds.has(msg)) {
+      await this.registerSubmission(this.receiptIds.get(msg)!, msg);
+      return true;
+    }
     const result = await this.messageInbox.put(msg);
     this.latestContexts.set(msg.from_user_id!, msg.context_token!);
     await this.replyOutbox?.refreshContext(msg.from_user_id!, msg.context_token!);
     if (!result.isNew) return false;
     this.receiptIds.set(msg, result.record.id);
+    // Register the durable runtime Submission before the receipt is handled. A
+    // failure (including a poisoned registry) throws so the message stays in the
+    // inbox for the existing monitor/ recovery-sweep admission retry — it is
+    // never reported as already handled.
+    await this.registerSubmission(result.record.id, result.record.message);
     return true;
+  }
+
+  /** Idempotently record the runtime Submission for a durable receipt. */
+  private async registerSubmission(receiptId: string, message: WeixinMessage): Promise<void> {
+    if (!this.submissionRegistry) return;
+    await this.submissionRegistry.register({
+      receiptId,
+      userId: message.from_user_id!,
+      payloadDigest: computePayloadDigest(message),
+    });
+  }
+
+  /**
+   * Backfill submissions for inbox receipts with no registration yet (startup
+   * reconciliation). Idempotent; a registration failure surfaces fail-closed
+   * instead of being silently swallowed.
+   */
+  private async reconcileSubmissions(): Promise<void> {
+    if (!this.messageInbox || !this.submissionRegistry) return;
+    for (const record of await this.messageInbox.list()) {
+      if (await this.submissionRegistry.has(record.id)) continue;
+      await this.registerSubmission(record.id, record.message);
+    }
   }
 
   private isNativeCommand(msg: WeixinMessage): boolean {
