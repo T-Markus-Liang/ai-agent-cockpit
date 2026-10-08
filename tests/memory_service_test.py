@@ -7,10 +7,11 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from services.memory import lifecycle, quality
+from services.memory.reconcile import ReconcileError
 from services.memory.service import Mem0Engine, MemoryService, Search, Turn, create_app
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -402,7 +403,7 @@ class ServiceTests(unittest.TestCase):
                                json={"user_id": "bob", "query": "喜欢"})
         self.assertEqual(bob.json()["results"], [])
         restarted = MemoryService(self.root, self.engine)
-        alice = restarted.search(Search(user_id="alice", query="喜欢", limit=5))
+        alice = restarted.search(Search(user_id="alice", query="喜欢", limit=5))["results"]
         self.assertEqual([row["id"] for row in alice], [alice_id])
 
     def test_store_result_count_mismatch_not_promoted(self):
@@ -1445,6 +1446,118 @@ class RecallTests(unittest.TestCase):
         self.assertEqual(len(ids), 1)
         self.assertNotIn("legacy", ids)
         self.assertNotIn("review", ids)
+
+
+class SearchReconcileTests(unittest.TestCase):
+    """search wires reconcile: current recalled, superseded/conflicts not.
+
+    All fixtures are synthetic: a FakeEngine + in-memory receipt table, no
+    production service, no DB, no network. ``slot``/``supersedes`` are injected
+    through the stored plan JSON (their real production binding is a later
+    quality/extraction-layer concern; absent, reconcile keeps one slot per event).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="personal-ai-os-memory-reconcile-search-")
+        self.root = Path(self.tmp.name)
+        self.engine = FakeEngine()
+        self.service = MemoryService(self.root, self.engine)
+        self.client = TestClient(create_app(self.service, run_worker=False))
+        self.client.__enter__()
+        self.headers = {"Authorization": "Bearer " + self.service.token}
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+        self.tmp.cleanup()
+
+    def ingest(self, event_id, text, *, created_at, user_id="alice", slot=None, supersedes=None):
+        """Enqueue, pin ``created_at``, then process one turn into a done receipt."""
+        self.service.enqueue(Turn(event_id=event_id, user_id=user_id, role="user", text=text))
+        with self.service.connect() as db:
+            db.execute("UPDATE turns SET created_at=? WHERE event_id=?", (created_at, event_id))
+
+        def prepare_hook(turn):
+            plan = plan_dict(turn, "validated", [
+                {"fact": turn.text, "quote": turn.text, "start": 0, "end": len(turn.text)}])
+            if slot is not None:
+                plan["slot"] = slot
+            if supersedes is not None:
+                plan["supersedes"] = supersedes
+            return plan
+
+        self.engine.prepare_hook = prepare_hook
+        try:
+            self.assertTrue(self.service.process_one(event_id=event_id))
+        finally:
+            self.engine.prepare_hook = None
+
+    def test_superseded_old_fact_is_not_recalled_new_is(self):
+        self.ingest("old", "我的昵称是小柚", created_at=1000.0, slot="user:nickname")
+        self.ingest("new", "我的昵称是小林", created_at=2000.0, slot="user:nickname",
+                    supersedes="old")
+        found = self.service.search(Search(user_id="alice", query="昵称", limit=10))
+        self.assertEqual([row["memory"] for row in found["results"]], ["我的昵称是小林"])
+        self.assertEqual(found["conflicts"], [])
+
+    def test_contradictory_correction_is_never_recalled_and_surfaces_conflicts(self):
+        self.ingest("a", "我的昵称是小柚", created_at=1500.0, slot="user:nickname")
+        self.ingest("b", "我的昵称是小林", created_at=1500.0, slot="user:nickname")
+        found = self.service.search(Search(user_id="alice", query="昵称", limit=10))
+        self.assertEqual(found["results"], [])
+        self.assertEqual({item["event_id"] for item in found["conflicts"]}, {"a", "b"})
+        # Conflicts expose only id/memory/event_id, never the stored payload body.
+        self.assertEqual(set(found["conflicts"][0]), {"id", "memory", "event_id"})
+
+    def test_events_without_correction_edges_are_all_current(self):
+        self.ingest("e1", "我喜欢喝茶", created_at=1000.0)
+        self.ingest("e2", "我喜欢咖啡", created_at=2000.0)
+        found = self.service.search(Search(user_id="alice", query="喜欢", limit=10))
+        self.assertEqual(sorted(row["memory"] for row in found["results"]),
+                         ["我喜欢咖啡", "我喜欢喝茶"])
+        self.assertEqual(found["conflicts"], [])
+
+    def test_malformed_projection_rows_are_fail_closed(self):
+        self.ingest("good", "我喜欢喝茶", created_at=1000.0)
+        good_id = self.engine.rows[0]["id"]
+        valid_payload = json.dumps(
+            {"event_id": "badplan", "user_id": "alice", "role": "user",
+             "text": "坏计划", "source": "wechat"}, sort_keys=True, ensure_ascii=False)
+        cases = [
+            ("ghost-payload", "badpayload", "{not valid json", None),   # corrupt payload
+            ("ghost-plan", "badplan", valid_payload, "{broken"),        # corrupt plan JSON
+        ]
+        for mid, event_id, payload, plan in cases:
+            # A physically present validated vector row that no receipt can bind.
+            self.engine.rows.append({"id": mid, "user_id": "alice", "event_id": event_id,
+                                     "memory": "synthetic leak", "validation_status": "validated"})
+            with self.service.connect() as db:
+                db.execute(
+                    "INSERT INTO turns(event_id,payload,digest,status,created_at,"
+                    "validation_status,stored_ids,plan) VALUES(?,?,?,?,?,?,?,?)",
+                    (event_id, payload, "x", "done", 2000.0, "validated",
+                     json.dumps({"stored": [mid], "reused": []}), plan))
+        found = self.service.search(Search(user_id="alice", query="anything", limit=10))
+        self.assertEqual({row["id"] for row in found["results"]}, {good_id})
+        self.assertEqual(found["conflicts"], [])
+
+    def test_search_response_shape_includes_empty_conflicts(self):
+        self.ingest("one", "我喜欢喝茶", created_at=1000.0)
+        response = self.client.post("/v1/search", headers=self.headers,
+                                    json={"user_id": "alice", "query": "喜欢"})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("results", body)
+        self.assertIn("conflicts", body)
+        self.assertEqual(body["conflicts"], [])
+        self.assertEqual(len(body["results"]), 1)
+
+    def test_reconcile_failure_is_reported_not_masked(self):
+        self.ingest("one", "我喜欢喝茶", created_at=1000.0)
+        with patch("services.memory.service.reconcile",
+                   side_effect=ReconcileError("invalid-receipt", "duplicate event_id")):
+            response = self.client.post("/v1/search", headers=self.headers,
+                                        json={"user_id": "alice", "query": "喜欢"})
+        self.assertEqual(response.status_code, 503)
 
 
 if __name__ == "__main__":

@@ -61,7 +61,7 @@ def main():
             preparation_attempts += 1
             service.process_one()
             receipt = service.status(turn.event_id, turn.user_id)
-            results = service.search(Search(user_id=identity, query=case["text"], limit=10))
+            results = service.search(Search(user_id=identity, query=case["text"], limit=10))["results"]
             retained = all(value in "\n".join(row["memory"] for row in results)
                            for value in case["requiredSourceValues"])
             with service.connect() as db:

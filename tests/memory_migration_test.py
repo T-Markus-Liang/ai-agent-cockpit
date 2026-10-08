@@ -557,7 +557,7 @@ class TombstoneTests(MigrationFixture):
         self.assertNotEqual(row["status"], "done")
 
         service = MemoryService(Path(self.copy), engine)
-        memories = [hit["memory"] for hit in service.search(Search(user_id="u1", query="forget me"))]
+        memories = [hit["memory"] for hit in service.search(Search(user_id="u1", query="forget me"))["results"]]
         # The forgotten turn is never recalled; the untouched sibling still is.
         self.assertNotIn("forget me please", memories)
         self.assertIn("keep this one", memories)
@@ -620,7 +620,7 @@ class AssistantArchiveTests(MigrationFixture):
 
         engine = make_engine()
         service = MemoryService(Path(self.copy), engine)
-        self.assertEqual(service.search(Search(user_id="u1", query="of course")), [])
+        self.assertEqual(service.search(Search(user_id="u1", query="of course"))["results"], [])
         # Nothing was ever written to the vector store for the assistant turn.
         self.assertEqual(engine.memory.rows, [])
 
@@ -648,7 +648,7 @@ class ReverifySuccessTests(MigrationFixture):
         self.assertEqual(row["validation_status"], "validated")
 
         service = MemoryService(Path(self.copy), engine)
-        hits = service.search(Search(user_id="u1", query="中文"))
+        hits = service.search(Search(user_id="u1", query="中文"))["results"]
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["memory"], "我喜欢用中文回复")
 
@@ -925,7 +925,7 @@ class PartialStoreTests(MigrationFixture):
 
         # Both rows are now recallable.
         service = MemoryService(Path(self.copy), engine)
-        hits = service.search(Search(user_id="u1", query="偏好"))
+        hits = service.search(Search(user_id="u1", query="偏好"))["results"]
         self.assertEqual(len(hits), 2)
 
 
@@ -1331,7 +1331,7 @@ class ForgetDuringReverifyTests(MigrationFixture):
                     memory=memory, evaluator=FakeEvaluator(),
                     quality_config=make_config(), version="synthetic-only"))
                 self.assertEqual(
-                    service.search(Search(user_id="u1", query="中文")), [])
+                    service.search(Search(user_id="u1", query="中文"))["results"], [])
 
 
 # --- 14. F004 store-retry reuses the persisted plan -------------------------

@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import importlib.metadata
 import json
+import math
 import os
 import re
 import secrets
@@ -40,6 +41,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, StrictStr
 
 from . import lifecycle, quality
+from .reconcile import reconcile
 
 DEFAULT_STATE_DIR = Path.home() / ".local/state/personal-ai-os/mem0"
 
@@ -676,16 +678,105 @@ class MemoryService:
                     receipts[memory_id] = facts
         return receipts
 
+    def _reconcile_receipts(self, user_id: str):
+        """Project trusted receipts and a memory-id -> event-id index.
+
+        Only terminal ``done`` receipts with a ``validated`` plan are projected:
+        the same trust universe as :meth:`_trusted_receipts`.  ``forgotten`` rows
+        are projected too, so :func:`reconcile` is the single place that drops
+        them regardless of the row's own flag staying denormalized.
+
+        Returns ``(receipts, index)``.  ``receipts`` is the flat receipt list the
+        reducer consumes, ordered by ``(created_at, event_id)``; ``index`` maps
+        every memory id of a *successfully projected* receipt to its
+        ``event_id``.  A row whose payload/plan JSON is corrupt, or whose
+        projected fields would not satisfy the reconcile contract, is skipped
+        entirely -- it never enters ``receipts`` and its stored memories never
+        enter ``index``, so those memories are fail-closed (unmapped, never
+        recalled) rather than silently treated as ``current``.  The ``slot`` and
+        ``supersedes`` fields are read from the stored plan JSON when present;
+        absent, :func:`reconcile` falls back to one independent slot per event.
+        """
+        receipts: list = []
+        index: dict = {}
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT event_id, payload, plan, stored_ids, created_at, forgotten FROM turns "
+                "WHERE status='done' AND validation_status='validated'").fetchall()
+        for event_id, payload, plan_json, stored_json, created_at, forgotten in rows:
+            try:
+                payload_obj = json.loads(payload)
+                plan = json.loads(plan_json) if plan_json else {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue  # corrupt payload/plan -> fail-closed unknown, never current
+            if not isinstance(payload_obj, dict) or payload_obj.get("user_id") != user_id:
+                continue
+            text = payload_obj.get("text")
+            if not isinstance(event_id, str) or not event_id:
+                continue
+            if not isinstance(text, str):
+                continue
+            if isinstance(created_at, bool) or not isinstance(created_at, (int, float)):
+                continue
+            if not math.isfinite(created_at):
+                continue
+            receipt = {
+                "event_id": event_id,
+                "user_id": user_id,
+                "text": text,
+                "created_at": created_at,
+                "forgotten": forgotten,
+            }
+            source = payload_obj.get("source")
+            if isinstance(source, str):
+                receipt["source"] = source
+            if isinstance(plan, dict):
+                slot = plan.get("slot")
+                supersedes = plan.get("supersedes")
+                if isinstance(slot, str) and slot:
+                    receipt["slot"] = slot
+                if isinstance(supersedes, str) and supersedes:
+                    receipt["supersedes"] = supersedes
+            receipts.append(receipt)
+            try:
+                stored = json.loads(stored_json) if stored_json else {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                stored = {}
+            if isinstance(stored, dict):
+                for key in ("stored", "reused"):
+                    ids = stored.get(key)
+                    if not isinstance(ids, list):
+                        continue
+                    for memory_id in ids:
+                        if isinstance(memory_id, str) and memory_id:
+                            index[memory_id] = event_id
+        receipts.sort(key=lambda item: (item["created_at"], item["event_id"]))
+        return receipts, index
+
     def search(self, query: Search):
-        """Source-backed recall: vector candidates must match a final receipt."""
+        """Source-backed recall: vector candidates must match a final receipt.
+
+        Candidates that bind to a trusted receipt are then classified through
+        :func:`reconcile`: only ``current`` events are recalled, ``superseded``
+        events are dropped (a corrected old fact is never recalled), and
+        ``conflicts`` are dropped from ``results`` and surfaced in ``conflicts``.
+        A candidate with no mapped event, or an event in no resolution state
+        (e.g. a failed projection), is never recalled.  A malformed input that
+        raises :class:`~services.memory.reconcile.ReconcileError` is propagated
+        honestly instead of being masked as an empty result set.
+        """
         epoch_before = self.forget_store.epoch(query.user_id)
         candidates = self.engine.search(query)
         if isinstance(candidates, dict):
             candidates = candidates.get("results", [])
         if not isinstance(candidates, list):
-            return []
+            return {"results": [], "conflicts": []}
         receipts = self._trusted_receipts(query.user_id)
-        results = []
+        reconcile_receipts, event_index = self._reconcile_receipts(query.user_id)
+        reconciled = reconcile(reconcile_receipts)
+        current_ids = {item["event_id"] for item in reconciled["current"]}
+        conflict_ids = {item["event_id"] for item in reconciled["conflicts"]}
+        results, conflicts = [], []
         for row in candidates:
             if not isinstance(row, dict):
                 continue
@@ -699,12 +790,18 @@ class MemoryService:
             # Persisted original quote binding must match the vector content.
             if not any(fact.quote == memory for fact in facts):
                 continue
-            results.append({"id": memory_id, "memory": memory, "score": row.get("score")})
+            event_id = event_index.get(memory_id)
+            if event_id in current_ids:
+                results.append({"id": memory_id, "memory": memory, "score": row.get("score")})
+            elif event_id in conflict_ids:
+                # Kept out of the recall set and reported without the payload body.
+                conflicts.append({"id": memory_id, "memory": memory, "event_id": event_id})
+            # ``superseded`` and unmapped/unknown events are never recalled.
         # End-of-search epoch recheck: a forget committed while vectors/receipts
         # were being read must drop this now-stale result set.
         if self.forget_store.epoch(query.user_id) != epoch_before:
-            return []
-        return results
+            return {"results": [], "conflicts": []}
+        return {"results": results, "conflicts": conflicts}
 
     def status(self, event_id: str, user_id: str):
         with self.connect() as db:
@@ -851,7 +948,10 @@ def create_app(service=None, *, run_worker=True):
     def search(query: Search, authorization: str | None = Header(default=None)):
         authorize(authorization)
         try:
-            return {"results": app.state.memory.search(query)}
+            # MemoryService.search returns {"results": [...], "conflicts": [...]}.
+            # A ReconcileError (or any other failure) is reported honestly as 503
+            # rather than masked as an empty result set.
+            return app.state.memory.search(query)
         except Exception:
             raise HTTPException(503, "memory retrieval temporarily unavailable") from None
 
