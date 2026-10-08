@@ -29,3 +29,5 @@ node --import tsx/esm --test tests/session-foreground-background.test.ts tests/b
 初始executor冻结ea3127dd与最终0ebe00c8不同，包含并行scope/GUI占用切片。接受/缺陷必须按最终来源再次重放；Reviewer OS反例已在最终0ebe版重复得到同结果。整个native/GUI占用/取消语义并未审结。authority/current tests也含交接之外已共享的native输入变化，不给它们自动签字。
 
 官方只读worker3个输入前后SHA一致，files_changed=[]，tests=[]；只作为定位协查。M01原预检有本线程历史参与，不自签整个预检系统。所有真实原文外呼、生产备份/迁回/重启与实际App会话都未进行。
+
+Jev只接收测试范围和两组合成报告措辞，检查是否把隔离/子项接受夸大成整版上线：限定草稿Noul0.09、夸大对照0.98，模型jev-1.13.0；不是工程判断或授权，没有阈值放行动作，无真实payload/凭据输入。

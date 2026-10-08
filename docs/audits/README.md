@@ -12,13 +12,17 @@
 
 ## 已审查的批次（逐版本限定）
 
+### 最新指定返工与新反例
+
+[本轮继续执行输入](2026-10-08-review-followup-summary.md)：**RR-F003、RR-F004与M01-F001剩余两点已按固定sourceRef关闭**，报告分别见[角色r1](m02-goals-role-authz-r1.md)、[身份r2](m02-identity-lifecycle-r2.md)、[迁移r3](m01-migration-r3.md)。45项角色/身份、72项迁移、55项native与15项前后台既有案例通过，但独立反例又复现 **RO-F001真实Seatbelt仍允许Reviewer改workspace**、**FG-F001 Grant期限后fallback重入并resolved**。两个Major的[Reviewer](p4-reviewer-readonly-r1.md)/[前后台](p3-foreground-background-r1.md)返工合同已交接。通过数不等于发布验收；RR-F001/002生产准备与完整真实链路仍待，整套重启限制不因源码子项接受而取消。
+
 最新入口：[给执行Goal的新输入](2026-10-08-unblock-input.md)。审计/设计反馈已交付；源码返工不必等旧事实外呼/生产切换批准。本线程未代改执行Goal、提交GitHub review或批准生产。
 
 ### 最新返工与第三轮
 
 | 批次 | 结论 | 下一动作 |
 | --- | --- | --- |
-| [M01 r2](m01-migration-r2.md) | CHANGES_REQUESTED：未知目录拒前chmod，empty subset误认snapshot | 原F001交r3；43旧事实/迁回/重启暂不做 |
+| [M01 r2](m01-migration-r2.md) / [r3](m01-migration-r3.md) | r2历史失败保留；r3原F001两点限定修复接受 | 真实质量/SDK与旧事实/迁回/重启另验 |
 | [ownership r2](m02-runtime-ownership-r2.md) | 新admission F003关闭；F001/F002诚实子项接受，完整能力未过 | 按[方向条件](durable-ownership-proposal-r1.md)做新合成切片 |
 | [reconcile r2](i02-memory-reconcile-r2.md) | 纯解析核心限定接受，RC-F001关闭 | 可fake接search，真实质量/隐私另验 |
 | [purge r2](i02-memory-purge-r2.md) | 内容检查子项接受，PG-F002预检→effect间漂移仍删除 | 单owner/epoch/fence及交错负例 |
