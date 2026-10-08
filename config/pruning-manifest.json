@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "status": "initial-exact-targets-not-deletion-ready",
+  "baselineVersion": "0.2.2",
+  "productionCodeRemoved": false,
+  "requiredGate": "G5c",
+  "items": [
+    {"id":"C01","status":"source-replacement-tested-awaiting-production-and-native-integration","sourceReplacementVerified":true,"productionReplacementVerified":false,"files":["vendor/wechat-acp/src/acp/client.ts"],"symbol":"requestPermission","replacement":"grant-and-approval-bound permission broker","retain":"Native ACP protocol and session identity","verification":["V23","V24","V47"]},
+    {"id":"C02","status":"awaiting-replacement-and-drain","files":["vendor/wechat-acp/src/acp/session.ts"],"symbol":"processQueue / retainedMessages chief branch only","replacement":"single RuntimePort owner","retain":"Native worker serialization and session conflict locks","verification":["V08","V49"]},
+    {"id":"C03","status":"awaiting-domain-scheduler-separation","files":["control-plane/goal-runtime.mjs"],"replacement":"single durable schedule owner","retain":"Grant/budget, proposal, verification/review and completion proof","verification":["V27","V49"]},
+    {"id":"C04","status":"awaiting-mapping-and-recovery-migration","files":["vendor/wechat-acp/src/storage/message-inbox.ts"],"replacement":"reliable ingress plus one runtime submission mapping","retain":"payloadDigest, original ingress and cursor receipts","verification":["V02","V06","V48"]},
+    {"id":"C05","status":"awaiting-text-transfer-and-drain","files":["vendor/wechat-acp/src/pending-text.ts","vendor/wechat-acp/src/bridge.ts"],"replacement":"persistent ReplyOutbox only","retain":"every undelivered body and clientId; legacy /acp-more until transfer","verification":["V07","V48"]},
+    {"id":"C06","status":"awaiting-single-summary-owner","files":["vendor/wechat-acp/src/storage/memory.ts"],"replacement":"Pi context compaction for Pi-bound conversations","retain":"archive, shared Mem0 and bounded legacy compatibility","verification":["V34","V48"]},
+    {"id":"C07","status":"awaiting-capability-and-config-audit","files":["config/wechat-acp.json"],"replacement":"separate model fallback and worker registry; deduplicated verified identities","retain":"all explicitly requested Agent adapters and native histories","verification":["V38","V39","V51"]},
+    {"id":"C08","status":"awaiting-shared-reference-audit","files":["vendor/cezar/packages/web/src/routes.tsx","vendor/cezar/packages/web/src/routes/compare-variants.tsx","vendor/cezar/packages/web/src/routes/tracker/tracker.tsx"],"replacement":"minimal core navigation and retirement destinations for old links","retain":"core Git diff/worktree/commit/review","verification":["V46","V50"]},
+    {"id":"C09","status":"awaiting-workflow-executor-boundary","files":["vendor/cezar/packages/web/src/routes/workflows/workflows.tsx"],"replacement":"versioned playbooks with one executor","retain":"personal-ai-os-workflow.tsx and design workflow visualization","verification":["V46","V49"]},
+    {"id":"C10","status":"awaiting-schedule-owner-and-old-run-drain","files":["vendor/cezar/packages/web/src/routes/automations/automations-route.tsx"],"replacement":"one schedule owner per product task","retain":"independent historical Cezar schedules until explicitly reconciled","verification":["V20","V49"]},
+    {"id":"C11","status":"awaiting-mount-and-asset-reference-audit","files":["vendor/cezar/packages/web/src/app.tsx"],"symbol":"StarPromo","replacement":"remove promotional product mount and exclusive references","retain":"copyright/license notices","verification":["V46","V50"]},
+    {"id":"C12","status":"awaiting-runtime-config-and-dependency-audit","files":["vendor/wechat-acp/src/telemetry/index.ts","vendor/wechat-acp/package.json"],"replacement":"local logs/audit/health only; remove exclusive applicationinsights dependency","retain":"local observability; Pi NOOP telemetry interface is not remote analytics","verification":["V38","V50"]},
+    {"id":"C13","status":"awaiting-reply-state-and-config-audit","files":["vendor/wechat-acp/src/acp/session.ts","config/wechat-acp.json"],"symbol":"turnEndMessage product branch","replacement":"evidence-backed status and separate notification delivery","retain":"real failure/completion/review notifications","verification":["V07","V27","V46"]},
+    {"id":"C14","status":"not-newly-built","files":[],"replacement":"thin RuntimePort and existing durable lifecycle","retain":"minimal owner/fence, policy and provider registration; no duplicated generic engine","verification":["V49","V52"]},
+    {"id":"C15","status":"excluded-from-default-production","files":[],"replacement":"isolated optional trials only","retain":"requested GUI capabilities marked unverified; Paseo client candidate not a new forked mobile product","verification":["V19","V42","V51"]}
+  ],
+  "remainingAudit":"Exact API/server routes, all transitive shared imports/dependencies, old links/data destinations and recovery artifacts must be inventoried before a removal item becomes delete-ready. This manifest is not an exhaustive dead-code report."
+}

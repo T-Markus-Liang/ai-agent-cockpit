@@ -86,7 +86,7 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
   }
 }
 
-export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, cwd, prompt, command, args, idempotencyKey } = {}) {
+export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, cwd, prompt, command, args, idempotencyKey, requireOperator = false } = {}) {
   if (!store) throw new StoreError('STORE_REQUIRED', 'control-plane store is required', 500)
   const aggregate = await store.getTask(taskId)
   const execution = aggregate.executions.find((candidate) => candidate.id === executionId)
@@ -94,7 +94,7 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
   if (execution.status !== 'queued') throw new StoreError('EXECUTION_NOT_QUEUED', `execution is ${execution.status}; only queued executions may prompt`, 409)
   const plan = nativePromptPlan({ taskId, executionId, source, nativeSessionId, cwd, prompt })
   if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'native session prompt requires an approved approval id', 403)
-  await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: `${idempotencyKey ?? executionId}:approval` })
+  await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: `${idempotencyKey ?? executionId}:approval`, requireOperator })
   await store.updateExecutionStatus(executionId, { status: 'running', outcome: 'native ACP session/load + prompt in flight' }, { idempotencyKey: `${idempotencyKey ?? executionId}:running` })
   try {
     const result = await runNativeAcpPrompt({ source, nativeSessionId, cwd, prompt, command, args })
@@ -111,4 +111,3 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
     throw error
   }
 }
-

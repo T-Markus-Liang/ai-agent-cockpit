@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import {
   createApproval,
   createEvidence,
@@ -115,47 +116,94 @@ export class ControlPlaneStore {
 
   async #acquireFileLock() {
     await fs.mkdir(this.stateDir, { recursive: true, mode: 0o700 })
+    // ponytail: use SQLite's OS-released write lock only for coordination;
+    // records stay in the existing JSON file. Dead-owner reclaimers serialize.
+    const mutexFile = path.join(this.stateDir, 'control-plane-mutex.sqlite')
+    const mutex = new DatabaseSync(mutexFile)
+    const mutexStarted = Date.now()
+    let reserved = false
+    try {
+      await fs.chmod(mutexFile, 0o600)
+      mutex.exec('PRAGMA busy_timeout=0')
+      while (Date.now() - mutexStarted < this.lockTimeoutMs) {
+        try { mutex.exec('BEGIN IMMEDIATE'); reserved = true; break }
+        catch (error) {
+          if (![5, 6].includes(error.errcode)) throw new StoreError('LOCK_FAILED', 'control-plane coordination failed', 500)
+          await sleep(25)
+        }
+      }
+      if (!reserved) throw new StoreError('LOCK_TIMEOUT', 'control-plane state is busy; retry the operation', 409)
+    const token = crypto.randomUUID()
+    const candidate = `${this.lockFile}.${token}.candidate`
+    await fs.writeFile(candidate, JSON.stringify({ pid: process.pid, token, acquiredAt: now() }), { flag: 'wx', mode: 0o600 })
     const started = Date.now()
+    try {
     while (Date.now() - started < this.lockTimeoutMs) {
       try {
-        const handle = await fs.open(this.lockFile, 'wx', 0o600)
-        await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: now() }))
-        await handle.close()
-        return
+        // Publish a complete owner record, never an empty half-written lock.
+        await fs.link(candidate, this.lockFile)
+        return { token, mutex }
       } catch (error) {
         if (error?.code !== 'EEXIST') throw new StoreError('LOCK_FAILED', error.message, 500)
         try {
-          const stat = await fs.stat(this.lockFile)
-          if (Date.now() - stat.mtimeMs > Math.max(this.lockTimeoutMs * 2, 30_000)) await fs.unlink(this.lockFile)
+          const held = JSON.parse(await fs.readFile(this.lockFile, 'utf8'))
+          if (Number.isSafeInteger(held.pid) && held.pid > 0) {
+            let dead = false
+            try { process.kill(held.pid, 0) } catch (error) { dead = error.code === 'ESRCH' }
+            if (dead) {
+              const current = JSON.parse(await fs.readFile(this.lockFile, 'utf8'))
+              if (current.pid === held.pid && current.token === held.token) await fs.unlink(this.lockFile)
+            }
+          }
         } catch {
-          // A concurrent writer may have removed the lock between stat and unlink.
+          // Malformed/unknown ownership is never reclaimed by age. A concurrent
+          // release may remove the file; the next link attempt observes that.
         }
         await sleep(25)
       }
     }
     throw new StoreError('LOCK_TIMEOUT', 'control-plane state is busy; retry the operation', 409)
+    } finally { await fs.unlink(candidate).catch(() => {}) }
+    } catch (error) {
+      if (reserved) { try { mutex.exec('ROLLBACK') } catch {} }
+      mutex.close()
+      throw error
+    }
   }
 
-  async #releaseFileLock() {
-    await fs.unlink(this.lockFile).catch(() => {})
+  async #releaseFileLock({ token, mutex }) {
+    try {
+    const owner = await fs.readFile(this.lockFile, 'utf8').then(JSON.parse).catch(() => null)
+    if (owner?.pid === process.pid && owner.token === token) await fs.unlink(this.lockFile).catch(() => {})
+    } finally {
+      try { mutex.exec('ROLLBACK') } finally { mutex.close() }
+    }
   }
 
-  async #write(state) {
+  async #write(state, token) {
     await fs.mkdir(this.stateDir, { recursive: true, mode: 0o700 })
     const temporary = path.join(this.stateDir, `.control-plane.${process.pid}.${crypto.randomUUID()}.tmp`)
-    await fs.writeFile(temporary, JSON.stringify(state, null, 2), { mode: 0o600 })
+    const handle = await fs.open(temporary, 'wx', 0o600)
+    try { await handle.writeFile(JSON.stringify(state, null, 2)); await handle.sync() } finally { await handle.close() }
+    const owner = await fs.readFile(this.lockFile, 'utf8').then(JSON.parse).catch(() => null)
+    if (owner?.pid !== process.pid || owner.token !== token) {
+      await fs.unlink(temporary).catch(() => {})
+      throw new StoreError('LOCK_OWNER_CHANGED', 'control-plane write owner changed', 409)
+    }
     await fs.rename(temporary, this.stateFile)
+    const directory = await fs.open(this.stateDir, 'r')
+    try { await directory.sync() } finally { await directory.close() }
   }
 
   async #mutate(mutator) {
-    await this.#acquireFileLock()
+    const lock = await this.#acquireFileLock()
     try {
       const state = await readJson(this.stateFile)
       const result = await mutator(state)
-      await this.#write(state)
+      await this.#write(state, lock.token)
       return result
     } finally {
-      await this.#releaseFileLock()
+      await this.#releaseFileLock(lock)
     }
   }
 
@@ -327,13 +375,25 @@ export class ControlPlaneStore {
     return execution
   }
 
-  async createExecution(taskId, input, { idempotencyKey } = {}) {
+  async createExecution(taskId, input, { idempotencyKey, executionGuard } = {}) {
+    if (input?.status !== undefined && input.status !== 'queued') throw new StoreError('INVALID_INITIAL_STATUS', 'new executions must start queued', 400)
     return this.#mutate(async (state) => {
       this.#pruneLocks(state)
-      const request = { taskId, input, operation: 'execution.create' }
+      const request = { taskId, input, operation: 'execution.create', ...(executionGuard === undefined ? {} : { executionGuard }) }
       const result = this.#idempotent(state, idempotencyKey, request, 'execution.create', () => {
         const task = state.tasks[taskId]
         if (!task) throw new StoreError('TASK_NOT_FOUND', `task ${taskId} was not found`, 404)
+        if (executionGuard !== undefined) {
+          // Recheck under the same durable write lock as creation. A prior
+          // getTask() is advisory and cannot fence cancellation between reads.
+          const parent = state.executions[executionGuard?.executionId]
+          if (!executionGuard || Object.keys(executionGuard).some(key => !['taskId', 'executionId'].includes(key)) ||
+              executionGuard.taskId !== taskId || executionGuard.executionId !== input?.parentExecutionId ||
+              !parent || parent.taskId !== taskId || !ACTIVE_EXECUTION_STATUSES.has(parent.status) ||
+              ['completed', 'cancelled', 'failed', 'blocked'].includes(task.status)) {
+            throw new StoreError('EXECUTION_SCOPE_CHANGED', 'parent execution is no longer in the controlled scope', 403)
+          }
+        }
         const execution = createExecution({ ...input, taskId, status: input?.status ?? 'queued' })
         if (state.executions[execution.id]) throw new StoreError('EXECUTION_EXISTS', `execution ${execution.id} already exists`, 409)
         if (execution.sessionRefId) {
@@ -452,10 +512,13 @@ export class ControlPlaneStore {
   }
 
   async createApproval(input, { idempotencyKey } = {}) {
+    if (input?.decision !== undefined && input.decision !== 'pending') throw new StoreError('APPROVAL_DECISION_FORBIDDEN', 'approvals must be created pending', 400)
+    if (Object.hasOwn(input ?? {}, 'approvedBy')) throw new StoreError('APPROVAL_APPROVER_FORBIDDEN', 'approval creation cannot set an approver', 400)
+    if (Object.hasOwn(input ?? {}, 'usedAt')) throw new StoreError('APPROVAL_USED_AT_FORBIDDEN', 'approval creation cannot consume an approval', 400)
     return this.#mutate(async (state) => {
       const request = { input, operation: 'approval.create' }
       const result = this.#idempotent(state, idempotencyKey, request, 'approval.create', () => {
-        const approval = createApproval({ ...input, decision: input?.decision ?? 'pending' })
+        const approval = createApproval({ ...input, decision: 'pending' })
         if (state.approvals[approval.id]) throw new StoreError('APPROVAL_EXISTS', `approval ${approval.id} already exists`, 409)
         state.approvals[approval.id] = approval
         this.#remember(state, { type: 'approval.created', entityType: 'Approval', entityId: approval.id, details: { action: approval.action, target: approval.target } })
@@ -480,18 +543,24 @@ export class ControlPlaneStore {
       .slice(0, safeLimit(limit))
   }
 
-  async decideApproval(approvalId, input, { idempotencyKey } = {}) {
+  async decideApproval(approvalId, input, { idempotencyKey, principal } = {}) {
+    if (principal !== undefined && (principal?.authenticated !== true || principal.role !== 'operator' ||
+        typeof principal.id !== 'string' || !/^[A-Za-z0-9:_-]{1,200}$/.test(principal.id) || input?.approvedBy !== principal.id)) {
+      throw new StoreError('APPROVAL_AUTHORITY_MISMATCH', 'operator authority does not match this decision', 403)
+    }
     return this.#mutate(async (state) => {
-      const request = { approvalId, input, operation: 'approval.decide' }
+      const request = { approvalId, input, operation: 'approval.decide', ...(principal === undefined ? {} : { authority: { kind: 'authenticated-operator', subjectId: principal.id } }) }
       const result = this.#idempotent(state, idempotencyKey, request, 'approval.decide', () => {
         const approval = state.approvals[approvalId]
         if (!approval) throw new StoreError('APPROVAL_NOT_FOUND', `approval ${approvalId} was not found`, 404)
+        if (approval.usedAt) throw new StoreError('APPROVAL_ALREADY_USED', 'a consumed approval cannot be relabeled', 409)
         const decision = input?.decision
         if (!['approved', 'rejected', 'expired'].includes(decision)) throw new StoreError('INVALID_APPROVAL_DECISION', 'decision must be approved, rejected or expired', 400)
         if (approval.decision !== 'pending' && approval.decision !== decision) throw new StoreError('APPROVAL_ALREADY_DECIDED', `approval is already ${approval.decision}`, 409)
         if (decision === 'approved' && !String(input?.approvedBy ?? '').trim()) throw new StoreError('APPROVER_REQUIRED', 'approvedBy is required to approve an action', 400)
         approval.decision = decision
         if (input?.approvedBy !== undefined) approval.approvedBy = String(input.approvedBy)
+        if (principal !== undefined) approval.decisionAuthority = { kind: 'authenticated-operator', subjectId: principal.id }
         this.#remember(state, { type: 'approval.decided', entityType: 'Approval', entityId: approvalId, details: { decision, approvedBy: approval.approvedBy } })
         return { approvalId }
       })
@@ -499,15 +568,26 @@ export class ControlPlaneStore {
     })
   }
 
-  async consumeApproval(approvalId, input, { idempotencyKey } = {}) {
+  async consumeApproval(approvalId, input, { idempotencyKey, executionGuard, requireOperator = false } = {}) {
     return this.#mutate(async (state) => {
-      const request = { approvalId, input, operation: 'approval.consume' }
+      const request = { approvalId, input, operation: 'approval.consume', ...(executionGuard === undefined ? {} : { executionGuard }), ...(requireOperator ? { requireOperator: true } : {}) }
       const result = this.#idempotent(state, idempotencyKey, request, 'approval.consume', () => {
         const approval = state.approvals[approvalId]
         if (!approval) throw new StoreError('APPROVAL_NOT_FOUND', `approval ${approvalId} was not found`, 404)
+        if (requireOperator && (approval.decisionAuthority?.kind !== 'authenticated-operator' || approval.decisionAuthority.subjectId !== approval.approvedBy)) {
+          throw new StoreError('APPROVAL_AUTHORITY_REQUIRED', 'a verified operator decision is required', 403)
+        }
+        if (requireOperator && !approval.expiresAt) throw new StoreError('APPROVAL_EXPIRY_REQUIRED', 'tool approval requires an explicit expiry', 403)
+        if (executionGuard !== undefined) {
+          const execution = state.executions[executionGuard.executionId]
+          if (!execution || execution.taskId !== executionGuard.taskId || execution.status !== 'running' ||
+              execution.engineRef?.engine !== 'native-acp' || ['source', 'nativeSessionId', 'cwd', 'accountId', 'profileId'].some(field => execution.engineRef[field] !== executionGuard[field])) {
+            throw new StoreError('EXECUTION_SCOPE_CHANGED', 'native execution is no longer in the approved scope', 403)
+          }
+        }
         if (approval.decision !== 'approved') throw new StoreError('APPROVAL_NOT_APPROVED', `approval is ${approval.decision}`, 409)
         if (approval.usedAt) throw new StoreError('APPROVAL_ALREADY_USED', 'approval has already been consumed', 409)
-        if (approval.expiresAt && Date.parse(approval.expiresAt) <= Date.now()) {
+        if (approval.expiresAt && (!Number.isFinite(Date.parse(approval.expiresAt)) || Date.parse(approval.expiresAt) <= Date.now())) {
           approval.decision = 'expired'
           throw new StoreError('APPROVAL_EXPIRED', 'approval has expired', 409)
         }

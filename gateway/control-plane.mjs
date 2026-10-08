@@ -11,9 +11,11 @@ import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
 import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution, watchCezarExecution } from '../control-plane/dispatcher.mjs'
 import { handleMcpRequest } from '../interfaces/mcp/server.mjs'
+import { AuthorityError, authorizeHttpRequest, loadRequestAuthority, nativeRemoteInput, trustedApprovalDecision } from '../control-plane/request-authority.mjs'
 
 const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 4324)
 const TRUSTED_ORIGINS = new Set(['http://127.0.0.1:4321', 'http://localhost:4321'])
+const authority = await loadRequestAuthority({ file: process.env.CONTROL_PLANE_AUTH_FILE, required: process.env.CONTROL_PLANE_REQUIRE_AUTH === '1' })
 const store = new ControlPlaneStore()
 let cache = null
 let cacheAt = 0
@@ -21,7 +23,7 @@ let startupRecovery = { recovered: false, blockedExecutionIds: [] }
 
 function send(res, status, body) {
   if (status === 204) {
-    res.writeHead(status, { 'Access-Control-Allow-Origin': res.trustedOrigin ?? 'http://127.0.0.1:4321', 'Vary': 'Origin', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Idempotency-Key,X-Idempotency-Key' })
+    res.writeHead(status, { 'Access-Control-Allow-Origin': res.trustedOrigin ?? 'http://127.0.0.1:4321', 'Vary': 'Origin', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization,Idempotency-Key,X-Idempotency-Key' })
     return res.end()
   }
   res.writeHead(status, {
@@ -29,7 +31,7 @@ function send(res, status, body) {
     'Access-Control-Allow-Origin': res.trustedOrigin ?? 'http://127.0.0.1:4321',
     'Vary': 'Origin',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Idempotency-Key,X-Idempotency-Key',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,Idempotency-Key,X-Idempotency-Key',
     'Cache-Control': 'no-store',
   })
   res.end(JSON.stringify(body))
@@ -93,10 +95,13 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
     if (req.method === 'GET' && url.pathname === '/health') {
-      return send(res, 200, { status: 'ok', service: 'personal-ai-os-control-plane', sessionIndexReadOnly: true, externalAgentsReadOnly: true, persistence: await store.snapshot(), startupRecovery })
+      if (authority.mode === 'strict') return send(res, 200, { status: 'ok', service: 'personal-ai-os-control-plane', authorizationMode: 'strict' })
+      return send(res, 200, { status: 'ok', service: 'personal-ai-os-control-plane', authorizationMode: authority.mode, sessionIndexReadOnly: true, externalAgentsReadOnly: true, persistence: await store.snapshot(), startupRecovery })
     }
+    const principal = authority.authenticate(req.headers)
+    if (authority.mode === 'strict') authorizeHttpRequest(principal, req.method, url.pathname)
     if (req.method === 'POST' && url.pathname === '/mcp') {
-      const response = await handleMcpRequest(await body(req), { store })
+      const response = await handleMcpRequest(await body(req), { store, principal })
       return response === null ? send(res, 202, { accepted: true }) : send(res, 200, response)
     }
     if (req.method === 'POST' && url.pathname === '/api/control-plane/route-plan') {
@@ -143,7 +148,9 @@ const server = http.createServer(async (req, res) => {
     if (approvalId && req.method === 'GET') return send(res, 200, await store.getApproval(approvalId))
     const decisionApprovalId = segment(url.pathname, '/api/control-plane/approvals/', '/decision')
     if (decisionApprovalId && req.method === 'POST') {
-      const result = await store.decideApproval(decisionApprovalId, await body(req), { idempotencyKey: idempotencyKey(req) })
+      const input = await body(req)
+      const decision = authority.mode === 'strict' ? trustedApprovalDecision(input, principal) : input
+      const result = await store.decideApproval(decisionApprovalId, decision, { idempotencyKey: idempotencyKey(req), ...(authority.mode === 'strict' ? { principal } : {}) })
       return send(res, 200, result)
     }
     const taskId = segment(url.pathname, '/api/control-plane/tasks/')
@@ -172,11 +179,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 201, await store.addEvidence(evidenceExecutionId, await body(req), { idempotencyKey: idempotencyKey(req) }))
     }
     const nativePlanExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/native/plan')
-    if (nativePlanExecutionId && req.method === 'POST') return send(res, 200, nativePromptPlan({ ...(await body(req)), executionId: nativePlanExecutionId }))
+    if (nativePlanExecutionId && req.method === 'POST') return send(res, 200, nativePromptPlan({ ...nativeRemoteInput(await body(req)), executionId: nativePlanExecutionId }))
     const nativePromptExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/native/prompt')
     if (nativePromptExecutionId && req.method === 'POST') {
-      const input = await body(req)
-      return send(res, 202, await executeNativeSessionPrompt({ ...input, store, executionId: nativePromptExecutionId, idempotencyKey: idempotencyKey(req) }))
+      const input = nativeRemoteInput(await body(req), { approval: true })
+      return send(res, 202, await executeNativeSessionPrompt({ ...input, store, requireOperator: authority.mode === 'strict', executionId: nativePromptExecutionId, idempotencyKey: idempotencyKey(req) }))
     }
     const cezarPlanExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/plan')
     if (cezarPlanExecutionId && req.method === 'POST') {
@@ -187,7 +194,7 @@ const server = http.createServer(async (req, res) => {
     if (cezarDispatchExecutionId && req.method === 'POST') {
       const input = await body(req)
       const adapter = new CezarAdapter()
-      const result = await dispatchCezar({ ...input, store, adapter, executionId: cezarDispatchExecutionId, idempotencyKey: idempotencyKey(req) })
+      const result = await dispatchCezar({ ...input, store, adapter, requireOperator: authority.mode === 'strict', executionId: cezarDispatchExecutionId, idempotencyKey: idempotencyKey(req) })
       if (!result.replay) void watchCezarExecution({ store, adapter, executionId: cezarDispatchExecutionId }).catch((error) => console.warn(`[control-plane] Cezar SSE watcher stopped: ${String(error)}`))
       return send(res, result.replay ? 200 : 202, result)
     }
@@ -200,7 +207,7 @@ const server = http.createServer(async (req, res) => {
     const cezarCancelExecutionId = segment(url.pathname, '/api/control-plane/executions/', '/cezar/cancel')
     if (cezarCancelExecutionId && req.method === 'POST') {
       const input = await body(req)
-      return send(res, 200, await cancelCezarExecution({ ...input, store, adapter: new CezarAdapter(), executionId: cezarCancelExecutionId, idempotencyKey: idempotencyKey(req) }))
+      return send(res, 200, await cancelCezarExecution({ ...input, store, adapter: new CezarAdapter(), requireOperator: authority.mode === 'strict', executionId: cezarCancelExecutionId, idempotencyKey: idempotencyKey(req) }))
     }
     const lockSessionId = segment(url.pathname, '/api/control-plane/sessions/', '/lock')
     if (lockSessionId && req.method === 'POST') {
@@ -212,7 +219,7 @@ const server = http.createServer(async (req, res) => {
     }
     return send(res, 404, { error: 'not found' })
   } catch (error) {
-    if (error instanceof StoreError || error instanceof HttpError) {
+    if (error instanceof StoreError || error instanceof HttpError || error instanceof AuthorityError) {
       return send(res, error.status ?? 409, { error: error.code ?? 'BAD_REQUEST', message: error.message, details: error.details })
     }
     return send(res, 500, { error: 'INTERNAL_ERROR', message: String(error) })

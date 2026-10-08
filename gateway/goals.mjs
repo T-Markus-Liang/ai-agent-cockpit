@@ -55,8 +55,7 @@ export async function createGoalServer({ stateDir, goals = new GoalStore({ state
           goalCount: items.length, sandbox: 'macOS-seatbelt', mode: 'isolated-proposal-workspace', wechatOwnerBound: Boolean(owner) }, origin)
       }
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
-        if (!ORIGINS.has(origin) || req.headers['x-ai-os-client'] !== 'cockpit') throw new GoalError('BOOTSTRAP_DENIED', 'bootstrap requires the local cockpit', 403)
-        return respond(res, 200, { token }, origin)
+        throw new GoalError('BOOTSTRAP_RETIRED', 'bootstrap endpoint is retired', 410)
       }
       const supplied = req.headers.authorization ?? ''
       const expected = `Bearer ${token}`
