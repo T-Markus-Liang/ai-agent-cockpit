@@ -1,0 +1,264 @@
+{
+  "sourceCapture": {
+    "head": "977fb764a20b36907b7486febf05b17f5db747d8",
+    "root": "/tmp/personal-ai-os-audit-followup.jWB1GX",
+    "manifest": [
+      {
+        "file": "gateway/goals.mjs",
+        "sha256": "3f4521ab0dd9a760827817cf68abf6b3b05f50e630c7f298d48d96390cf2ce39"
+      },
+      {
+        "file": "control-plane/request-authority.mjs",
+        "sha256": "6e602a674a5ace9b3443dc0901f948c15662d6c654fe5823e9b83d636de8844d"
+      },
+      {
+        "file": "tests/goal-role-authz.test.mjs",
+        "sha256": "8192c1dbc2c661472798ae432b11383c36e991e23d069a2db6bdf1ba718c3eb4"
+      },
+      {
+        "file": "tests/request-authority.test.mjs",
+        "sha256": "f713b1d911ef1143a2065da785931490808a338468d9c365a75680744ef8e6b6"
+      },
+      {
+        "file": "tests/goal-per-client-token.test.mjs",
+        "sha256": "d438ae87cbba03a88ada479b2a081ed19b8d1145b7747635143e1b7e3f7e8485"
+      },
+      {
+        "file": "control-plane/identity-pairing.mjs",
+        "sha256": "4bbb0648c8c1d2b8ccae42e9c96af3edbccbbd5489eaf62834c4a9eac43631ea"
+      },
+      {
+        "file": "control-plane/native-acp-executor.mjs",
+        "sha256": "ea3127dd9076f17e883e415a64f2e1a97a27fb81d3e6f0cc964814b7779aac02"
+      },
+      {
+        "file": "control-plane/native-sandbox.mjs",
+        "sha256": "74b155ba49acb3f945d3d03654453a0354ef63e6b72be63c1fade8f1c46de81e"
+      },
+      {
+        "file": "services/memory/migration.py",
+        "sha256": "2ff2d84c62dab80478f5ddc3449005fe8632ca89ad2fe9ea13028443ea2ef27e"
+      },
+      {
+        "file": "services/memory/migration_preflight.py",
+        "sha256": "cee181ac112f2597ab9eaf53243655b05404accc55581acc41a59b3a74c36783"
+      },
+      {
+        "file": "services/memory/service.py",
+        "sha256": "87bffe307d5765256ef2f899532ae2f65d89a6dc1bb81758f466d9de11fb85cb"
+      },
+      {
+        "file": "services/memory/quality.py",
+        "sha256": "858d3a6e08da0b3da9ddecb95fdd40227ca318c57d993d507ebe68520ab7a35b"
+      },
+      {
+        "file": "services/memory/lifecycle.py",
+        "sha256": "8d71c3d09d16a759211f94a81634259ffcc879066ab2278e104cdc5ec9504926"
+      },
+      {
+        "file": "tests/memory_migration_test.py",
+        "sha256": "ed7c98f4ee8269e573ee816bb1219265edfc617755f054497ab869c7ffb40f20"
+      },
+      {
+        "file": "vendor/wechat-acp/src/acp/session.ts",
+        "sha256": "f226843ef19fb0fa224bd653ef684e4a9c3a0d132f0909dfb641fec93443859a"
+      },
+      {
+        "file": "vendor/wechat-acp/src/config.ts",
+        "sha256": "fba96d6326f3a30cb5f0009d893812e03682d9ead611ab4ec200c2a896291dfe"
+      },
+      {
+        "file": "vendor/wechat-acp/src/storage/message-inbox.ts",
+        "sha256": "20e2a870aa6d4714560e43473c99a56a87038f65dd852730088c319ba63000be"
+      },
+      {
+        "file": "vendor/wechat-acp/src/bridge.ts",
+        "sha256": "4f4136237232911d1e47be7b1d3822868d872566778721520064bef1990e1f2b"
+      },
+      {
+        "file": "vendor/wechat-acp/tests/session-foreground-background.test.ts",
+        "sha256": "f43a21396336e20224aed45bfe2f3424067fa125d5d10e853cfb07343ad6c98a"
+      },
+      {
+        "file": "vendor/wechat-acp/tests/bridge-foreground-background.test.ts",
+        "sha256": "17f8e6047fb2ade0bafd996092fca72702a981407c6ab4d712b2b2c26b3f2ab9"
+      }
+    ]
+  },
+  "finalSourceCheck": {
+    "workerInputs": [
+      {
+        "file": "docs/handoffs/m01-migration-r3.md",
+        "sha256": "b0c3a0d12452786451e982e00ac0c81b4682688b78f25510f52b5ed587d64a5e"
+      },
+      {
+        "file": "services/memory/migration.py",
+        "sha256": "2ff2d84c62dab80478f5ddc3449005fe8632ca89ad2fe9ea13028443ea2ef27e"
+      },
+      {
+        "file": "services/memory/migration_preflight.py",
+        "sha256": "cee181ac112f2597ab9eaf53243655b05404accc55581acc41a59b3a74c36783"
+      }
+    ],
+    "current": [
+      {
+        "file": "gateway/goals.mjs",
+        "sha256": "3f4521ab0dd9a760827817cf68abf6b3b05f50e630c7f298d48d96390cf2ce39"
+      },
+      {
+        "file": "control-plane/request-authority.mjs",
+        "sha256": "6e602a674a5ace9b3443dc0901f948c15662d6c654fe5823e9b83d636de8844d"
+      },
+      {
+        "file": "control-plane/native-acp-executor.mjs",
+        "sha256": "0ebe00c8b39b8a50a824b9dd47e1442dfe3016681487c81a90ee0f9efb80d7a8"
+      },
+      {
+        "file": "control-plane/native-sandbox.mjs",
+        "sha256": "74b155ba49acb3f945d3d03654453a0354ef63e6b72be63c1fade8f1c46de81e"
+      },
+      {
+        "file": "tests/native-acp-executor.test.mjs",
+        "sha256": "8900df9c07bd7fdfd859de42290ce7f25025941dcc38fc6bc3265d931fb851fe"
+      },
+      {
+        "file": "services/memory/migration.py",
+        "sha256": "2ff2d84c62dab80478f5ddc3449005fe8632ca89ad2fe9ea13028443ea2ef27e"
+      },
+      {
+        "file": "tests/memory_migration_test.py",
+        "sha256": "ed7c98f4ee8269e573ee816bb1219265edfc617755f054497ab869c7ffb40f20"
+      },
+      {
+        "file": "vendor/wechat-acp/src/acp/session.ts",
+        "sha256": "f226843ef19fb0fa224bd653ef684e4a9c3a0d132f0909dfb641fec93443859a"
+      }
+    ],
+    "head": "01f05090ca0c52385baa6e27f5d32246056eabdb"
+  },
+  "isolatedSuites": {
+    "roleAuthorityPairing": {
+      "passed": 45,
+      "failed": 0
+    },
+    "migration": {
+      "passed": 72,
+      "failed": 0
+    },
+    "nativeAcp": {
+      "passed": 55,
+      "failed": 0
+    },
+    "foregroundBackgroundRetention": {
+      "passed": 15,
+      "failed": 0
+    },
+    "notFullReleaseValidation": true
+  },
+  "originalRoleProbe": {
+    "viewerWithoutActor": {
+      "http": 403,
+      "fakeMutationCalls": 0
+    },
+    "viewerLocalActor": {
+      "http": 403,
+      "fakeMutationCalls": 0
+    },
+    "productionTouched": false
+  },
+  "originalPermissionProbe": {
+    "initialMode": "600",
+    "changedMode": "644",
+    "inoMtimeSizeUnchanged": true,
+    "actualError": "AUTH_CONFIGURATION",
+    "accepted": false,
+    "productionTouched": false
+  },
+  "migration": {
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "unknown-target",
+        "error": "unknown_existing_db",
+        "modePreserved": true,
+        "bytesPreserved": true,
+        "entriesPreserved": true
+      },
+      {
+        "probe": "manifestless-empty-subset",
+        "error": "unknown_existing_db",
+        "bytesPreserved": true,
+        "accepted": false
+      }
+    ]
+  },
+  "reviewerOs": {
+    "syntheticOnly": true,
+    "realSeatbelt": true,
+    "realNativeAgent": false,
+    "networkDenied": true,
+    "productionTouched": false,
+    "models": 0,
+    "readonlyMarker": true,
+    "writeLiterals": [],
+    "sandboxExit": 0,
+    "artifactModified": true,
+    "expectedArtifactModified": false,
+    "stdoutBytes": 0,
+    "stderrBytes": 0,
+    "diagnostic": null
+  },
+  "deadlineFallback": {
+    "syntheticOnly": true,
+    "realModels": 0,
+    "productionTouched": false,
+    "configuredGrantDeadlineMs": 30,
+    "primaryPrompts": 1,
+    "fallbackPrompts": 1,
+    "createdFallbackSessions": 1,
+    "fallbackStartedAfterFirstDeadline": true,
+    "terminalOutcome": "resolved",
+    "replies": 1,
+    "grantDeadlineNotices": 0
+  },
+  "worker": {
+    "jobId": "1791468646-95777fb6e4ea",
+    "status": "success",
+    "route": "official DeepSeek-V4.1-Flash / deepseek-flash",
+    "scope": "read-only public source locator; no tests or acceptance",
+    "filesChanged": [],
+    "inputHashesUnchanged": true,
+    "inputs": [
+      {
+        "file": "services/memory/migration.py",
+        "sha256": "2ff2d84c62dab80478f5ddc3449005fe8632ca89ad2fe9ea13028443ea2ef27e"
+      },
+      {
+        "file": "services/memory/migration_preflight.py",
+        "sha256": "cee181ac112f2597ab9eaf53243655b05404accc55581acc41a59b3a74c36783"
+      },
+      {
+        "file": "docs/handoffs/m01-migration-r3.md",
+        "sha256": "b0c3a0d12452786451e982e00ac0c81b4682688b78f25510f52b5ed587d64a5e"
+      }
+    ]
+  },
+  "authorizations": {
+    "productionRestarted": false,
+    "productionMigrated": false,
+    "realWechatSent": false,
+    "realNativeAppSessionTouched": false,
+    "productionChmod": false
+  },
+  "closedFindings": [
+    "RR-F003 (scoped)",
+    "RR-F004 (scoped)",
+    "M01-F001 (two remaining r3 defects)"
+  ],
+  "openFindings": [
+    "RO-F001 reviewer workspace remains writable in real Seatbelt",
+    "FG-F001 expired per-turn grant deadline triggers fallback and success"
+  ]
+}
+
