@@ -13,6 +13,7 @@
     "test:goals-live": "node scripts/test-goals-live.mjs",
     "doctor": "node scripts/doctor.mjs",
     "audit:deps": "node scripts/dependency-audit.mjs",
+    "audit:secrets": "node scripts/secret-scan.mjs",
     "test:memory-service": ".venv-memory/bin/python -m unittest discover -s tests -p 'memory_service_test.py' -v",
     "test:memory-reconcile": ".venv-memory/bin/python -m unittest discover -s tests -p 'memory_reconcile_test.py' -v",
     "test:memory-purge": ".venv-memory/bin/python -m unittest discover -s tests -p 'memory_purge_test.py' -v",
