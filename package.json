@@ -49,6 +49,7 @@
     "test:runtime-policy": "npm --prefix vendor/wechat-acp run build && node --test tests/request-authority.test.mjs tests/approval-authority.test.mjs tests/acp-permission-broker.test.mjs tests/control-plane-lock.test.mjs",
     "test:session-permission-broker": "node --test tests/session-permission-broker.test.mjs",
     "test:native-sandbox": "node --test tests/native-sandbox.test.mjs",
+    "test:native-acp-executor": "node --test tests/native-acp-executor.test.mjs",
     "test:runtime-live": "node scripts/runtime-adapter-canary.mjs --live",
     "test:runtime-tools-live": "node scripts/runtime-tools-canary.mjs --live --isolated-shim",
     "runtime:tools-canary": "node scripts/runtime-tools-canary.mjs",
