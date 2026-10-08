@@ -268,7 +268,7 @@ export class WeChatAcpBridge {
             await this.handleTurnBackground(userId, pending);
             return;
           }
-          for (const id of pending.receiptIds ?? []) await this.messageInbox!.checkpoint(id, { ...event, phase: event.phase as 'preparing' | 'dispatched' | 'tool_activity' | 'result_ready', groupIds: pending.receiptIds, ...(event.phase === 'tool_activity' ? { usedTools: true } : {}) }, event.phase === 'preparing');
+          for (const id of pending.receiptIds ?? []) await this.messageInbox!.checkpoint(id, { ...event, phase: event.phase as 'preparing' | 'sent-unconfirmed' | 'dispatched' | 'tool_activity' | 'result_ready', groupIds: pending.receiptIds, ...(event.phase === 'tool_activity' ? { usedTools: true } : {}) }, event.phase === 'preparing');
         } : undefined,
         resumePolicy,
         getPersistedSessionId:

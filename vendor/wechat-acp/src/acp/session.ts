@@ -132,7 +132,7 @@ export interface SessionManagerOpts {
   progressNoticeMs?: number;
   preparePrompt?: (userId: string, prompt: acp.ContentBlock[], pending?: PendingMessage) => Promise<acp.ContentBlock[]>;
   onNotice?: SessionManagerOpts['onReply'];
-  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'dispatched' | 'tool_activity' | 'background' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string }) => Promise<void>;
+  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'sent-unconfirmed' | 'dispatched' | 'tool_activity' | 'background' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string }) => Promise<void>;
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -1280,6 +1280,10 @@ export class SessionManager {
           if (!this.isCurrentSession(session)) continue;
           this.opts.log(`[${session.userId}] Sending prompt to agent...`);
           session.promptDispatched = true;
+          // Durable pre-send marker. From here the prompt may reach the provider,
+          // so a crash must recover the receipt as uncertain and never replay it.
+          // This write is awaited: if it fails the prompt is never issued.
+          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'sent-unconfirmed', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid });
           await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'dispatched', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid });
           const result = await this.awaitAgentOperation(
             session,

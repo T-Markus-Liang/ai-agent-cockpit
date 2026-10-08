@@ -47,7 +47,14 @@ export interface MessageInboxRecord {
 
 export interface ExecutionCheckpoint {
   attempt: number;
-  phase: 'preparing' | 'dispatched' | 'tool_activity' | 'result_ready';
+  /**
+   * `sent-unconfirmed` is journaled durably immediately before the ACP prompt is
+   * issued. From the moment it is on disk the prompt may have reached the
+   * provider, so a crash must recover the receipt as `uncertain` and never
+   * replay it. Only `preparing` without a recorded dispatch attempt may ever
+   * collapse back to a queued (replayable) state.
+   */
+  phase: 'preparing' | 'sent-unconfirmed' | 'dispatched' | 'tool_activity' | 'result_ready';
   sessionId?: string;
   usedTools?: boolean;
   resultText?: string;
@@ -225,7 +232,7 @@ export class MessageInbox {
     }
     if (record.execution !== undefined) {
       const execution = record.execution as ExecutionCheckpoint;
-      if (!execution || !Number.isSafeInteger(execution.attempt) || execution.attempt < 0 || !['preparing', 'dispatched', 'tool_activity', 'result_ready'].includes(execution.phase) || (execution.retryCount !== undefined && (!Number.isSafeInteger(execution.retryCount) || execution.retryCount < 0))) throw new Error('MessageInbox: corrupt execution checkpoint');
+      if (!execution || !Number.isSafeInteger(execution.attempt) || execution.attempt < 0 || !['preparing', 'sent-unconfirmed', 'dispatched', 'tool_activity', 'result_ready'].includes(execution.phase) || (execution.retryCount !== undefined && (!Number.isSafeInteger(execution.retryCount) || execution.retryCount < 0))) throw new Error('MessageInbox: corrupt execution checkpoint');
       if ((execution.processId !== undefined && (!Number.isSafeInteger(execution.processId) || execution.processId < 1)) || (execution.usedTools !== undefined && typeof execution.usedTools !== 'boolean') || (execution.retryAt !== undefined && (!Number.isFinite(execution.retryAt) || execution.retryAt < 0)) || (execution.resultText !== undefined && typeof execution.resultText !== 'string') || (execution.groupIds !== undefined && (!Array.isArray(execution.groupIds) || execution.groupIds.length > 50 || !execution.groupIds.includes(id) || execution.groupIds.some(groupId => !ID_PATTERN.test(groupId))))) throw new Error('MessageInbox: corrupt execution evidence');
     }
   }
@@ -458,7 +465,12 @@ export class MessageInbox {
     });
   }
 
-  /** Only a checkpoint proving no ACP dispatch permits automatic admission retry. */
+  /**
+   * Only a checkpoint proving no ACP dispatch permits automatic admission retry.
+   * `preparing` is the sole safe phase: `sent-unconfirmed`, `dispatched` and
+   * `tool_activity` all mean the prompt may already have reached the provider, so
+   * they are refused here and the caller must retain the receipt as uncertain.
+   */
   scheduleRetry(id: string, { maxAttempts, delayMs, errorKind }: { maxAttempts: number; delayMs: number; errorKind: string }): Promise<boolean> {
     return this._enqueue(async () => {
       await this._ready();
@@ -555,6 +567,10 @@ export class MessageInbox {
           const record = await this._readRecord(id);
           if (record === null) continue;
           if (record.status === 'running' || record.status === 'buffered' || record.status === 'background') {
+            // Invariant: only a receipt that never left `preparing` (and recorded
+            // no tool activity) may return to the queue. `sent-unconfirmed` and
+            // `dispatched` prove the prompt may already have been sent, so they
+            // recover as `uncertain` and are never auto-replayed.
             record.status = record.execution?.phase === 'result_ready' ? 'reply_pending'
               : record.execution?.phase === 'preparing' && !record.execution.usedTools ? 'queued' : 'uncertain';
             record.updatedAt = Date.now();
