@@ -33,6 +33,7 @@
     "test:runtime-contract": "node --test tests/runtime-contract.test.mjs",
     "test:runtime-ownership": "node --test tests/runtime-ownership.test.mjs",
     "test:budget-policy": "node --test tests/budget-policy.test.mjs",
+    "test:execution-ownership": "node --test tests/execution-ownership.test.mjs",
     "test:runtime-settings": "node --test tests/runtime-settings.test.mjs",
     "test:runtime-tools": "node --test tests/runtime-tools.test.mjs",
     "test:runtime-recovery": "node --test tests/runtime-recovery.test.mjs",
