@@ -1288,6 +1288,15 @@ export class WeChatAcpBridge {
       this.isMessageGenerationCurrent(userId, generation);
     return this.queueSendTask(userId, async () => {
       if (!isCurrent()) return;
+      // Renew durable blocked outbox segments for this user: /acp-more only
+      // re-queues delivery attempts (status -> pending, attempts reset to 0,
+      // nextAttemptAt = now). The existing outbox drain performs the actual
+      // send, so no ACP task is ever re-executed here. In-memory pending text
+      // is drained separately below; both paths are reported to the user.
+      const renewedBlockedCount = this.replyOutbox
+        ? await this.replyOutbox.retryBlockedForUser(userId)
+        : 0;
+      if (!isCurrent()) return;
       const result = await drainPendingText(
         this.pendingText,
         userId,
@@ -1301,17 +1310,25 @@ export class WeChatAcpBridge {
         "command.acp_more",
         {
           userIdHash: hashUserId(userId),
+          renewedBlockedCount,
           pendingCount: result.pendingCount,
           sentCount: result.sentCount,
           remainingCount: result.remainingCount,
         },
         hashUserId(userId),
       );
-      if (result.pendingCount === 0) {
+      // Report both renewal paths faithfully: the durable blocked segments that
+      // were just re-queued for delivery and the in-memory pending text drained
+      // above. Only when neither path had anything do we say there is nothing.
+      const renewedParts: string[] = [];
+      if (renewedBlockedCount > 0) renewedParts.push(`已恢复 ${renewedBlockedCount} 段到重试上限的待补发文本，稍后会自动重试补发。`);
+      if (result.pendingCount > 0) renewedParts.push(`待补发文本共 ${result.pendingCount} 段，本次已发出 ${result.sentCount} 段${result.remainingCount > 0 ? `，仍有 ${result.remainingCount} 段未发出` : ''}。`);
+      if (renewedParts.length > 0) await this.sendTextSegment(userId, contextToken, renewedParts.join('\n'), isCurrent);
+      if (result.pendingCount === 0 && renewedBlockedCount === 0) {
         await this.sendTextSegment(
           userId,
           contextToken,
-          "No pending messages right now.",
+          "目前没有待补发的消息。",
           isCurrent,
         );
       }

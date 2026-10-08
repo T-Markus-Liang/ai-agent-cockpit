@@ -112,6 +112,7 @@ const EVENT_PROP_SCHEMA: Record<EventName, Readonly<Record<string, PropKind>>> =
     pendingCount: "int",
     sentCount: "int",
     remainingCount: "int",
+    renewedBlockedCount: "int",
   },
   "command.buffer_start": { userIdHash: "hash" },
   "command.buffer_done": { userIdHash: "hash", blockCount: "int" },

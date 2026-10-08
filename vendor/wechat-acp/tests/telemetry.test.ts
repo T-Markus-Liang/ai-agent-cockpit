@@ -348,6 +348,45 @@ test("enabled: trackEvent keeps only allow-listed keys with bounded values", asy
   }
 });
 
+test("enabled: command.acp_more forwards the bounded renewedBlockedCount allow-list", async () => {
+  const fake = makeFakeSdk();
+  const dir = tmpDir();
+  try {
+    const t = createTelemetry({ getEnv: enabledEnv, sdkLoader: () => fake.sdk });
+    t.init({ version: "9.9.9", storageDir: dir });
+
+    // The event carries the renewal count alongside the pending-text counters;
+    // unknown keys are still dropped.
+    t.trackEvent("command.acp_more", {
+      userIdHash: "deadbeefdeadbeef",
+      pendingCount: 2,
+      sentCount: 1,
+      remainingCount: 1,
+      renewedBlockedCount: 3,
+      secretProp: 42,
+    } as never);
+
+    const events = fake.calls.events;
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].properties, {
+      userIdHash: "deadbeefdeadbeef",
+      pendingCount: "2",
+      sentCount: "1",
+      remainingCount: "1",
+      renewedBlockedCount: "3",
+    });
+
+    // renewedBlockedCount is bounded like every other counter: negatives drop.
+    t.trackEvent("command.acp_more", {
+      userIdHash: "deadbeefdeadbeef",
+      renewedBlockedCount: -1,
+    } as never);
+    assert.deepEqual(events[1].properties, { userIdHash: "deadbeefdeadbeef" });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("enabled: connection string is never sent as an event field", async () => {
   const fake = makeFakeSdk();
   const dir = tmpDir();

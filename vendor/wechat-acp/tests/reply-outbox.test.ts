@@ -174,11 +174,20 @@ test('0700/0600 permissions and close drains then rejects', async () => {
   assert.equal((await a.get(rec.id))?.text, 'hi');
   await assert.rejects(() => a.put(base()), /closed/);
 });
-test('explicit delivery retry renews blocked attempts but never resurrects cancelled records', async () => {
+test('explicit delivery retry renews blocked attempts, reports the count, and never resurrects cancelled records', async () => {
   const dir = await mk(), outbox = new ReplyOutbox({ dir, maxAttempts: 1 });
   const a = await outbox.put(base()); await outbox.claimDue(); await outbox.settle(a.id, { sent: false });
-  await outbox.retryBlockedForUser('u1'); const [again] = await outbox.claimDue();
+  const b = await outbox.put(base({ text: 'second' })); await outbox.claimDue(); await outbox.settle(b.id, { sent: false });
+  // Count reflects only the records actually renewed back to `pending`.
+  assert.equal(await outbox.retryBlockedForUser('someone-else'), 0);
+  assert.equal(await outbox.retryBlockedForUser('u1'), 2);
+  const renewed = await outbox.list({ userId: 'u1', statuses: ['pending'] });
+  assert.equal(renewed.length, 2);
+  assert.ok(renewed.every((row) => row.attempts === 0));
+  const [again] = await outbox.claimDue();
   assert.equal(again.clientId, a.clientId); assert.equal(again.attempts, 1);
-  await outbox.cancelForUser('u1'); await outbox.retryBlockedForUser('u1'); assert.deepEqual(await outbox.claimDue({ force: true }), []);
+  await outbox.cancelForUser('u1');
+  assert.equal(await outbox.retryBlockedForUser('u1'), 0, 'cancelled records are never renewed or counted');
+  assert.deepEqual(await outbox.claimDue({ force: true }), []);
   await outbox.close();
 });

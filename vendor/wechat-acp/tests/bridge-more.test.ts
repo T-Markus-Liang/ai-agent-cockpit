@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 
 import { WeChatAcpBridge } from "../src/bridge.js";
 import { BRIDGE_COMMANDS, defaultConfig } from "../src/config.js";
+import { ReplyOutbox } from "../src/storage/reply-outbox.js";
 import { MessageType, type WeixinMessage } from "../src/weixin/types.js";
+
+const ownedDirs: string[] = [];
+const ownedOutboxes: ReplyOutbox[] = [];
+after(async () => {
+  await Promise.all(ownedOutboxes.map((outbox) => outbox.close()));
+  await Promise.all(
+    ownedDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })),
+  );
+});
 
 class TestBridge extends WeChatAcpBridge {
   readonly enqueued: string[] = [];
@@ -62,6 +75,13 @@ class TestBridge extends WeChatAcpBridge {
       this.promptGenerations.get(contextToken),
     );
   }
+
+  /** Seed in-memory failed text segments directly (skips the durable outbox path). */
+  seedPendingText(segments: string[], contextToken = "ctx-seeded"): void {
+    const registry = (this as any).pendingText;
+    const generation = registry.supersede("user", contextToken);
+    registry.recordFailures("user", generation, segments);
+  }
 }
 
 function textMessage(text: string, contextToken: string): WeixinMessage {
@@ -82,6 +102,41 @@ function makeBridge(): TestBridge {
   return new TestBridge(config, () => {});
 }
 
+/**
+ * TestBridge with a real durable ReplyOutbox injected but no message inbox, so
+ * /acp-more exercises the outbox renewal path without any recovery side effects
+ * (no receipt journaling, no automatic sweep timer).
+ */
+async function makeOutboxBridge(
+  maxAttempts = 1,
+): Promise<{ bridge: TestBridge; outbox: ReplyOutbox }> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-more-"));
+  ownedDirs.push(dir);
+  const config = defaultConfig();
+  config.storage.stateFile = undefined;
+  config.commandAliases = {
+    [BRIDGE_COMMANDS.acpMore]: ["/acp-fetch-msg", "."],
+  };
+  const bridge = new TestBridge(config, () => {});
+  const outbox = new ReplyOutbox({ dir, maxAttempts });
+  ownedOutboxes.push(outbox);
+  (bridge as any).replyOutbox = outbox;
+  return { bridge, outbox };
+}
+
+/** Drive a durable record to `blocked` by exhausting its delivery attempts. */
+async function seedBlocked(
+  outbox: ReplyOutbox,
+  text: string,
+  userId = "user",
+): Promise<string> {
+  const record = await outbox.put({ userId, contextToken: "ctx-old", text });
+  await outbox.claimDue({ userId });
+  const settled = await outbox.settle(record.id, { sent: false });
+  assert.equal(settled.status, "blocked", "seed record must reach blocked");
+  return record.id;
+}
+
 test("acp-more is intercepted without enqueueing an ACP turn", async () => {
   const bridge = makeBridge();
 
@@ -89,7 +144,7 @@ test("acp-more is intercepted without enqueueing an ACP turn", async () => {
 
   assert.deepEqual(bridge.enqueued, []);
   assert.deepEqual(bridge.sent, [
-    { contextToken: "context-more", segment: "No pending messages right now." },
+    { contextToken: "context-more", segment: "目前没有待补发的消息。" },
   ]);
 });
 
@@ -101,7 +156,7 @@ test("bare dot alias is intercepted only as the complete message", async () => {
   await bridge.handleMessage(textMessage(". keep this prompt", "context-prompt"));
 
   assert.deepEqual(bridge.sent, [
-    { contextToken: "context-dot", segment: "No pending messages right now." },
+    { contextToken: "context-dot", segment: "目前没有待补发的消息。" },
   ]);
   assert.deepEqual(bridge.enqueued, ["context-prompt"]);
 });
@@ -121,6 +176,7 @@ test("normal delivery retains only failed segments and still attempts later segm
     { contextToken: "context-agent", segment: first },
     { contextToken: "context-agent", segment: second },
     { contextToken: "context-more", segment: first },
+    { contextToken: "context-more", segment: "待补发文本共 1 段，本次已发出 1 段。" },
   ]);
   assert.deepEqual(bridge.enqueued, []);
 });
@@ -157,9 +213,9 @@ test("queued old reply cannot restore pending output after a newer prompt", asyn
   await bridge.handleMessage(textMessage(BRIDGE_COMMANDS.acpMore, "context-fetch"));
 
   assert.deepEqual(bridge.sent, [
-    { contextToken: "context-blocker", segment: "No pending messages right now." },
+    { contextToken: "context-blocker", segment: "目前没有待补发的消息。" },
     { contextToken: "context-old", segment: "stale output" },
-    { contextToken: "context-fetch", segment: "No pending messages right now." },
+    { contextToken: "context-fetch", segment: "目前没有待补发的消息。" },
   ]);
 });
 
@@ -196,4 +252,77 @@ test("a failed buffer flush does not create an unhandled rejection", async () =>
     /session reset/,
   );
   await new Promise<void>((resolve) => setImmediate(resolve));
+});
+
+test("acp-more renews durable blocked segments and never re-executes the task", async () => {
+  const { bridge, outbox } = await makeOutboxBridge();
+  const id = await seedBlocked(outbox, "blocked durable segment");
+  assert.equal((await outbox.get(id))?.status, "blocked");
+
+  await bridge.handleMessage(textMessage(BRIDGE_COMMANDS.acpMore, "context-more"));
+
+  // Renewed back to pending with a reset attempt budget, due immediately.
+  const renewed = await outbox.get(id);
+  assert.equal(renewed?.status, "pending");
+  assert.equal(renewed?.attempts, 0);
+  assert.ok((renewed?.nextAttemptAt ?? Infinity) <= Date.now());
+  // The handler reports the renewal but sends no durable segment itself (the
+  // outbox drain does that) and never enqueues an ACP turn.
+  assert.deepEqual(bridge.enqueued, []);
+  assert.deepEqual(bridge.sent, [
+    {
+      contextToken: "context-more",
+      segment: "已恢复 1 段到重试上限的待补发文本，稍后会自动重试补发。",
+    },
+  ]);
+});
+
+test("acp-more renews both durable blocked segments and in-memory pending text", async () => {
+  const { bridge, outbox } = await makeOutboxBridge();
+  const id = await seedBlocked(outbox, "durable blocked");
+  bridge.seedPendingText(["in-memory pending"]);
+
+  await bridge.handleMessage(textMessage(BRIDGE_COMMANDS.acpMore, "context-more"));
+
+  assert.equal((await outbox.get(id))?.status, "pending");
+  assert.deepEqual(bridge.sent, [
+    { contextToken: "context-more", segment: "in-memory pending" },
+    {
+      contextToken: "context-more",
+      segment:
+        "已恢复 1 段到重试上限的待补发文本，稍后会自动重试补发。\n待补发文本共 1 段，本次已发出 1 段。",
+    },
+  ]);
+  assert.deepEqual(bridge.enqueued, []);
+});
+
+test("acp-more reports the exact renewed blocked count", async () => {
+  const { bridge, outbox } = await makeOutboxBridge();
+  await seedBlocked(outbox, "first blocked");
+  await seedBlocked(outbox, "second blocked");
+
+  await bridge.handleMessage(textMessage(BRIDGE_COMMANDS.acpMore, "context-more"));
+
+  assert.deepEqual(bridge.sent, [
+    {
+      contextToken: "context-more",
+      segment: "已恢复 2 段到重试上限的待补发文本，稍后会自动重试补发。",
+    },
+  ]);
+  assert.equal(
+    (await outbox.list({ userId: "user", statuses: ["blocked"] })).length,
+    0,
+    "every blocked segment must be renewed",
+  );
+});
+
+test("acp-more with nothing to renew replies in Chinese and touches no outbox", async () => {
+  const { bridge, outbox } = await makeOutboxBridge();
+
+  await bridge.handleMessage(textMessage(BRIDGE_COMMANDS.acpMore, "context-more"));
+
+  assert.deepEqual(bridge.sent, [
+    { contextToken: "context-more", segment: "目前没有待补发的消息。" },
+  ]);
+  assert.deepEqual(await outbox.list(), []);
 });

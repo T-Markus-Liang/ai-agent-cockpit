@@ -343,10 +343,21 @@ export class ReplyOutbox {
     });
   }
 
-  /** Explicit user /acp-more renews only delivery attempts, never task execution. */
-  async retryBlockedForUser(userId: string): Promise<void> {
+  /**
+   * Explicit user /acp-more renews only delivery attempts, never task execution.
+   * Returns how many blocked records were actually renewed back to `pending`
+   * (attempts reset to 0, `nextAttemptAt` = now) so the caller can report the
+   * real count instead of assuming it. Records already non-blocked are skipped.
+   */
+  async retryBlockedForUser(userId: string): Promise<number> {
     return this.run(async () => {
-      for (const record of await this.loadAll()) if (record.userId === userId && record.status === 'blocked') await this.persist({ ...record, status: 'pending', attempts: 0, nextAttemptAt: this.now() });
+      let renewedCount = 0;
+      for (const record of await this.loadAll()) {
+        if (record.userId !== userId || record.status !== 'blocked') continue;
+        await this.persist({ ...record, status: 'pending', attempts: 0, nextAttemptAt: this.now() });
+        renewedCount++;
+      }
+      return renewedCount;
     });
   }
 
