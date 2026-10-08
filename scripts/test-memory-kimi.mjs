@@ -11,8 +11,10 @@ import { defaultConfig } from '../vendor/wechat-acp/dist/src/config.js'
 // Exercise the actual bridge preparation + real Kimi ACP, but replace WeChat
 // network sinks. No user session is resumed and no real WeChat message is sent.
 const root = 'http://127.0.0.1:4325'
-const tokenFile = path.join(os.homedir(), '.local/state/personal-ai-os/mem0/api-token')
-const token = (await fs.readFile(tokenFile, 'utf8')).trim()
+// Per-client authentication (0.3.0 G4): the shared mem0 api-token file is
+// retired. Supply this client's bearer token via MEMORY_AUTH_TOKEN.
+const token = process.env.MEMORY_AUTH_TOKEN
+if (!token) throw new Error('MEMORY_AUTH_TOKEN is required (per-client bearer token; the shared mem0 api-token file was retired)')
 const user = `kimi-memory-verification-${crypto.randomUUID()}`
 const user_id = `wechat-${crypto.createHash('sha256').update(user).digest('hex')}`
 const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
@@ -25,6 +27,10 @@ for (let i = 0; i < 60; i++) {
   await new Promise(resolve => setTimeout(resolve, 1000))
 }
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kimi-memory-acp-'))
+// The bridge client still reads a token file (migrated in a deployment batch);
+// materialise this client's per-client token for it.
+const tokenFile = path.join(dir, 'client-token')
+await fs.writeFile(tokenFile, token, { mode: 0o600 })
 const config = defaultConfig({ instance: 'memory-verification' })
 config.storage.dir = dir
 config.storage.stateFile = undefined

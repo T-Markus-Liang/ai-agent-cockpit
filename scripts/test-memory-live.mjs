@@ -7,8 +7,11 @@ import crypto from 'node:crypto'
 import { ConversationMemoryStore } from '../vendor/wechat-acp/dist/src/storage/memory.js'
 
 const root = 'http://127.0.0.1:4325'
-const tokenFile = path.join(os.homedir(), '.local/state/personal-ai-os/mem0/api-token')
-const token = (await fs.readFile(tokenFile, 'utf8')).trim()
+// Per-client authentication (0.3.0 G4): the memory service no longer mints the
+// shared api-token file. Supply this client's bearer token via MEMORY_AUTH_TOKEN
+// (minted out-of-band; the authority document carries only its sha256 digest).
+const token = process.env.MEMORY_AUTH_TOKEN
+if (!token) throw new Error('MEMORY_AUTH_TOKEN is required (per-client bearer token; the shared mem0 api-token file was retired)')
 const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
 const tag = process.env.MEMORY_TEST_TAG ?? `mem0-live-${crypto.randomUUID()}`
 const query = { user_id: tag, query: '用户希望怎样称呼他，回答应该使用什么语言？', limit: 5 }
@@ -31,6 +34,11 @@ const other = await fetch(`${root}/v1/search`, { method: 'POST', headers, body: 
 assert.equal(other.results.length, 0)
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mem0-bridge-live-'))
+// The bridge client is migrated in a separate deployment batch; until then it
+// still reads a token file. Materialise this client's per-client token so the
+// bridge authenticates with the same principal as the direct HTTP calls above.
+const tokenFile = path.join(dir, 'client-token')
+await fs.writeFile(tokenFile, token, { mode: 0o600 })
 const options = { file: path.join(dir, 'memory.json'), enabled: true, maxTurns: 2, mem0: { url: root, tokenFile, timeoutMs: 1500 } }
 const first = new ConversationMemoryStore(options)
 try {

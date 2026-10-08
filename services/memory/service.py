@@ -19,13 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import importlib.metadata
 import json
 import math
 import os
 import re
-import secrets
 import sqlite3
 import threading
 import time
@@ -41,9 +39,24 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, StrictStr
 
 from . import lifecycle, quality
+from .authority import AuthorityError, LiveAuthority
 from .reconcile import reconcile
 
 DEFAULT_STATE_DIR = Path.home() / ".local/state/personal-ai-os/mem0"
+
+# Role -> permitted memory action matrix, aligned with the goals service role
+# matrix (RR-F003 / D50). The role is taken from the authenticated principal
+# (authority document), never from a request header.
+#   viewer      read only (/v1/search, /v1/status, /v1/controls)
+#   coordinator read only  (memory has no wake semantics)
+#   chief       read + ingest (/v1/turns: prepared/validated extraction)
+#   operator    everything, including /v1/forget (irreversible deletion)
+MEMORY_ROLE_ACTIONS = {
+    "viewer": frozenset({"read"}),
+    "coordinator": frozenset({"read"}),
+    "chief": frozenset({"read", "ingest"}),
+    "operator": frozenset({"read", "ingest", "forget"}),
+}
 
 
 class Turn(BaseModel):
@@ -373,14 +386,6 @@ class MemoryService:
         self.state_dir = state_dir
         state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         state_dir.chmod(0o700)
-        self.token_file = state_dir / "api-token"
-        if not self.token_file.exists():
-            with self.token_file.open("x") as handle:
-                handle.write(secrets.token_urlsafe(32))
-        self.token_file.chmod(0o600)
-        self.token = self.token_file.read_text().strip()
-        if not self.token:
-            raise RuntimeError("memory API token is empty")
         self.db_file = state_dir / "ingest.sqlite"
         self.engine = engine
         configured = max_attempts if max_attempts is not None else getattr(
@@ -907,6 +912,16 @@ def create_app(service=None, *, run_worker=True):
             app.state.memory = MemoryService(root, Mem0Engine(root))
         else:
             app.state.memory = service
+        # Per-client principal authentication (0.3.0 G4 consistency close-out).
+        # The authority document is produced out-of-band (pairing/export +
+        # write_authority_file) and revalidated on every request, so token
+        # rotation, revocation and expiry take effect without a restart. A
+        # missing or invalid configuration fails closed (AUTH_CONFIGURATION 500)
+        # rather than falling back to any shared token. The path is overridable
+        # via MEMORY_AUTH_FILE, else it lives beside the service state.
+        auth_file = os.environ.get("MEMORY_AUTH_FILE") or str(
+            app.state.memory.state_dir / "authority.json")
+        app.state.authority = LiveAuthority(auth_file)
 
         async def worker():
             while True:
@@ -925,10 +940,27 @@ def create_app(service=None, *, run_worker=True):
 
     app = FastAPI(title="Personal AI OS — Mem0 OSS", lifespan=lifespan)
 
-    def authorize(authorization):
-        expected = "Bearer " + app.state.memory.token
-        if not authorization or not hmac.compare_digest(authorization, expected):
-            raise HTTPException(401, "memory API authentication required")
+    def authorize(authorization, action):
+        """Authenticate the per-client principal, then enforce the role matrix.
+
+        Authentication failures are rendered honestly: 401 for an absent/unknown/
+        revoked/expired token, 500 for a broken authority configuration (never
+        a fallback to any shared token). Authorization is checked BEFORE any
+        endpoint body runs, so a denied request can never mutate state.
+        """
+        try:
+            principal = app.state.authority.authenticate({"authorization": authorization})
+        except AuthorityError as error:
+            if error.status == 500:
+                raise HTTPException(
+                    500, "memory API authority configuration is invalid") from None
+            if error.status == 403:
+                raise HTTPException(403, "memory API authorization rejected") from None
+            raise HTTPException(401, "memory API authentication required") from None
+        if action not in MEMORY_ROLE_ACTIONS.get(principal.get("role"), ()):
+            raise HTTPException(
+                403, "the authenticated role may not perform this memory action")
+        return principal
 
     @app.get("/health")
     def health():
@@ -936,17 +968,17 @@ def create_app(service=None, *, run_worker=True):
 
     @app.post("/v1/turns", status_code=202)
     def turns(turn: Turn, authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "ingest")
         return app.state.memory.enqueue(turn)
 
     @app.post("/v1/status")
     def status(query: StatusQuery, authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "read")
         return app.state.memory.status(query.event_id, query.user_id)
 
     @app.post("/v1/search")
     def search(query: Search, authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "read")
         try:
             # MemoryService.search returns {"results": [...], "conflicts": [...]}.
             # A ReconcileError (or any other failure) is reported honestly as 503
@@ -957,7 +989,7 @@ def create_app(service=None, *, run_worker=True):
 
     @app.post("/v1/forget")
     def forget(request: lifecycle.ForgetRequest, authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "forget")
         try:
             return app.state.memory.forget(request)
         except lifecycle.ForgetError as error:
@@ -965,7 +997,7 @@ def create_app(service=None, *, run_worker=True):
 
     @app.post("/v1/controls")
     def controls(query: lifecycle.ControlsQuery, authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "read")
         return app.state.memory.controls(query.user_id)
 
     return app

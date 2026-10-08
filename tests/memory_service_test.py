@@ -11,10 +11,15 @@ from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from services.memory import lifecycle, quality
+from services.memory.authority import token_digest, write_authority_file
 from services.memory.reconcile import ReconcileError
 from services.memory.service import Mem0Engine, MemoryService, Search, Turn, create_app
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+# Synthetic per-client bearer token (matches [A-Za-z0-9_-]{32,256}). Only its
+# sha256 digest lands in the authority document; the service never stores it.
+TEST_TOKEN = "A" * 40
 
 
 def load_quality_fixture():
@@ -23,6 +28,15 @@ def load_quality_fixture():
 
 def digest_of(text):
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def write_test_authority(root, token=TEST_TOKEN, role="operator", principal_id="test-client"):
+    """Write a synthetic authority document for a tmp state dir (mode 0600)."""
+    document = {"version": 1, "principals": [
+        {"id": principal_id, "role": role, "tokenDigest": token_digest(token),
+         "expiresAt": int(time.time() * 1000) + 3_600_000}]}
+    write_authority_file(str(Path(root) / "authority.json"), document)
+    return document
 
 
 def noul(probability=0.99):
@@ -216,9 +230,11 @@ class ServiceTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.engine = FakeEngine()
         self.service = MemoryService(self.root, self.engine)
+        write_test_authority(self.root)
         self.client = TestClient(create_app(self.service, run_worker=False))
         self.client.__enter__()
-        self.headers = {"Authorization": "Bearer " + self.service.token}
+        self.token = TEST_TOKEN
+        self.headers = {"Authorization": "Bearer " + self.token}
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
@@ -254,7 +270,7 @@ class ServiceTests(unittest.TestCase):
     def test_health_no_secrets_or_raw_content(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertNotIn(self.service.token, health.text)
+        self.assertNotIn(self.token, health.text)
         body = health.json()
         self.assertIn("needs_review", body["ingestion"])
         self.assertIn("validated", body["quality"])
@@ -300,7 +316,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(restarted.health()["ingestion"]["pending"], 1)
         self.assertTrue(restarted.process_one())
         self.assertEqual(restarted.health()["ingestion"]["done"], 1)
-        self.assertEqual(restarted.token, self.service.token)
+        # Restart reuses the tmp state dir; the authority file is independent of
+        # the durable receipts, so a fresh service reads the same configuration.
 
     def test_provider_failure_durable_redacted_retry(self):
         self.post()
@@ -342,7 +359,7 @@ class ServiceTests(unittest.TestCase):
                          json={"user_id": "alice", "query": "q", "limit": 999}).status_code, 422)
 
     def test_private_permissions(self):
-        for file in [self.service.db_file, self.service.token_file]:
+        for file in [self.service.db_file, self.root / "authority.json"]:
             self.assertEqual(file.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.root.stat().st_mode & 0o777, 0o700)
 
@@ -472,7 +489,7 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(body["trusted"])
         self.assertEqual(body["stored_count"], 1)
         self.assertNotIn("我喜欢", response.text)
-        self.assertNotIn(self.service.token, response.text)
+        self.assertNotIn(self.token, response.text)
 
     def test_status_auth_and_user_isolation(self):
         self.post()
@@ -582,9 +599,11 @@ class ForgetTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.engine = FakeEngine()
         self.service = MemoryService(self.root, self.engine)
+        write_test_authority(self.root)
         self.client = TestClient(create_app(self.service, run_worker=False))
         self.client.__enter__()
-        self.headers = {"Authorization": "Bearer " + self.service.token}
+        self.token = TEST_TOKEN
+        self.headers = {"Authorization": "Bearer " + self.token}
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
@@ -752,10 +771,11 @@ class ForgetTests(unittest.TestCase):
         engine = Mem0Engine(memory=FakeMem0(), evaluator=evaluator,
                             quality_config=make_config(), version="test")
         service = MemoryService(root, engine)
+        write_test_authority(root)
         client = TestClient(create_app(service, run_worker=False))
         client.__enter__()
         try:
-            headers = {"Authorization": "Bearer " + service.token}
+            headers = {"Authorization": "Bearer " + TEST_TOKEN}
             base = {"user_id": "alice", "role": "user"}
             client.post("/v1/turns", headers=headers, json=dict(
                 base, event_id="orig",
@@ -968,7 +988,7 @@ class ForgetTests(unittest.TestCase):
                                     json={"user_id": "alice"})
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("My name", response.text)
-        self.assertNotIn(self.service.token, response.text)
+        self.assertNotIn(self.token, response.text)
         body = response.json()
         self.assertEqual(body["user_id"], "alice")
         self.assertEqual(body["memory_epoch"], 1)
@@ -1462,9 +1482,11 @@ class SearchReconcileTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.engine = FakeEngine()
         self.service = MemoryService(self.root, self.engine)
+        write_test_authority(self.root)
         self.client = TestClient(create_app(self.service, run_worker=False))
         self.client.__enter__()
-        self.headers = {"Authorization": "Bearer " + self.service.token}
+        self.token = TEST_TOKEN
+        self.headers = {"Authorization": "Bearer " + self.token}
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
