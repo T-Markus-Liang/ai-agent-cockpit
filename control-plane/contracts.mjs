@@ -115,12 +115,18 @@ export function createTask(input = {}) {
 
 export function createSessionRef(input = {}) {
   const capabilities = input.capabilities ?? {}
+  // accountId is OPTIONAL and never fabricated: when the caller has a real
+  // account source it must be a non-empty string, otherwise the field is left
+  // absent entirely (no default is invented). This mirrors the store guard,
+  // which treats an absent field on both sides as a legitimate match.
+  const accountId = string(input.accountId, 'accountId', { optional: true })
   return {
     contractVersion: CONTRACT_VERSION,
     type: 'SessionRef',
     id: base(input.id, 'session'),
     source: string(input.source, 'source'),
     profile: string(input.profile ?? 'local-default', 'profile'),
+    ...(accountId === undefined ? {} : { accountId }),
     nativeSessionId: string(input.nativeSessionId, 'nativeSessionId'),
     title: string(input.title ?? input.nativeSessionId, 'title'),
     cwd: string(input.cwd, 'cwd'),

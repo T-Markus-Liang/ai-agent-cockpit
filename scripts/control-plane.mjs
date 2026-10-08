@@ -101,7 +101,7 @@ async function main() {
     return output(nativePromptPlan({ taskId: required('task'), executionId: required('execution'), source: required('provider'), nativeSessionId: required('session'), cwd: required('cwd'), prompt: required('prompt') }))
   }
   if (command === 'native' && subcommand === 'prompt') {
-    return output(await executeNativeSessionPrompt({ store, taskId: required('task'), executionId: required('execution'), approvalId: required('approval'), source: required('provider'), nativeSessionId: required('session'), cwd: required('cwd'), prompt: required('prompt'), idempotencyKey: idempotency() }))
+    return output(await executeNativeSessionPrompt({ store, taskId: required('task'), executionId: required('execution'), approvalId: required('approval'), source: required('provider'), nativeSessionId: required('session'), cwd: required('cwd'), prompt: required('prompt'), accountId: value('account'), profileId: value('profile'), idempotencyKey: idempotency() }))
   }
   if (command === 'evidence' && subcommand === 'add') {
     return output(await store.addEvidence(required('execution'), {

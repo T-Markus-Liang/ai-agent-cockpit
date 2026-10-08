@@ -210,6 +210,12 @@ test('strict native prompt rejects an unverified approval before any process sta
   const created = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest, expiresAt: new Date(Date.now() + 60000).toISOString() }, { idempotencyKey: key() })
   await store.decideApproval(created.approval.id, { decision: 'approved', approvedBy: operator.id }, { idempotencyKey: key() })
   await assert.rejects(() => executeNativeSessionPrompt({ ...input, store, approvalId: created.approval.id, command: '/does-not-exist-never-spawn', requireOperator: true, idempotencyKey: key() }), error => error.code === 'APPROVAL_AUTHORITY_REQUIRED')
-  assert.equal((await store.getExecution(exec.execution.id)).status, 'queued')
+  // Launch-intent-first ordering (P4 gap 2): the engine ref + `running` are
+  // registered BEFORE the approval is consumed, so an unauthorized launch is
+  // honestly `blocked` with the (un-authorized) launch-intent ref retained —
+  // never left `queued` and never spawned. No process starts either way.
+  const refused = await store.getExecution(exec.execution.id)
+  assert.equal(refused.status, 'blocked')
+  assert.deepEqual(refused.engineRef, { engine: 'native-acp', id: 'codex:synthetic', source: 'codex', nativeSessionId: 'synthetic', cwd: ROOT })
   assert.equal((await store.getApproval(created.approval.id)).usedAt, undefined)
 })

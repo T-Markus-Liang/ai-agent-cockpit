@@ -178,12 +178,21 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
   })
   const request = async (method, params) => {
     const id = nextId++
+    let timer
     const response = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new StoreError('NATIVE_ACP_TIMEOUT', `${source} ${method} timed out after ${timeoutMs}ms`, 504)) }, timeoutMs)
+      timer = setTimeout(() => { pending.delete(id); reject(new StoreError('NATIVE_ACP_TIMEOUT', `${source} ${method} timed out after ${timeoutMs}ms`, 504)) }, timeoutMs)
       pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value) }, reject: (error) => { clearTimeout(timer); reject(error) } })
     })
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
-    return Promise.race([response, processFailure])
+    try {
+      return await Promise.race([response, processFailure])
+    } finally {
+      // Always drop the timeout timer and the pending resolver: on the process-
+      // failure path the response promise never settles, and a leaked 120s timer
+      // would keep the event loop (and any test process) alive until it fires.
+      clearTimeout(timer)
+      pending.delete(id)
+    }
   }
   try {
     const initialized = await request('initialize', {
@@ -206,7 +215,30 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
   }
 }
 
-export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, cwd, prompt, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false } = {}) {
+// Launch-intent-first native session prompt.
+//
+// Order is fixed and load-bearing (aligned with the legacy-adapter示范: durable
+// intent BEFORE the effect):
+//   1. validate + build the immutable prompt plan (no side effects);
+//   2. register the launch intent in the store BEFORE any spawn — attach the
+//      native engine ref and move the execution to `running`, so a crash after
+//      this point is still traceable to a stored engine ref;
+//   3. consume the approval bound to the EXACT execution scope via
+//      `executionGuard` (the store refuses a scope the execution is not bound to
+//      with EXECUTION_SCOPE_CHANGED, and refuses a non-running execution);
+//   4. only once the approval is consumed does the native CLI actually run.
+//
+// accountId / profileId are OPTIONAL scope fields. They are carried only when a
+// real source supplies them; when absent they are simply not written, so the
+// guard compares `undefined` to `undefined` on both sides (a legitimate match).
+// They are enforced through the execution guard, not (yet) through the approval
+// parameter digest — see docs/handoffs/p4-launch-intent-guard-r1.md.
+//
+// The engine ref is attached exactly ONCE (step 2); the previous post-spawn
+// second attach is intentionally dropped, so there is a single idempotency-
+// keyed attach step. Each store step keeps its own `${idempotencyKey ?? executionId}:<step>`
+// key, so replaying one step never collides with another.
+export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false } = {}) {
   if (!store) throw new StoreError('STORE_REQUIRED', 'control-plane store is required', 500)
   const aggregate = await store.getTask(taskId)
   const execution = aggregate.executions.find((candidate) => candidate.id === executionId)
@@ -214,20 +246,43 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
   if (execution.status !== 'queued') throw new StoreError('EXECUTION_NOT_QUEUED', `execution is ${execution.status}; only queued executions may prompt`, 409)
   const plan = nativePromptPlan({ taskId, executionId, source, nativeSessionId, cwd, prompt })
   if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'native session prompt requires an approved approval id', 403)
-  await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: `${idempotencyKey ?? executionId}:approval`, requireOperator })
-  await store.updateExecutionStatus(executionId, { status: 'running', outcome: 'native ACP session/load + prompt in flight' }, { idempotencyKey: `${idempotencyKey ?? executionId}:running` })
+
+  const step = (name) => `${idempotencyKey ?? executionId}:${name}`
+  // The single launch scope is shared by the engine ref and the execution guard,
+  // so an absent account/profile is consistently absent on both sides.
+  const scope = { source, nativeSessionId, cwd, ...(accountId === undefined ? {} : { accountId }), ...(profileId === undefined ? {} : { profileId }) }
+
+  // (2) launch intent FIRST: durable ref + running state before any spawn.
+  await store.attachExecutionRef(executionId, { engine: 'native-acp', id: `${source}:${nativeSessionId}`, ...scope }, { idempotencyKey: step('attach') })
+  await store.updateExecutionStatus(executionId, { status: 'running', outcome: 'launch intent registered' }, { idempotencyKey: step('running') })
+
+  let launched = false
   try {
+    // (3) the approval must cover this exact execution scope and a running execution.
+    await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, {
+      executionGuard: { executionId, taskId, ...scope },
+      idempotencyKey: step('approval'),
+      requireOperator,
+    })
+    // (4) approved: only now is the native CLI actually spawned.
+    launched = true
     const result = await runNativeAcpPrompt({ source, nativeSessionId, cwd, prompt, command, args, sandbox, sandboxGrant, permissionBroker })
-    await store.attachExecutionRef(executionId, { engine: 'native-acp', id: `${source}:${nativeSessionId}`, source, nativeSessionId, cwd }, { idempotencyKey: `${idempotencyKey ?? executionId}:attach` })
     const text = result.text ?? ''
     const summary = text.trim().length > 0
       ? (text.length > 4000 ? `${text.slice(0, 3997)}...` : text)
       : `native ACP prompt returned no text (stopReason=${result.stopReason ?? 'unknown'})`
-    await store.addEvidence(executionId, { kind: 'message', summary, source: `${source}:acp`, redacted: true }, { idempotencyKey: `${idempotencyKey ?? executionId}:evidence` })
-    const updated = await store.updateExecutionStatus(executionId, { status: 'verifying', outcome: `native ACP prompt completed (${result.stopReason ?? 'unknown'})` }, { idempotencyKey: `${idempotencyKey ?? executionId}:verifying` })
+    await store.addEvidence(executionId, { kind: 'message', summary, source: `${source}:acp`, redacted: true }, { idempotencyKey: step('evidence') })
+    const updated = await store.updateExecutionStatus(executionId, { status: 'verifying', outcome: `native ACP prompt completed (${result.stopReason ?? 'unknown'})` }, { idempotencyKey: step('verifying') })
     return { execution: updated.execution, reply: result.text, stopReason: result.stopReason, agentInfo: result.agentInfo }
   } catch (error) {
-    await store.updateExecutionStatus(executionId, { status: 'blocked', outcome: `native ACP prompt failed or is uncertain: ${error.message}` }, { idempotencyKey: `${idempotencyKey ?? executionId}:blocked` }).catch(() => {})
+    // The outcome is honest about the phase: an unlaunched failure is an
+    // unauthorized/refused launch (the stored engine ref is retained exactly as
+    // the un-authorized launch-intent record it is), a post-spawn failure is an
+    // uncertain run. Neither is deleted or disguised.
+    const outcome = launched
+      ? `native ACP prompt failed or is uncertain: ${error.message}`
+      : `native ACP launch was not authorized (${error.code ?? 'NATIVE_ACP_ERROR'}): ${error.message}`
+    await store.updateExecutionStatus(executionId, { status: 'blocked', outcome }, { idempotencyKey: step('blocked') }).catch(() => {})
     throw error
   }
 }

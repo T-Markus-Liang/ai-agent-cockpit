@@ -25,6 +25,11 @@ test('contracts keep Task, SessionRef and Execution separate', () => {
   assert.equal(execution.type, 'Execution')
   assert.equal(execution.taskId, task.id)
   assert.equal(execution.sessionRefId, session.id)
+  // accountId is optional and never fabricated: absent by default, a non-empty
+  // string when a real account source supplies it, rejected when blank.
+  assert.equal('accountId' in session, false, 'accountId must be absent when no real account source exists')
+  assert.equal(createSessionRef({ source: 'test', nativeSessionId: 'n', cwd: '/tmp', accountId: 'acct-1' }).accountId, 'acct-1')
+  assert.throws(() => createSessionRef({ source: 'test', nativeSessionId: 'n', cwd: '/tmp', accountId: '' }), ContractError)
 })
 
 test('contracts reject empty goals and invalid approvals', () => {
