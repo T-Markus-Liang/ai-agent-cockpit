@@ -9,7 +9,7 @@ macOS 本机 AI 调度控制面：可审计的执行与证据闭环。
 
 ## 简介
 
-Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面。微信是移动入口，Cezar（4321）是本地 cockpit，控制面（4324）管理 Task、SessionRef、Execution、Evidence、Approval 和 AgentCapability 契约；Worker 可插拔，涵盖 Cezar、Codex、OpenCode、Kimi CLI、WorkBuddy、Devin、Claude Code 与 Antigravity。它先建立可审计的 Task、SessionRef、Execution 和 Evidence 边界，再逐步增加 Chief 调度、审批和验证闭环。项目当前仍使用 `ai-agent-cockpit` 目录与既有 launchd 标签，以保证旧服务、微信身份和原生会话不被迁移或破坏。
+Personal AI OS 是运行在 macOS 本机上的 AI 调度控制面。微信是移动入口，Cezar（4321）是本地 cockpit，控制面（4324）管理 Task、SessionRef、Execution、Evidence、Approval 和 AgentCapability 契约；Worker 可插拔，涵盖 Cezar、Codex、OpenCode、Kimi CLI、WorkBuddy、Devin、Claude Code 与 Antigravity。它先建立可审计的 Task、SessionRef、Execution 和 Evidence 边界，再逐步增加 Chief 调度、审批和验证闭环。Git 仓库已命名为 personal-ai-os；本地目录与 launchd 标签将在 0.3.0 发布切换时统一迁移（见 [命名统一决策](docs/decisions/rename-personal-ai-os.md)）。
 
 它不是把所有 App 历史复制到一个新数据库，也不是给每个 GUI App 强行套一个"已支持"的标签。索引快照声明 `readOnly=true`、`secretsRead=false`、`messageBodiesRead=false`；控制面只写自己的状态文件，不写外部 Agent 历史。任何 Agent 的恢复能力只记录原生命令提示和验证限制，不会因为"发现了可执行文件"就声称旧会话可以安全恢复。
 
@@ -38,6 +38,12 @@ Personal AI OS 的回答是：不迁移、不复制任何 App 的历史，而是
 ## 方法论来源
 
 调度与验证设计吸收了 Lauren Tan（SpaceXAI）公开的 pstack 思路：skill-first routing、Chief + specialized workers、并行候选与顺序降级、verification-first、独立 review 与长期记忆。本项目的实现是面向个人单机的二次工程推演，不冒充来源作者的原始产品；逐项对照与参考链接见[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 第 19 节。
+
+## 上游与致谢
+
+- [Cezar](https://github.com/open-mercato/cezar)（MIT）：本地 cockpit 与派单执行器，以 `vendor/cezar` 内嵌，控制面经 `adapters/engines/cezar.mjs` 接入；
+- wechat-acp 桥：微信 ↔ ACP 入口、共享记忆与可靠补发，以 `vendor/wechat-acp` 内嵌；
+- 方法论来源见上一节，逐项对照见[架构设计 v1.2](personal_ai_os_wechat_mac_agent_architecture_v1.html) 第 19 节。
 
 ## 系统架构
 
@@ -240,6 +246,11 @@ docs/                releases 版本说明、plans 计划、decisions、research
 | `npm run test:control-plane` | 控制面契约与 HTTP 边界 |
 | `npm run eval:control-plane` | 协议回归，临时状态目录，不调用模型 |
 | `npm run test:goals` | 目标范围、租约、预算、验收、返工与 Seatbelt 隔离 |
+| `npm run test:runtime-tools` | 任务绑定的Pi查询/queued子执行/规划与权限拒绝；合成HTTP/SSE |
+| `npm run test:runtime-recovery` | 真实SIGKILL测试进程与SDK safe/unsafe四组合；无原生派单 |
+| `npm run test:kimi-shim` | loopback流式首帧、错误脱敏与HTTP边界；无真实认证 |
+| `npm run runtime:tools-canary` | 默认faux，只读查询/保存答案/重开，零网络 |
+| `npm run test:runtime-tools-live` | 临时loopback shim与真实Kimi只读查询，最多2轮；不重启生产 |
 | `npm run test:memory-service` | 记忆服务鉴权、隔离、幂等、重试与权限 |
 | `npm run test:voice-live` | 真实模型/真实服务，产生少量费用 |
 | `npm run test:memory-live` | 真实 Mem0 + Kimi 中文提炼与检索，产生少量模型调用 |
@@ -250,6 +261,8 @@ docs/                releases 版本说明、plans 计划、decisions、research
 | `npm run test:goal-recovery-live` | 真实提案后中断、检查点接续、真实验收与独立复核 |
 
 带 `-live` 的脚本会调用真实模型或真实服务，产生少量费用，建议在相应阶段的合成命名空间与预算内运行。
+
+2026-10-08追加隔离证据：运行层87项、权限27项、控制面21项、Goal60项、Kimi shim9项通过。真实Kimi只读工具查询已保存结果，重复/重开额外调用为零。受控工具仍只查询、创建queued子执行与规划，不派单、不审批、不写文件；生产仍为0.2.2/legacy，微信/后台/迁移尚未接管。详见[当前实施证据](docs/decisions/runtime-0.3.0.md)。
 
 ## 文档导航
 
@@ -265,7 +278,7 @@ docs/                releases 版本说明、plans 计划、decisions、research
 
 ## 路线图
 
-当前在 0.3.0：P0–P2 隔离实现进行中（已写但**未提交**），G0/G1/G2 发布门槛尚未全部通过，P3–P7 待执行，P6c 强制裁剪尚未达到物理删除标准。运行时基础、权限/身份/锁及无工具 Kimi 探测已通过，但完整 Goal 委派/OS 权限、后台生命周期、记忆生命周期、迁移回退仍待验收；现役运行版本未切换，严格身份与 broker 尚未接管微信。详见 [0.3.0 执行计划](docs/plans/0.3.0-execution.md)。
+当前在 0.3.0：P0–P2 隔离实现进行中（已写但**未提交**），G0/G1/G2 发布门槛尚未全部通过，P3–P7 待执行，P6c 强制裁剪尚未达到物理删除标准。运行时基础、权限/身份/锁及无工具 Kimi 探测已通过，但完整 Goal 委派/OS 权限、后台生命周期、记忆生命周期、迁移回退仍待验收；现役运行版本未切换，严格身份与 broker 尚未接管微信。命名统一随发布切换执行：Git 仓库已改名为 personal-ai-os，本地目录、launchd 标签、状态目录与微信实例名的迁移清单见[命名统一决策](docs/decisions/rename-personal-ai-os.md)。详见 [0.3.0 执行计划](docs/plans/0.3.0-execution.md)。
 
 ## 许可证
 
