@@ -10,7 +10,10 @@ loaded offline via ``HF_HUB_OFFLINE=1``.
 It produces physical, per-assertion evidence that a confirmed delete:
 
 * removes the vector entry from the real Qdrant store (``Memory.delete``),
-* scrubs the turn payload while preserving its original ``digest``,
+* scrubs BOTH layer-owned content copies (``payload`` and ``plan``, the latter
+  echoing ``facts[*].quote``) to the agreed marker while preserving the
+  original ``digest`` — and re-reads them through ``turn_get`` so the erase is
+  ``verified`` rather than merely flagged (r2 ``_CONTENT_FIELDS`` contract),
 * is idempotent (a replay reports ``already_purged`` without re-deleting),
 * never resurrects the erased source — the durable ``ForgetStore`` tombstone
   still intercepts a same-text replay through all three match levels
@@ -105,6 +108,8 @@ def main():
     events = {}
     stored_ids = {}
     plans = {}
+    seeded_payload = {}
+    seeded_plan = {}
     try:
         # ---- 1. store three real facts (real embedding + real Qdrant write) --
         for fact in FACTS:
@@ -120,13 +125,16 @@ def main():
                 record(f"store:{fact['key']}", False,
                        {"validation_status": plan.get("validation_status"), "store": result})
                 raise SystemExit(finish(checks, directory, user_id, evaluator, engine))
-            # Ledger row: digest is the plan source digest; plan kept for quote hashes.
+            # Ledger row: digest is the plan source digest. The payload and the
+            # plan are the two layer-owned content copies (plan echoes
+            # facts[*].quote) that a purge must prove erased.
+            seeded_payload[event_id] = json.dumps(turn.model_dump(), sort_keys=True, ensure_ascii=False)
+            seeded_plan[event_id] = json.dumps(plan, ensure_ascii=False)
             with connect() as db:
                 db.execute(
                     "INSERT INTO turns(event_id,user_id,payload,digest,plan) VALUES(?,?,?,?,?)",
-                    (event_id, user_id,
-                     json.dumps(turn.model_dump(), sort_keys=True, ensure_ascii=False),
-                     plan["source_digest"], json.dumps(plan, ensure_ascii=False)))
+                    (event_id, user_id, seeded_payload[event_id],
+                     plan["source_digest"], seeded_plan[event_id]))
         record("store_three_facts", all(len(v) == 1 for v in stored_ids.values()),
                {k: stored_ids[v] for k, v in events.items()})
 
@@ -193,18 +201,24 @@ def main():
             return engine.memory.delete(vector_id)  # real Mem0 SDK delete()
 
         def scrub_turn(event_id):
+            # r2 contract: erase BOTH layer-owned content copies (payload + plan),
+            # preserving the digest; the plan copy echoes facts[*].quote.
             with connect() as db:
-                db.execute("UPDATE turns SET payload='[purged]', purged=1 WHERE event_id=?",
-                           (event_id,))
+                db.execute("UPDATE turns SET payload=?, plan=?, purged=1 WHERE event_id=?",
+                           (purge.ERASURE_MARKER, purge.ERASURE_MARKER, event_id))
 
         def vector_exists(vector_id):
             return engine.memory.vector_store.get(vector_id=vector_id) is not None
 
         def turn_get(event_id):
+            # r2 contract: expose purged/digest AND both content copies (payload,
+            # plan), or execute_purge reports the erase unverifiable.
             with connect() as db:
-                row = db.execute("SELECT purged,digest,payload FROM turns WHERE event_id=?",
-                                 (event_id,)).fetchone()
-            return SimpleNamespace(purged=bool(row[0]), digest=row[1], payload=row[2])
+                row = db.execute(
+                    "SELECT purged,digest,payload,plan FROM turns WHERE event_id=?",
+                    (event_id,)).fetchone()
+            return SimpleNamespace(purged=bool(row[0]), digest=row[1],
+                                   payload=row[2], plan=row[3])
 
         result = purge.execute_purge(plan, delete_vector, scrub_turn, vector_exists, turn_get)
         record("purge_executed",
@@ -217,11 +231,20 @@ def main():
                {"before": count_after_store, "after": count_after_purge})
 
         current = turn_get(target_event)
+        payload_erased = purge._is_erased(current.payload)
+        plan_erased = purge._is_erased(current.plan)
+        digest_preserved = current.digest == plans[target_event]["source_digest"]
+        # The pre-purge turn really carried the fact content in BOTH copies, so
+        # "erased" below is not vacuously true of an already-empty column.
+        content_was_present = (FACTS[0]["text"] in seeded_payload[target_event]
+                               and FACTS[0]["text"] in seeded_plan[target_event])
         record("turn_scrubbed_digest_preserved",
-               current.purged and current.digest == plans[target_event]["source_digest"]
-               and current.payload == "[purged]",
+               current.purged and payload_erased and plan_erased and digest_preserved
+               and content_was_present,
                {"purged": current.purged, "payload": current.payload,
-                "digestPreserved": current.digest == plans[target_event]["source_digest"]})
+                "plan": current.plan, "payloadErased": payload_erased,
+                "planErased": plan_erased, "digestPreserved": digest_preserved,
+                "contentWasPresentBefore": content_was_present})
         untouched = [turn_get(e) for e in others]
         record("non_target_turns_untouched", all(not t.purged for t in untouched),
                {"purged": [t.purged for t in untouched]})

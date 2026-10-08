@@ -8,6 +8,7 @@ directory: :mod:`services.memory.reconcile` is pure, so these tests are too.
 from __future__ import annotations
 
 import copy
+import itertools
 import sys
 import unittest
 from pathlib import Path
@@ -16,7 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.memory.reconcile import ReconcileError, reconcile  # noqa: E402
+from services.memory.reconcile import (  # noqa: E402
+    ReconcileError,
+    _sole_terminal,
+    reconcile,
+)
 
 SLOT = "user:nickname"
 
@@ -26,6 +31,45 @@ def receipt(event_id, text="", created_at=0.0, user_id="u1", **extra):
     item = {"event_id": event_id, "user_id": user_id, "text": text, "created_at": created_at}
     item.update(extra)
     return item
+
+
+def assert_sound_resolution(test, out):
+    """Assert the output carries no cycle and no dangling edge.
+
+    Every resolved (``current``/``superseded``) node must reach exactly one
+    terminal -- a node whose ``superseded_by`` is ``None`` -- in finitely many
+    steps, and each group's ``version``/``chain``/``superseded_by`` triple must be
+    mutually consistent.
+    """
+    items = out["current"] + out["superseded"]
+    by_id = {item["event_id"]: item for item in items}
+
+    # Every edge either terminates or points inside the same resolved set.
+    for item in items:
+        successor = item["superseded_by"]
+        test.assertTrue(successor is None or successor in by_id)
+
+    # Group members share one chain and one terminal; versions are 1..n in order.
+    groups = {}
+    for item in items:
+        groups.setdefault(tuple(item["chain"]), []).append(item)
+    for chain, members in groups.items():
+        ordered = sorted(members, key=lambda entry: entry["version"])
+        test.assertEqual([entry["event_id"] for entry in ordered], list(chain))
+        test.assertEqual([entry["version"] for entry in ordered], list(range(1, len(chain) + 1)))
+        terminals = [entry for entry in members if entry["superseded_by"] is None]
+        test.assertEqual(len(terminals), 1)
+        test.assertEqual(terminals[0]["event_id"], chain[-1])
+
+    # Following successors from any node terminates without revisiting a node.
+    for item in items:
+        seen = []
+        node = item["event_id"]
+        while node is not None:
+            test.assertNotIn(node, seen)  # a repeat would be a retained cycle
+            seen.append(node)
+            node = by_id[node]["superseded_by"]
+        test.assertEqual(seen[-1], item["chain"][-1])
 
 
 class ReconcileBasicsTest(unittest.TestCase):
@@ -145,6 +189,171 @@ class ReconcileExplicitSupersedesTest(unittest.TestCase):
         self.assertEqual(out["conflicts"][0]["reason"], "supersede-target-invalid")
         self.assertEqual({i["event_id"] for i in out["current"]}, {"e1"})
         self.assertIsNone(out["current"][0]["superseded_by"])
+
+
+class ReconcileCycleTest(unittest.TestCase):
+    """RC-F001: a terminal elsewhere in the graph must not mask a cycle."""
+
+    def test_disconnected_cycle_falls_back_to_timeline(self):
+        # a(t1) declares it supersedes b(t2) -- a *newer* target, i.e. a
+        # contradiction.  a<->b form a closed loop while c(t3) is a clean
+        # terminal, so a lone "is there a None?" check is fooled.  The whole
+        # successor graph must be inspected, the explicit edges dropped, and the
+        # group re-sorted by the pure timeline.
+        out = reconcile([
+            receipt("a", text="A", created_at=1.0, slot=SLOT, supersedes="b"),
+            receipt("b", text="B", created_at=2.0, slot=SLOT),
+            receipt("c", text="C", created_at=3.0, slot=SLOT),
+        ])
+        by_id = {item["event_id"]: item for item in out["current"] + out["superseded"]}
+        self.assertEqual([item["event_id"] for item in out["current"]], ["c"])
+        self.assertEqual(out["conflicts"], [])
+        self.assertEqual(by_id["a"]["superseded_by"], "b")
+        self.assertEqual(by_id["b"]["superseded_by"], "c")
+        self.assertIsNone(by_id["c"]["superseded_by"])
+        for item in out["current"] + out["superseded"]:
+            self.assertEqual(item["chain"], ["a", "b", "c"])
+        assert_sound_resolution(self, out)
+
+    def test_four_node_internal_cycle_falls_back_to_timeline(self):
+        # a<->b<->c fold back on themselves while d(t4) is terminal.
+        out = reconcile([
+            receipt("a", created_at=1.0, slot=SLOT, supersedes="b"),
+            receipt("b", created_at=2.0, slot=SLOT, supersedes="c"),
+            receipt("c", created_at=3.0, slot=SLOT, supersedes="a"),
+            receipt("d", created_at=4.0, slot=SLOT),
+        ])
+        by_id = {item["event_id"]: item for item in out["current"] + out["superseded"]}
+        self.assertEqual([item["event_id"] for item in out["current"]], ["d"])
+        self.assertEqual(out["conflicts"], [])
+        self.assertEqual(by_id["a"]["superseded_by"], "b")
+        self.assertEqual(by_id["b"]["superseded_by"], "c")
+        self.assertEqual(by_id["c"]["superseded_by"], "d")
+        self.assertIsNone(by_id["d"]["superseded_by"])
+        assert_sound_resolution(self, out)
+
+    def test_all_nodes_cycle_falls_back_to_timeline(self):
+        # No clean terminal at all: a(t1) supersedes b(t2) and b(t2) supersedes
+        # a(t1) -- a mutual contradiction with nothing outside the loop.
+        out = reconcile([
+            receipt("a", created_at=1.0, slot=SLOT, supersedes="b"),
+            receipt("b", created_at=2.0, slot=SLOT, supersedes="a"),
+        ])
+        by_id = {item["event_id"]: item for item in out["current"] + out["superseded"]}
+        self.assertEqual([item["event_id"] for item in out["current"]], ["b"])
+        self.assertEqual(out["conflicts"], [])
+        self.assertEqual(by_id["a"]["superseded_by"], "b")
+        self.assertIsNone(by_id["b"]["superseded_by"])
+        assert_sound_resolution(self, out)
+
+    def test_contradictory_edge_falls_back_to_timeline(self):
+        # b(t2) declares it supersedes c(t3) -- a *newer* target.  That bends the
+        # chain back on itself (b -> c -> b) while a(t1) is a clean terminal.  The
+        # contradiction is resolved by discarding the explicit edge and using the
+        # timeline (a -> b -> c), never by keeping the loop.
+        out = reconcile([
+            receipt("a", created_at=1.0, slot=SLOT),
+            receipt("b", created_at=2.0, slot=SLOT, supersedes="c"),
+            receipt("c", created_at=3.0, slot=SLOT),
+        ])
+        by_id = {item["event_id"]: item for item in out["current"] + out["superseded"]}
+        self.assertEqual([item["event_id"] for item in out["current"]], ["c"])
+        self.assertEqual(by_id["a"]["superseded_by"], "b")
+        self.assertEqual(by_id["b"]["superseded_by"], "c")
+        self.assertIsNone(by_id["c"]["superseded_by"])
+        self.assertEqual(out["conflicts"], [])
+        assert_sound_resolution(self, out)
+
+    def test_valid_edge_then_contradiction_drops_the_whole_set(self):
+        # The documented rule is group-level: any cycle makes the group fall back
+        # to the pure timeline, so a *valid* correction in the same group is
+        # dropped too.  e(t5) supersedes c(t3) would normally skip d(t4)
+        # (c -> e); once a(t1) supersedes b(t2) closes a loop, the group uses the
+        # timeline (c -> d) instead.
+        out = reconcile([
+            receipt("a", created_at=1.0, slot=SLOT, supersedes="b"),
+            receipt("b", created_at=2.0, slot=SLOT),
+            receipt("c", created_at=3.0, slot=SLOT),
+            receipt("d", created_at=4.0, slot=SLOT),
+            receipt("e", created_at=5.0, slot=SLOT, supersedes="c"),
+        ])
+        by_id = {item["event_id"]: item for item in out["current"] + out["superseded"]}
+        self.assertEqual([item["event_id"] for item in out["current"]], ["e"])
+        self.assertEqual(by_id["a"]["superseded_by"], "b")
+        self.assertEqual(by_id["b"]["superseded_by"], "c")
+        self.assertEqual(by_id["c"]["superseded_by"], "d")
+        self.assertEqual(by_id["d"]["superseded_by"], "e")
+        self.assertEqual(out["conflicts"], [])
+        assert_sound_resolution(self, out)
+
+    def test_cycle_fallback_is_independent_of_input_order(self):
+        base = [
+            receipt("a", created_at=1.0, slot=SLOT, supersedes="b"),
+            receipt("b", created_at=2.0, slot=SLOT),
+            receipt("c", created_at=3.0, slot=SLOT),
+        ]
+        outputs = [reconcile(list(order)) for order in itertools.permutations(base)]
+        for out in outputs:
+            self.assertEqual(out, outputs[0])
+            assert_sound_resolution(self, out)
+
+    def test_valid_cross_version_correction_is_preserved_without_a_cycle(self):
+        # e4 explicitly corrects e1, skipping e2 and e3, and nothing contradicts
+        # it: the explicit edge stands (no fallback) and the graph is acyclic.
+        out = reconcile([
+            receipt("e1", created_at=1.0, slot=SLOT),
+            receipt("e2", created_at=2.0, slot=SLOT),
+            receipt("e3", created_at=3.0, slot=SLOT),
+            receipt("e4", created_at=4.0, slot=SLOT, supersedes="e1"),
+        ])
+        by_id = {item["event_id"]: item for item in out["current"] + out["superseded"]}
+        self.assertEqual([item["event_id"] for item in out["current"]], ["e4"])
+        self.assertEqual(by_id["e1"]["superseded_by"], "e4")
+        self.assertEqual(by_id["e2"]["superseded_by"], "e3")
+        self.assertEqual(by_id["e3"]["superseded_by"], "e4")
+        self.assertEqual(out["conflicts"], [])
+        assert_sound_resolution(self, out)
+
+
+class SuccessorGraphAnalysisTest(unittest.TestCase):
+    """Direct tests of the three-colour DFS that guards the successor graph."""
+
+    def test_sound_chain_returns_its_terminal(self):
+        self.assertEqual(
+            _sole_terminal(["a", "b", "c"], {"a": "b", "b": "c", "c": None}),
+            (True, "c"),
+        )
+
+    def test_merge_into_a_shared_terminal_is_sound(self):
+        self.assertEqual(
+            _sole_terminal(["a", "b", "c"], {"a": "c", "b": "c", "c": None}),
+            (True, "c"),
+        )
+
+    def test_disconnected_cycle_is_unsound(self):
+        # a<->b loop, c is a clean terminal: the exact RC-F001 shape.
+        self.assertEqual(
+            _sole_terminal(["a", "b", "c"], {"a": "b", "b": "a", "c": None}),
+            (False, None),
+        )
+
+    def test_all_node_cycle_is_unsound(self):
+        self.assertEqual(
+            _sole_terminal(["a", "b"], {"a": "b", "b": "a"}),
+            (False, None),
+        )
+
+    def test_dangling_edge_is_unsound(self):
+        self.assertEqual(
+            _sole_terminal(["a"], {"a": "ghost"}),
+            (False, None),
+        )
+
+    def test_two_terminals_are_unsound(self):
+        self.assertEqual(
+            _sole_terminal(["a", "b"], {"a": None, "b": None}),
+            (False, None),
+        )
 
 
 class ReconcileConflictTest(unittest.TestCase):

@@ -13,6 +13,26 @@
 // writes the store, never logs, and is not wired into the vendor SessionManager
 // (that wiring is a later slice).
 //
+// Lifecycle fence (SP-F001): a registered session carries a monotonic
+// `generation`. `closeSession` flips `closed` and bumps the generation exactly
+// once. Each request snapshots the generation at entry and re-checks it on
+// three boundaries — after the approval resolver returns, immediately before the
+// approval is consumed, and after consumption commits but before a permission is
+// delivered. A close observed on either pre-consume boundary denies
+// `session-closed` with zero side effects; a close observed after the consume has
+// committed is reported as `consumed-then-closed`, an honest result that never
+// pretends the approval was left untouched. Closing never replays, never undoes a
+// consume, and never resurrects a request.
+//
+// One-shot reservation (SP-F002): before its first await a request reserves
+// `(sessionId, toolCallId)` and binds the immutable parameters digest it was
+// admitted with. A concurrent request with the same id is a `replay` (same body)
+// or a `conflict` (different body), refused before the resolver or the store is
+// touched; a settled id (allow / denied / error) is forever a replay, so an
+// exception cannot be laundered into a retry that bypasses the one-shot. The
+// reservation set is process-local and intentionally not persisted; after a
+// fromJSON restore the surviving semantics come from the decision log alone.
+//
 // Secret hygiene: decision entries retain only the request's parameters digest,
 // never the rawInput payload. Every Error.message carries a machine-readable
 // code only (and a fixed reason label); it never echoes a binding value, a
@@ -38,7 +58,10 @@ const BINDING_FIELDS = Object.freeze(['ownerId', 'source', 'accountId', 'profile
 const BINDING_ALIASES = Object.freeze({ owner: 'ownerId', account: 'accountId', profile: 'profileId' });
 const ALIAS_OF = Object.freeze(Object.fromEntries(Object.entries(BINDING_ALIASES).map(([alias, field]) => [field, alias])));
 
-const OUTCOMES = Object.freeze(new Set(['allow_once', 'unknown-session', 'session-closed', 'replay', 'unsupported-options', 'unknown-tool-kind', 'no-approval']));
+const OUTCOMES = Object.freeze(new Set([
+  'allow_once', 'unknown-session', 'session-closed', 'replay', 'unsupported-options',
+  'unknown-tool-kind', 'no-approval', 'conflict', 'consumed-then-closed', 'error',
+]));
 
 export class SessionPermissionError extends Error {
   constructor(code, reason) {
@@ -57,9 +80,10 @@ export function createSessionPermissionBroker({ store, findApprovalId, now = Dat
     throw new SessionPermissionError('invalid-state');
   }
 
-  const sessions = new Map(); // sessionId -> { sessionId, binding, closed, closedAt }
+  const sessions = new Map(); // sessionId -> { sessionId, binding, closed, closedAt, generation }
   const decisionLog = []; // frozen entries, oldest first
   const adjudicated = new Set(); // `${sessionId}\0${toolCallId}` that were ever decided
+  const inFlight = new Map(); // `${sessionId}\0${toolCallId}` -> reserved but not yet settled
 
   const at = () => new Date(now()).toISOString();
 
@@ -90,17 +114,21 @@ export function createSessionPermissionBroker({ store, findApprovalId, now = Dat
     registerSession(binding) {
       const normalized = normalizeBinding(binding, 'invalid-binding');
       const sessionId = `s_${random(SESSION_ID_BYTES).toString('hex')}`;
-      sessions.set(sessionId, { sessionId, binding: normalized, closed: false, closedAt: null });
+      sessions.set(sessionId, { sessionId, binding: normalized, closed: false, closedAt: null, generation: 0 });
       return { sessionId };
     },
 
     // Mark a session closed (record retained for audit). Unknown -> throws.
+    // Closing is monotonic: the first close flips `closed` and bumps the
+    // generation the in-flight fences compare against; repeated closes are
+    // inert, and a close never replays or undoes a consumed approval.
     closeSession(sessionId) {
       const record = typeof sessionId === 'string' ? sessions.get(sessionId) : undefined;
       if (!record) throw new SessionPermissionError('unknown-session');
       if (!record.closed) {
         record.closed = true;
         record.closedAt = at();
+        record.generation += 1;
       }
       return { sessionId, closed: true };
     },
@@ -118,6 +146,12 @@ export function createSessionPermissionBroker({ store, findApprovalId, now = Dat
       if (!record) return denied(sessionId, toolCallId, toolKind, null, 'unknown-session');
       if (record.closed) return denied(sessionId, toolCallId, toolKind, null, 'session-closed');
 
+      // Snapshot the session generation at entry. `closeSession` is monotonic
+      // (open -> closed, once) and mutates the shared record in place, so the
+      // fences below compare against this snapshot to observe a close that lands
+      // at any point while this request is in flight.
+      const generation = record.generation;
+
       // 2. One-shot: an already-decided toolCallId is never re-adjudicated, so a
       //    replayed allow neither re-releases nor re-consumes an approval.
       const replayKey = typeof toolCallId === 'string' && toolCallId ? `${sessionId}\u0000${toolCallId}` : null;
@@ -134,9 +168,9 @@ export function createSessionPermissionBroker({ store, findApprovalId, now = Dat
         return denied(sessionId, toolCallId, toolKind, null, 'unknown-tool-kind');
       }
 
-      // 5. Delegate verification to the D07 broker with the registered binding.
-      //    The model-supplied approvalId is never trusted (host findApprovalId
-      //    resolves it), and any failure/undefined denies rather than allows.
+      // 5. Freeze this request's immutable parameters digest now, before the
+      //    first await, so the in-flight reservation below binds to exactly the
+      //    call body it was admitted with.
       const params = {
         sessionId: record.binding.nativeSessionId,
         toolCall: { toolCallId, kind: toolKind, rawInput: request.rawInput },
@@ -145,14 +179,84 @@ export function createSessionPermissionBroker({ store, findApprovalId, now = Dat
       let parametersDigest = null;
       try { parametersDigest = acpPermissionPlan(record.binding, params).parametersDigest; } catch { parametersDigest = null; }
 
-      let optionId;
-      try { optionId = await createAcpPermissionBroker({ store, binding: record.binding, findApprovalId }).authorizePermission(params); } catch { optionId = undefined; }
+      // 6. One-shot reservation, keyed by (sessionId, toolCallId), taken BEFORE
+      //    the first await. Exactly one adjudication per call identity is ever in
+      //    flight: a concurrent call with the same id and the same frozen digest
+      //    is a replay; the same id with a different body is a conflict. Both are
+      //    refused here, before the resolver or the store is touched, so neither
+      //    can reach a second allow or a second consume.
+      if (replayKey !== null) {
+        const held = inFlight.get(replayKey);
+        if (held) {
+          const sameBody = held.parametersDigest !== null && held.parametersDigest === parametersDigest;
+          return denied(sessionId, toolCallId, toolKind, parametersDigest, sameBody ? 'replay' : 'conflict');
+        }
+        inFlight.set(replayKey, Object.freeze({ sessionId, toolCallId, toolKind, parametersDigest, generation }));
+      }
 
-      if (typeof optionId === 'string' && optionId.length > 0) {
+      // Every terminal path settles the reservation into the decision log, so a
+      // settled call identity (allow / denied / error) is forever a replay and an
+      // exception can never be laundered into a retry that bypasses the one-shot.
+      const settle = (reason) => {
+        if (replayKey !== null) inFlight.delete(replayKey);
+        return denied(sessionId, toolCallId, toolKind, parametersDigest, reason);
+      };
+      const settleAllow = () => {
+        if (replayKey !== null) inFlight.delete(replayKey);
         logDecision(sessionId, toolCallId, toolKind, parametersDigest, 'allow_once');
         return { outcome: 'allow_once' };
+      };
+
+      // 7. Session-lifecycle fence (SP-F001). `closeSession` may run at any point
+      //    while this request is in flight — including while the resolver or the
+      //    store is awaiting. Two checks guard the wait and the irreversible
+      //    consume, one guards the response:
+      //      (A) after the resolver returns but before the request may proceed;
+      //      (B) immediately before consumeApproval is committed;
+      //      (C) after consumeApproval has committed, before an allow is delivered.
+      //    A close observed at (A) or (B) denies `session-closed` with zero side
+      //    effects. A close observed at (C) means the approval was already
+      //    consumed: the result is reported truthfully as `consumed-then-closed`
+      //    (never a fabricated clean denial), because delivery of the permission
+      //    is now unknown. Coordination is otherwise inert: closing never
+      //    replays, never undoes a consume, and never resurrects a request.
+      const fence = { violation: null };
+      const stateChanged = () => {
+        const current = sessions.get(sessionId);
+        return !current || current.closed || current.generation !== generation;
+      };
+      const guardedResolver = async (plan) => {
+        const approvalId = await findApprovalId(plan);
+        if (stateChanged()) { fence.violation = 'session-closed'; return undefined; } // (A)
+        return approvalId;
+      };
+      const guardedStore = {
+        consumeApproval: async (approvalId, input, opts) => {
+          if (stateChanged()) { fence.violation = 'session-closed'; throw new SessionPermissionError('session-closed'); } // (B)
+          const consumed = await store.consumeApproval(approvalId, input, opts);
+          if (stateChanged()) fence.violation = 'consumed-then-closed'; // (C)
+          return consumed;
+        },
+      };
+
+      // 8. Delegate parameter verification and one-shot consumption to the D07
+      //    broker, unchanged, through the fences above. The model-supplied
+      //    approvalId is never trusted (host findApprovalId resolves it), and any
+      //    failure/undefined denies rather than allows. A synchronous construction
+      //    failure is caught here and settled `error` so its reservation is burned.
+      let optionId;
+      try {
+        optionId = await createAcpPermissionBroker({ store: guardedStore, binding: record.binding, findApprovalId: guardedResolver }).authorizePermission(params);
+      } catch {
+        optionId = undefined;
+        if (fence.violation === null) fence.violation = 'error';
       }
-      return denied(sessionId, toolCallId, toolKind, parametersDigest, 'no-approval');
+
+      if (fence.violation === 'consumed-then-closed') return settle('consumed-then-closed');
+      if (fence.violation === 'session-closed') return settle('session-closed');
+      if (fence.violation === 'error') return settle('error');
+      if (typeof optionId === 'string' && optionId.length > 0) return settleAllow();
+      return settle('no-approval');
     },
 
     // Decision log, optionally filtered by session. Returns frozen copies.
@@ -199,6 +303,11 @@ export function createSessionPermissionBroker({ store, findApprovalId, now = Dat
           binding: normalizeBinding(record.binding, 'invalid-state'),
           closed: record.closed,
           closedAt: record.closedAt,
+          // The generation is process-local: it only needs to distinguish "this
+          // session changed after a request entered". A restored closed session
+          // starts at generation 1, an open one at 0; no request can be in flight
+          // across a restore, so the exact historical count is irrelevant.
+          generation: record.closed ? 1 : 0,
         });
       }
 
@@ -228,6 +337,7 @@ export function createSessionPermissionBroker({ store, findApprovalId, now = Dat
       for (const [id, record] of nextSessions) sessions.set(id, record);
       decisionLog.length = 0;
       adjudicated.clear();
+      inFlight.clear(); // reservations are process-local; a restore replaces all state
       for (const entry of nextLog) {
         decisionLog.push(entry);
         if (entry.sessionId !== null && entry.toolCallId !== null) adjudicated.add(`${entry.sessionId}\u0000${entry.toolCallId}`);

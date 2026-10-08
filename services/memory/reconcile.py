@@ -69,9 +69,18 @@ Documented behaviour beyond the literal contract
 * ``None`` for the optional keys ``source``/``slot``/``supersedes`` is treated
   as *absent*; any other non-string value is invalid.
 * If an explicit declaration contradicts the timeline (the target is newer than
-  its declarer) the resulting successor graph can contain a cycle.  In that
-  corner the explicit edges are dropped and the group falls back to the pure
+  its declarer) the resulting successor graph can contain a cycle.  The
+  *complete* successor graph is therefore validated with a deterministic
+  three-colour DFS that walks every connected component -- a disconnected cycle
+  (``A <-> B`` alongside a clean terminal ``C``) is caught just like a cycle that
+  swallows every node, not merely "there is no ``None`` left".  When a cycle is
+  found the explicit edges are dropped and the group falls back to the pure
   timeline, so every resolvable group always yields exactly one ``current``.
+  The output never carries a cycle or a dangling edge, and every ``current``/
+  ``superseded`` node reaches its terminal (``superseded_by is None``) in
+  finitely many steps.  In the defensive corner where even the timeline cannot
+  pin down a single terminal, the whole group goes to ``conflicts`` with reason
+  ``"cycle-conflict"`` rather than emit a broken chain.
 """
 
 from __future__ import annotations
@@ -83,8 +92,13 @@ __all__ = ["ReconcileError", "reconcile"]
 INVALID_RECEIPT = "invalid-receipt"
 SUPERSEDE_TARGET_INVALID = "supersede-target-invalid"
 SAME_TIMESTAMP_CONFLICT = "same-timestamp-conflict"
+CYCLE_CONFLICT = "cycle-conflict"
 
 _REQUIRED = ("event_id", "user_id", "text", "created_at")
+
+# Three-colour DFS markers for the successor-graph analysis.
+_WHITE, _GREY, _BLACK = 0, 1, 2
+_UNSET = object()
 
 
 class ReconcileError(Exception):
@@ -142,6 +156,59 @@ def _truthy_forgotten(receipt) -> bool:
     return bool(receipt.get("forgotten"))
 
 
+def _sole_terminal(nodes, successor):
+    """Deterministic three-colour DFS over the *whole* successor graph.
+
+    ``nodes`` is the group's event_ids in canonical (time) order and
+    ``successor`` maps each of them to its successor event_id or ``None``.  Every
+    node has out-degree at most one, so the graph is a set of chains that either
+    terminate at ``None`` or -- when explicit corrections contradict the timeline
+    -- fold back on themselves as a cycle.
+
+    Every connected component is walked with white/grey/black marking (grey means
+    "on the current DFS path"), so a cycle is caught no matter where it sits and
+    regardless of whether some *other* node is a clean terminal.  Returns
+    ``(sound, terminal)``:
+
+    * ``sound`` is ``True`` only when the group is a single acyclic chain that
+      funnels into exactly one terminal (a node whose successor is ``None``),
+      reachable from every node in finitely many steps, with no edge dangling
+      outside ``nodes``;
+    * ``terminal`` is that terminal event_id when ``sound`` is ``True``, else
+      ``None``.
+    """
+    colour = {node: _WHITE for node in nodes}
+    terminal_of = {}  # BLACK node -> the terminal its chain funnels into
+    terminal = _UNSET
+    for start in nodes:
+        if colour[start] != _WHITE:
+            continue
+        path = []
+        node = start
+        while node is not None:
+            if node not in colour:
+                return False, None  # edge dangles outside the group
+            if colour[node] != _WHITE:
+                break
+            colour[node] = _GREY
+            path.append(node)
+            node = successor.get(node)
+        if node is None:
+            reach = path[-1]  # walked off the end: the last hop is the terminal
+        elif colour[node] == _GREY:
+            return False, None  # re-entering the current path -> cycle
+        else:  # BLACK: merged into an already-resolved chain
+            reach = terminal_of[node]
+        for visited in path:
+            colour[visited] = _BLACK
+            terminal_of[visited] = reach
+        if terminal is _UNSET:
+            terminal = reach
+        elif terminal != reach:
+            return False, None  # two terminals -> no unique resolution
+    return True, terminal
+
+
 def _resolve_group(members, by_id):
     """Resolve a single ``(user_id, slot)`` group.
 
@@ -186,27 +253,41 @@ def _resolve_group(members, by_id):
     # Rule 3 -- the time-ordered chain defines versions and the default successor.
     ordered = sorted(active, key=lambda receipt: (receipt["created_at"], receipt["event_id"]))
     chain = [receipt["event_id"] for receipt in ordered]
-    successor = {
-        ordered[index]["event_id"]: ordered[index + 1]["event_id"]
-        for index in range(len(ordered) - 1)
+    nodes = list(chain)
+    timeline = {
+        receipt["event_id"]: (ordered[index + 1]["event_id"]
+                              if index + 1 < len(ordered) else None)
+        for index, receipt in enumerate(ordered)
     }
-    successor[ordered[-1]["event_id"]] = None
 
     # Valid explicit corrections override the default successor.  Iterating the
     # time order means the newest declarer wins if several correct one target.
+    successor = dict(timeline)
     for receipt in ordered:
         target_id = receipt.get("supersedes") or ""
         if target_id:
             successor[target_id] = receipt["event_id"]
 
-    # Cycle guard for contradictory declarations: fall back to the pure timeline
-    # so a resolvable group always has exactly one current.
-    if not any(value is None for value in successor.values()):
-        successor = {
-            receipt["event_id"]: (ordered[index + 1]["event_id"]
-                                  if index + 1 < len(ordered) else None)
-            for index, receipt in enumerate(ordered)
-        }
+    # Cycle / reachability guard: analyse the *complete* successor graph, not just
+    # the presence of a ``None``.  A contradictory declaration (a declarer that
+    # points at a *newer* target) bends the chain back on itself; counting ``None``
+    # misses a disconnected cycle -- ``A <-> B`` is retained whenever some other
+    # member ``C`` is a clean terminal.
+    sound, _ = _sole_terminal(nodes, successor)
+    if not sound:
+        # Documented rule: drop the explicit edges and fall back to the pure
+        # timeline, which is a total order and therefore always a single chain.
+        successor = timeline
+        sound, _ = _sole_terminal(nodes, successor)
+
+    if not sound:
+        # Defensive invariant: never emit a cycle or a dangling edge, and never
+        # claim a resolution we cannot justify.  A group that even the timeline
+        # cannot reduce to a single acyclic chain is quarantined as a conflict.
+        for receipt in ordered:
+            conflicts.append({**receipt, "reason": CYCLE_CONFLICT})
+        conflicts.sort(key=lambda item: (item["created_at"], item["event_id"]))
+        return current, superseded, conflicts
 
     for index, receipt in enumerate(ordered):
         superseded_by = successor[receipt["event_id"]]

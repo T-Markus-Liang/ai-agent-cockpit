@@ -11,6 +11,18 @@ import { createSessionPermissionBroker, SessionPermissionError } from '../contro
 // Fully synthetic harness. No production secrets, native sessions or files.
 const OPERATOR = { id: 'operator-synthetic', role: 'operator', authenticated: true };
 
+// A promise plus its resolver, so a test can park the broker at a chosen await
+// and interleave a session close deterministically.
+const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+
+// Fail fast (rather than hang the runner) if a regression leaves an await parked.
+const bounded = async (promise) => {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('test deadline exceeded')), 2000); })]);
+  } finally { clearTimeout(timer); }
+};
+
 // The flattened request shape a SessionManager would call with. Kept separate
 // from the nested D07 `params` so the session layer's translation is exercised.
 const flatRequest = (overrides = {}) => ({
@@ -283,5 +295,224 @@ test('14: malformed snapshots fail closed with invalid-state', async () => {
     ];
     for (const bad of cases) assert.throws(() => createSessionPermissionBroker({ store: countStore, findApprovalId: async () => undefined }).fromJSON(bad), error => error.code === 'invalid-state');
     assert.doesNotThrow(() => createSessionPermissionBroker({ store: countStore, findApprovalId: async () => undefined }).fromJSON({ version: 1, sessions: [], decisions: [] }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SP-F001 — logical session close must fence an in-flight adjudication.
+// ---------------------------------------------------------------------------
+
+test('15: a close before entry denies session-closed with zero consumption', async () => {
+  await fixture(async ({ store, countStore, binding, approval }) => {
+    let approvalId;
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: async () => approvalId });
+    const { sessionId } = broker.registerSession(binding);
+    approvalId = await approval(flatRequest());
+    broker.closeSession(sessionId);
+    const before = JSON.stringify(await store.read());
+    assert.deepEqual(await broker.handlePermissionRequest({ sessionId, ...flatRequest() }), { outcome: 'denied', reason: 'session-closed' });
+    assert.equal(countStore.calls, 0);
+    assert.equal((await store.getApproval(approvalId)).usedAt, undefined);
+    assert.equal(JSON.stringify(await store.read()), before);
+    assert.deepEqual(broker.decisions(sessionId).map(entry => entry.outcome), ['session-closed']);
+  });
+});
+
+test('16: a close while the resolver is awaited denies session-closed and never consumes', async () => {
+  await fixture(async ({ store, countStore, binding, approval }) => {
+    const approvalId = await approval(flatRequest());
+    const entered = deferred(); const gate = deferred();
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: async () => { entered.resolve(); await gate.promise; return approvalId; } });
+    const { sessionId } = broker.registerSession(binding);
+    const pending = broker.handlePermissionRequest({ sessionId, ...flatRequest() });
+    await bounded(entered.promise);
+    broker.closeSession(sessionId);
+    gate.resolve();
+    assert.deepEqual(await bounded(pending), { outcome: 'denied', reason: 'session-closed' });
+    assert.equal(countStore.calls, 0, 'close observed after the resolver returned must not consume');
+    assert.equal((await store.getApproval(approvalId)).usedAt, undefined);
+    assert.deepEqual(broker.decisions(sessionId).map(entry => entry.outcome), ['session-closed']);
+  });
+});
+
+test('17: a close after the resolver fulfils but before the broker resumes denies session-closed', async () => {
+  await fixture(async ({ store, countStore, binding, approval }) => {
+    const approvalId = await approval(flatRequest());
+    const gate = deferred();
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: () => gate.promise });
+    const { sessionId } = broker.registerSession(binding);
+    const pending = broker.handlePermissionRequest({ sessionId, ...flatRequest() });
+    gate.resolve(approvalId);        // the resolver promise fulfils ...
+    broker.closeSession(sessionId);  // ... and the session closes before the broker's continuation runs
+    assert.deepEqual(await bounded(pending), { outcome: 'denied', reason: 'session-closed' });
+    assert.equal(countStore.calls, 0);
+    assert.equal((await store.getApproval(approvalId)).usedAt, undefined);
+  });
+});
+
+test('18: a close once the consume has committed reports consumed-then-closed, never a clean denial', async () => {
+  await fixture(async ({ store, binding, approval }) => {
+    const approvalId = await approval(flatRequest());
+    const enteredConsume = deferred(); const gate = deferred();
+    let consumed = 0;
+    const gatedStore = { consumeApproval: async (...args) => {
+      consumed += 1;
+      const result = await store.consumeApproval(...args);
+      enteredConsume.resolve();
+      await gate.promise;
+      return result;
+    } };
+    const broker = createSessionPermissionBroker({ store: gatedStore, findApprovalId: async () => approvalId });
+    const { sessionId } = broker.registerSession(binding);
+    const pending = broker.handlePermissionRequest({ sessionId, ...flatRequest() });
+    await bounded(enteredConsume.promise); // the approval is now consumed
+    broker.closeSession(sessionId);
+    gate.resolve();
+    assert.deepEqual(await bounded(pending), { outcome: 'denied', reason: 'consumed-then-closed' });
+    assert.equal(consumed, 1, 'the consume was already committed and is not rolled back');
+    assert.ok((await store.getApproval(approvalId)).usedAt, 'the consumed approval stays consumed');
+    assert.deepEqual(broker.decisions(sessionId).map(entry => entry.outcome), ['consumed-then-closed']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SP-F002 — one in-flight adjudication per (sessionId, toolCallId).
+// ---------------------------------------------------------------------------
+
+test('19: concurrent same id, same body replays and never allows or consumes twice', async () => {
+  await fixture(async ({ store, countStore, binding, approval }) => {
+    const approvalId = await approval(flatRequest());
+    const gate = deferred(); let arrivals = 0;
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: async () => { arrivals += 1; await gate.promise; return approvalId; } });
+    const { sessionId } = broker.registerSession(binding);
+    const pending = Promise.all([
+      broker.handlePermissionRequest({ sessionId, ...flatRequest() }),
+      broker.handlePermissionRequest({ sessionId, ...flatRequest() }),
+    ]);
+    gate.resolve();
+    const results = await bounded(pending);
+    assert.deepEqual(results.map(r => r.outcome), ['allow_once', 'denied']);
+    assert.deepEqual(results[1], { outcome: 'denied', reason: 'replay' });
+    assert.equal(arrivals, 1, 'the duplicate is refused before the resolver');
+    assert.equal(countStore.calls, 1, 'exactly one approval is consumed');
+    assert.ok((await store.getApproval(approvalId)).usedAt);
+  });
+});
+
+test('20: concurrent same id, different body is a conflict refused before resolver or consume', async () => {
+  await fixture(async ({ store, countStore, binding, approval }) => {
+    const first = flatRequest({ rawInput: { path: 'first.txt' } });
+    const second = flatRequest({ rawInput: { path: 'second.txt' } });
+    const approvalA = await approval(first);
+    const approvalB = await approval(second);
+    const gate = deferred(); let arrivals = 0;
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: async plan => { arrivals += 1; await gate.promise; return plan.parameters.toolCall.rawInput.path === 'first.txt' ? approvalA : approvalB; } });
+    const { sessionId } = broker.registerSession(binding);
+    const pending = Promise.all([
+      broker.handlePermissionRequest({ sessionId, ...first }),
+      broker.handlePermissionRequest({ sessionId, ...second }),
+    ]);
+    gate.resolve();
+    const [r1, r2] = await bounded(pending);
+    assert.deepEqual(r1, { outcome: 'allow_once' });
+    assert.deepEqual(r2, { outcome: 'denied', reason: 'conflict' });
+    assert.equal(arrivals, 1, 'the conflicting request never reaches the resolver');
+    assert.equal(countStore.calls, 1);
+    assert.ok((await store.getApproval(approvalA)).usedAt);
+    assert.equal((await store.getApproval(approvalB)).usedAt, undefined, 'the conflicting approval is left untouched');
+  });
+});
+
+test('21: once the first allow settles, a later same id replays without re-consuming', async () => {
+  await fixture(async ({ store, countStore, binding, approval }) => {
+    const approvalId = await approval(flatRequest());
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: async () => approvalId });
+    const { sessionId } = broker.registerSession(binding);
+    assert.deepEqual(await broker.handlePermissionRequest({ sessionId, ...flatRequest() }), { outcome: 'allow_once' });
+    assert.deepEqual(await broker.handlePermissionRequest({ sessionId, ...flatRequest() }), { outcome: 'denied', reason: 'replay' });
+    assert.equal(countStore.calls, 1);
+    assert.deepEqual(broker.decisions(sessionId).map(entry => entry.outcome), ['allow_once', 'replay']);
+  });
+});
+
+test('22: a settled denial burns the reservation, so a same-id retry is replay and cannot consume', async () => {
+  await fixture(async ({ store, countStore, binding, approval }) => {
+    let approvalId;
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: async () => approvalId });
+    const { sessionId } = broker.registerSession(binding);
+    approvalId = undefined; // first attempt finds no approval -> no-approval (a settled denial)
+    assert.deepEqual(await broker.handlePermissionRequest({ sessionId, ...flatRequest() }), { outcome: 'denied', reason: 'no-approval' });
+    approvalId = await approval(flatRequest()); // a real approval now exists
+    assert.deepEqual(await broker.handlePermissionRequest({ sessionId, ...flatRequest() }), { outcome: 'denied', reason: 'replay' });
+    assert.equal(countStore.calls, 0, 'the burned reservation keeps the retry away from the store');
+    assert.equal((await store.getApproval(approvalId)).usedAt, undefined);
+  });
+});
+
+test('23: an exception path fail-closed burns the reservation (no replay-free retry of the same id)', async () => {
+  await fixture(async ({ countStore, binding }) => {
+    // A non-absolute cwd passes registerSession but makes the D07 broker throw
+    // at construction, an otherwise unhandled error path.
+    const relative = { ...binding, cwd: 'relative-not-absolute' };
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: async () => { throw Error('the resolver must not run for an unverifiable binding'); } });
+    const { sessionId } = broker.registerSession(relative);
+    assert.deepEqual(await broker.handlePermissionRequest({ sessionId, ...flatRequest() }), { outcome: 'denied', reason: 'error' });
+    assert.deepEqual(await broker.handlePermissionRequest({ sessionId, ...flatRequest() }), { outcome: 'denied', reason: 'replay' });
+    assert.equal(countStore.calls, 0);
+    assert.deepEqual(broker.decisions(sessionId).map(entry => entry.outcome), ['error', 'replay']);
+  });
+});
+
+test('24: different tool call ids adjudicate in parallel and each consumes its own approval', async () => {
+  await fixture(async ({ store, countStore, binding, approval }) => {
+    const first = flatRequest({ toolCallId: 'call-par-a', rawInput: { path: 'a.txt' } });
+    const second = flatRequest({ toolCallId: 'call-par-b', rawInput: { path: 'b.txt' } });
+    const approvalA = await approval(first);
+    const approvalB = await approval(second);
+    const entered = deferred(); const gate = deferred(); let arrivals = 0;
+    const byId = { 'call-par-a': approvalA, 'call-par-b': approvalB };
+    const broker = createSessionPermissionBroker({ store: countStore, findApprovalId: async plan => { if ((arrivals += 1) === 2) entered.resolve(); await gate.promise; return byId[plan.parameters.toolCall.toolCallId]; } });
+    const { sessionId } = broker.registerSession(binding);
+    const pending = Promise.all([
+      broker.handlePermissionRequest({ sessionId, ...first }),
+      broker.handlePermissionRequest({ sessionId, ...second }),
+    ]);
+    await bounded(entered.promise); // both requests are parked at the resolver, reservations distinct
+    gate.resolve();
+    const results = await bounded(pending);
+    assert.deepEqual(results.map(r => r.outcome), ['allow_once', 'allow_once']);
+    assert.equal(arrivals, 2);
+    assert.equal(countStore.calls, 2);
+    assert.ok((await store.getApproval(approvalA)).usedAt);
+    assert.ok((await store.getApproval(approvalB)).usedAt);
+  });
+});
+
+test('25: reservations are process-local — a restore keeps the log semantics but not in-flight claims', async () => {
+  await fixture(async ({ binding }) => {
+    const fakeStore = { calls: 0, consumeApproval: async () => { fakeStore.calls += 1; return { replay: false }; } };
+    const gate = deferred();
+    const brokerA = createSessionPermissionBroker({ store: fakeStore, findApprovalId: async () => { await gate.promise; return 'approval-live'; } });
+    const { sessionId } = brokerA.registerSession(binding);
+
+    const pending = brokerA.handlePermissionRequest({ sessionId, ...flatRequest({ toolCallId: 'call-live' }) });
+    // 'call-live' is now reserved in brokerA but has not settled, so it is absent
+    // from both the decision log and the serialized snapshot.
+    const snapshot = JSON.parse(JSON.stringify(brokerA.toJSON()));
+    assert.deepEqual(snapshot.decisions, []);
+
+    const brokerB = createSessionPermissionBroker({ store: fakeStore, findApprovalId: async () => 'approval-live' });
+    assert.equal(brokerB.fromJSON(snapshot), brokerB);
+    assert.deepEqual(brokerB.decisions(), []);
+
+    // The restored broker started with an empty reservation set: the same id is
+    // adjudicated afresh, and only then does its own reservation dedupe a repeat.
+    assert.deepEqual(await bounded(brokerB.handlePermissionRequest({ sessionId, ...flatRequest({ toolCallId: 'call-live' }) })), { outcome: 'allow_once' });
+    assert.deepEqual(await bounded(brokerB.handlePermissionRequest({ sessionId, ...flatRequest({ toolCallId: 'call-live' }) })), { outcome: 'denied', reason: 'replay' });
+
+    // brokerA's in-flight request settles independently and is unaffected by the restore.
+    gate.resolve();
+    assert.deepEqual(await bounded(pending), { outcome: 'allow_once' });
+    assert.equal(fakeStore.calls, 2);
   });
 });

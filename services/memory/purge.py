@@ -7,13 +7,25 @@ Purge always runs **after** a soft forget: this module refuses to physically
 erase anything that has no tombstone yet, so the reversible operator action and
 the irreversible one stay strictly ordered.
 
-Two invariants shape the design:
+Three invariants shape the design:
 
 * Erase the content, keep the evidence. A turn row is never physically removed:
-  its payload is scrubbed to an erasure marker, ``purged`` is set, and the
-  original ``digest`` is preserved verbatim — so the deletion itself stays
+  its content copies are scrubbed to an erasure marker, ``purged`` is set, and
+  the original ``digest`` is preserved verbatim — so the deletion itself stays
   auditable. Vector entries are the only physical deletion, and every effect
   goes through an *injected* function (never a real SDK/DB call here).
+* Verify the content, not just the flag. A success is claimed only after the
+  layer re-reads every content copy it owns on the turn — ``payload`` and the
+  ``plan``/``quote`` extraction record — and finds each erased to the agreed
+  marker or empty. A correctly-set ``purged`` flag and an unchanged ``digest``
+  are necessary but not sufficient. If the read surface cannot expose a content
+  field, the outcome is ``unverifiable``, never ``verified``.
+* Re-check before you erase. No irreversible effect is dispatched until every
+  target's live digest has been re-read from the authoritative store and
+  compared to the approved plan digest. A target that drifted since planning is
+  left with zero ``delete``/``scrub`` and rejected as ``drifted-target``; a
+  partially-applied batch is reported truthfully, never as a rolled-back
+  success.
 * No revival of an old summary. This module never deletes tombstones. The
   tombstone left behind by the prior soft forget keeps intercepting any replay
   of the same source text under a new event id (``lifecycle.ForgetStore.match``
@@ -29,7 +41,9 @@ local coordinator/vendor bridge.
 Pure Python standard library; no model, SDK or service is imported or called.
 The caller supplies the physical-effect callbacks (``delete_vector``,
 ``scrub_turn``, ``vector_exists``, ``turn_get``); tests drive them with pure
-in-memory fakes.
+in-memory fakes. ``turn_get(event_id)`` is contracted to return the current turn
+with, at minimum, ``purged``, ``digest`` and the layer-owned content copies
+``payload`` / ``plan`` (both must be readable, or the erase is unverifiable).
 """
 from __future__ import annotations
 
@@ -38,6 +52,8 @@ PURGE_ERROR_CODES = (
     "tombstone-required",
     "purge-incomplete",
     "verify-failed",
+    "drifted-target",
+    "unverifiable",
 )
 
 _MODES = ("event", "fact")
@@ -46,6 +62,14 @@ _RECEIPT_KEYS = frozenset({"event_id", "user_id", "digest", "source_hash",
                            "vector_ids", "has_archive"})
 _TOMBSTONE_KEYS = frozenset({"user_id", "event_id", "source_hash", "quote_hashes"})
 _REQUEST_KEYS = frozenset({"user_id", "selector", "mode"})
+
+# Content copies this layer owns on a turn row and must prove erased: the raw
+# ``payload`` and the extraction ``plan`` (whose ``facts[*].quote`` entries echo
+# the original text). ``turn_get`` must expose both for a purge to be verified.
+_CONTENT_FIELDS = ("payload", "plan")
+# The agreed marker a scrubbed content field is rewritten to; an empty value is
+# equally accepted (see :func:`_is_erased`).
+ERASURE_MARKER = "[purged]"
 
 
 class PurgeError(Exception):
@@ -56,18 +80,21 @@ class PurgeError(Exception):
     a partial erase is reported explicitly, never silently swallowed.
     """
 
-    def __init__(self, code: str, *, completed=None, failed=None, detail: str | None = None):
+    def __init__(self, code: str, *, completed=None, failed=None, drifted=None,
+                 detail: str | None = None):
         if code not in PURGE_ERROR_CODES:
             raise ValueError(f"unknown purge error code: {code!r}")
         self.code = code
         self.completed = list(completed or [])
         self.failed = list(failed or [])
+        self.drifted = list(drifted or [])
         self.detail = detail
         super().__init__(code)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return (f"PurgeError({self.code!r}, completed={self.completed!r}, "
-                f"failed={self.failed!r}, detail={self.detail!r})")
+                f"failed={self.failed!r}, drifted={self.drifted!r}, "
+                f"detail={self.detail!r})")
 
 
 class _FrozenDict(dict):
@@ -249,21 +276,69 @@ def plan_purge(receipts, tombstones, request) -> dict:
     return _freeze(plan)
 
 
+def _is_erased(value) -> bool:
+    """True only when a content field no longer carries user content.
+
+    Erased means empty (``None``, ``""``/``b""``, or an empty container) or the
+    agreed marker — either the string :data:`ERASURE_MARKER` or the structural
+    ``{"purged": True}`` form a scrub writer may leave behind. A surviving extra
+    key (e.g. ``{"purged": True, "text": ...}``) or any non-empty plan still
+    counts as content present.
+    """
+    if value is None:
+        return True
+    if isinstance(value, (str, bytes)):
+        return value == "" or value == b"" or value == ERASURE_MARKER
+    if isinstance(value, (list, tuple, dict, set, frozenset)):
+        if len(value) == 0:
+            return True
+        return (isinstance(value, dict) and set(value) == {"purged"}
+                and value["purged"] is True)
+    return False
+
+
+def _read_content(turn):
+    """Return ``{field: value}`` for the layer-owned content fields.
+
+    ``None`` means the read surface cannot expose one of them, so erasure is
+    unverifiable — the caller must report that, never a ``verified`` success.
+    """
+    values = {}
+    for field in _CONTENT_FIELDS:
+        if isinstance(turn, dict):
+            if field not in turn:
+                return None
+            values[field] = turn[field]
+        elif hasattr(turn, field):
+            values[field] = getattr(turn, field)
+        else:
+            return None
+    return values
+
+
 def execute_purge(plan, delete_vector, scrub_turn, vector_exists, turn_get) -> dict:
     """Execute a frozen plan through injected physical-effect callbacks.
 
     * ``delete_vector(vector_id)`` — physically delete one vector entry.
-    * ``scrub_turn(event_id)`` — clear the turn payload and set ``purged`` while
-      preserving the ``digest`` (erase content, keep evidence).
+    * ``scrub_turn(event_id)`` — clear the turn's content copies (``payload`` and
+      ``plan``) and set ``purged`` while preserving the ``digest`` (erase
+      content, keep evidence).
     * ``vector_exists(vector_id)`` — post-erase existence probe.
-    * ``turn_get(event_id)`` — read a turn with ``.purged`` / ``.digest``.
+    * ``turn_get(event_id)`` — read a turn exposing ``.purged`` / ``.digest`` and
+      the content copies ``.payload`` / ``.plan``. Without the content fields the
+      erase cannot be verified.
 
     Ordered guarantees: a plan with unmet tombstones raises
     ``tombstone-required`` with zero side effects; an empty plan returns
-    ``{"purged": [], "skipped": True}``; a callback failure raises
-    ``purge-incomplete`` with the truthful completed/failed target lists; a
-    failed post-erase check raises ``verify-failed``. Replaying an
-    already-purged plan reports ``already_purged`` without re-deleting.
+    ``{"purged": [], "skipped": True}``; **every** target's live digest is
+    re-read and compared to the approved plan *before any effect* — a drifted
+    target keeps zero ``delete``/``scrub`` and the batch fails with
+    ``drifted-target`` carrying the truthful completed/drifted lists; a callback
+    failure raises ``purge-incomplete`` with the truthful completed/failed lists;
+    a failed post-erase check raises ``verify-failed``; a turn whose content
+    copies cannot be read raises ``unverifiable`` — never ``verified``.
+    Replaying an already-purged plan reports ``already_purged`` without
+    re-deleting.
     """
     for name, callback in (("delete_vector", delete_vector), ("scrub_turn", scrub_turn),
                            ("vector_exists", vector_exists), ("turn_get", turn_get)):
@@ -279,25 +354,48 @@ def execute_purge(plan, delete_vector, scrub_turn, vector_exists, turn_get) -> d
     if plan["empty"] or len(targets) == 0:
         return {"purged": [], "already_purged": [], "skipped": True}
 
-    purged = []
-    already_purged = []
+    # 3. Drift gate — read the current authoritative digest for EVERY target and
+    # compare it to the approved plan digest *before dispatching any effect*.
+    # A target whose digest no longer matches (or cannot be read at all) is
+    # withheld: it gets zero delete/scrub. The whole batch is checked first, so
+    # a target drifting later in the batch is caught just as early.
+    drifted = []
+    ok_targets = []
     for target in targets:
         event_id = target["event_id"]
-        # 5. Idempotency: an already-purged target is reported, never re-deleted.
+        try:
+            current_digest = getattr(turn_get(event_id), "digest", None)
+        except Exception:  # noqa: BLE001 - an unreadable target is not confirmable
+            current_digest = None
+        if not isinstance(current_digest, str) or current_digest != target["digest"]:
+            drifted.append(event_id)
+        else:
+            ok_targets.append(target)
+
+    # 4. Apply effects, but only to targets that still match the plan. A
+    # confirmable sibling is still erased even when another target drifted.
+    purged = []
+    already_purged = []
+    for target in ok_targets:
+        event_id = target["event_id"]
+        # Idempotency: an already-purged target is reported, never re-deleted.
         if getattr(turn_get(event_id), "purged", None):
             already_purged.append(event_id)
             continue
         try:
             for vector_id in target["vector_ids"]:
                 delete_vector(vector_id)
-            scrub_turn(event_id)  # preserve digest, clear payload, set purged
+            scrub_turn(event_id)  # preserve digest, clear content, set purged
         except Exception as error:  # noqa: BLE001 - report, never half-erase silently
             raise PurgeError("purge-incomplete", completed=list(purged),
-                             failed=[event_id], detail=type(error).__name__) from error
+                             failed=[event_id], drifted=list(drifted),
+                             detail=type(error).__name__) from error
         purged.append(event_id)
 
-    # 4. Post-erase verification: vectors gone, turn purged, digest preserved.
-    for target in targets:
+    # 5. Post-erase verification: vectors gone, turn purged, digest preserved,
+    # and — the part a flag alone cannot prove — every layer-owned content copy
+    # actually erased.
+    for target in ok_targets:
         event_id = target["event_id"]
         for vector_id in target["vector_ids"]:
             if vector_exists(vector_id):
@@ -307,8 +405,24 @@ def execute_purge(plan, delete_vector, scrub_turn, vector_exists, turn_get) -> d
             raise PurgeError("verify-failed", detail=f"turn_not_purged:{event_id}")
         if getattr(current, "digest", None) != target["digest"]:
             raise PurgeError("verify-failed", detail=f"digest_changed:{event_id}")
+        content = _read_content(current)
+        if content is None:
+            # The read surface cannot show us the content: unverifiable, never a
+            # verified permanent-erasure claim.
+            raise PurgeError("unverifiable", detail=f"content_unavailable:{event_id}")
+        for field, value in content.items():
+            if not _is_erased(value):
+                raise PurgeError("verify-failed",
+                                 detail=f"content_present:{event_id}:{field}")
 
-    # 6. Tombstones are intentionally left intact (see module docstring): they
+    # 6. A drifted target is rejected only after the confirmable targets are
+    # finished, so the outcome is an honest partial purge — never a silent
+    # success and never a fake rollback.
+    if drifted:
+        raise PurgeError("drifted-target", completed=list(purged),
+                         drifted=list(drifted), detail="digest_drift")
+
+    # 7. Tombstones are intentionally left intact (see module docstring): they
     # keep intercepting any replay of the erased source. Nothing here removes a
     # tombstone, and ``archive_refs`` is only a reference — the vendor-owned
     # conversation archive is never touched by this stage.
