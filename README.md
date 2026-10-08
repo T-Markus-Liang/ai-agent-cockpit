@@ -197,6 +197,40 @@ npm run doctor
 curl -fsS http://127.0.0.1:4324/health
 ```
 
+## 部署与安装
+
+先说实话：这套系统至今只在这一台 Mac 上演进部署，以下步骤从未在干净机器上完整验证——它们是"现状记录"，不是"安装保证"。从零安装的端到端验收还没做，列入 0.3.0 之后的工作。
+
+前置：macOS（用 launchd / Seatbelt）、Node.js 24（用到 `node:sqlite`）、Python 3.11 与 uv（记忆服务）、Kimi 等 provider 的本机配置与凭据。
+
+```bash
+git clone https://github.com/T-Markus-Liang/personal-ai-os.git
+cd personal-ai-os
+npm install
+
+# 微信桥（vendor 内嵌的 TypeScript 项目）
+npm --prefix vendor/wechat-acp run build
+
+# 记忆服务（Python 独立环境；详见 services/memory/README.md）
+uv venv --python /opt/homebrew/bin/python3.11 .venv-memory
+uv pip install --python .venv-memory/bin/python -r services/memory/requirements.lock
+
+# 开发 / 临时使用：不装常驻服务，拉起还没跑的入口
+./scripts/start-local.sh
+
+# 常驻：把 plist 复制到 LaunchAgents 后逐个 bootstrap
+cp launchd/*.plist ~/Library/LaunchAgents/
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.markus.ai-agent-cockpit.control-plane.plist
+
+# 微信绑定：打开控制服务拿二维码，扫码登录；token 落在 ~/.wechat-acp/
+open http://127.0.0.1:4322
+
+# 验收
+npm run doctor && curl -fsS http://127.0.0.1:4324/health
+```
+
+换机或目录改名时必改的机器专属项：`config/wechat-acp.json` 里 6 处绝对路径、8 个 plist 里 33 处绝对路径、`.venv-memory` 的 shebang（venv 不能搬，要重建）。微信登录态与实例数据在 `~/.wechat-acp/`，控制面状态在 `~/.local/state/`，都不跟仓库走。完整的改名迁移清单见[命名决策](docs/decisions/rename-personal-ai-os.md)。
+
 ## 本机一览
 
 | 端口 | 组件 | launchd 标签 | 职责 |
