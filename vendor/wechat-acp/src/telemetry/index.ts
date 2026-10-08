@@ -1,7 +1,7 @@
 /**
  * Anonymous usage telemetry via Azure Application Insights — OPT-IN ONLY.
  *
- * Privacy / safety contract (SKEY-F002 rework):
+ * Privacy / safety contract (SKEY-F002 + SKEY-F003 rework):
  *   - Telemetry is DISABLED BY DEFAULT. With `WECHAT_ACP_TELEMETRY` unset we do
  *     NOT load the SDK, do NOT create an install id, do NOT touch the filesystem,
  *     and do NOT emit any event or exception.
@@ -14,9 +14,16 @@
  *     `category` (allow-listed area) and a bounded machine-readable `code`
  *     (derived from a fixed set of error kinds). Error `message`, `stack`, `cause`,
  *     request bodies, headers and arbitrary `properties` are never read or sent.
- *   - `trackEvent` accepts only allow-listed event names and per-event property
- *     keys; every value is coerced to a bounded enum, a bounded integer, a boolean,
- *     a bounded hash, or a bounded identifier token. Free text is dropped.
+ *   - Every emitted value is one of: a FIXED ENUM, a bounded COUNT, a
+ *     CODE-COMPUTED salted hash, or TRUSTED version metadata. Arbitrary caller
+ *     strings are NEVER forwarded verbatim — the old "looks like an identifier"
+ *     token passthrough is gone (SKEY-F003):
+ *       * `agentPreset` is classified into a known category (`custom` if unknown);
+ *       * config `configId` / `optionValue` are emitted only as salted hashes;
+ *       * the `ai.session.id` tag (event AND exception) is a salted hash of the
+ *         caller's session id, or the install id when absent;
+ *       * `commonProperties` / `context.tags` are built only from fixed constants,
+ *         the random install id, bounded version metadata and classified presets.
  *
  * Enable:
  *   WECHAT_ACP_TELEMETRY=1 \
@@ -69,7 +76,7 @@ type PropValue = string | number | boolean;
 // ---------------------------------------------------------------------------
 
 const EVENT_PROP_SCHEMA: Record<EventName, Readonly<Record<string, PropKind>>> = {
-  "app.start": { agentPreset: "token", daemon: "bool" },
+  "app.start": { agentPreset: "agentPresetEnum", daemon: "bool" },
   "app.stop": { reason: "reasonEnum", uptimeSec: "int" },
   "login.success": { forced: "bool", durationMs: "int" },
   "login.failure": { forced: "bool", durationMs: "int", errorType: "code" },
@@ -85,11 +92,14 @@ const EVENT_PROP_SCHEMA: Record<EventName, Readonly<Record<string, PropKind>>> =
     droppedBufferedBlockCount: "int",
   },
   "command.acp_config.view": { userIdHash: "hash", hasSession: "bool", optionCount: "int" },
+  // Config values are NEVER sent verbatim — only code-computed salted hashes.
+  // Keys stay `configId` / `optionValue` (caller contract); the emitted value is
+  // a 16-hex salted hash, not the raw string.
   "command.acp_config.set": {
     userIdHash: "hash",
-    configId: "token",
+    configId: "saltedHash",
     optionType: "optionTypeEnum",
-    optionValue: "token",
+    optionValue: "saltedHash",
   },
   "command.acp_cancel": {
     userIdHash: "hash",
@@ -107,13 +117,13 @@ const EVENT_PROP_SCHEMA: Record<EventName, Readonly<Record<string, PropKind>>> =
   "command.buffer_done": { userIdHash: "hash", blockCount: "int" },
   "session.created": {
     userIdHash: "hash",
-    agentPreset: "token",
+    agentPreset: "agentPresetEnum",
     activeSessions: "int",
     sessionOutcome: "sessionOutcomeEnum",
   },
   "prompt.completed": {
     userIdHash: "hash",
-    agentPreset: "token",
+    agentPreset: "agentPresetEnum",
     stopReason: "stopReasonEnum",
     success: "bool",
     durationMs: "int",
@@ -126,23 +136,25 @@ const EVENT_PROP_SCHEMA: Record<EventName, Readonly<Record<string, PropKind>>> =
     chars: "int",
     durationMs: "int",
   },
-  "reply.image.sent": { userIdHash: "hash", bytes: "int", mimeType: "token", durationMs: "int" },
-  "reply.audio.sent": { userIdHash: "hash", bytes: "int", mimeType: "token", durationMs: "int" },
-  "reply.file.sent": { userIdHash: "hash", bytes: "int", mimeType: "token", durationMs: "int" },
+  "reply.image.sent": { userIdHash: "hash", bytes: "int", mimeType: "mimeEnum", durationMs: "int" },
+  "reply.audio.sent": { userIdHash: "hash", bytes: "int", mimeType: "mimeEnum", durationMs: "int" },
+  "reply.file.sent": { userIdHash: "hash", bytes: "int", mimeType: "mimeEnum", durationMs: "int" },
 };
 
 type PropKind =
   | "bool"
   | "int"
   | "hash"
-  | "token"
+  | "saltedHash"
   | "code"
   | "kindEnum"
   | "targetEnum"
   | "reasonEnum"
   | "optionTypeEnum"
   | "sessionOutcomeEnum"
-  | "stopReasonEnum";
+  | "stopReasonEnum"
+  | "agentPresetEnum"
+  | "mimeEnum";
 
 /** Allow-listed exception areas. Anything else collapses to `unclassified`. */
 const EXCEPTION_CATEGORIES = new Set<string>([
@@ -203,16 +215,76 @@ const ENUM_VALUES: Record<string, ReadonlySet<string>> = {
     "error",
     "other",
   ]),
+  // Known built-in agent presets; anything else collapses to `custom`.
+  agentPresetEnum: new Set([
+    "copilot",
+    "claude",
+    "gemini",
+    "qwen",
+    "codex",
+    "opencode",
+    "openclaw",
+    "kiro",
+    "hermes",
+    "kimi",
+    "pi",
+    "raw",
+  ]),
+  // Known MIME types; anything else collapses to `other`.
+  mimeEnum: new Set([
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/ogg",
+    "audio/amr",
+    "audio/aac",
+    "video/mp4",
+    "application/pdf",
+    "application/json",
+    "application/octet-stream",
+    "application/zip",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+  ]),
 };
 
 const ENUM_FALLBACK = "other";
-const TOKEN_FALLBACK = "other";
-/** Bounded identifier/format token — no whitespace, quotes, `=`, `:` or `@`. */
-const TOKEN_RE = /^[A-Za-z0-9._/+-]{1,64}$/;
+const AGENT_PRESET_FALLBACK = "custom";
 const HASH_RE = /^[0-9a-f]{1,64}$/;
 const MAX_INT = 1_000_000_000_000; // 1e12 bounds any counter/duration we emit.
+/**
+ * Salt used when computing hashes of caller-supplied strings (session ids, config
+ * values) and when no install id is available. Prefer the install-level random id;
+ * this constant is a deterministic fallback so a value never egresses verbatim.
+ */
+const HASH_SALT_FALLBACK = "wechat-acp-telemetry";
 
-function coerceProp(kind: PropKind, value: PropValue): string | undefined {
+/** Version metadata is trusted but still length/charset bounded. */
+const VERSION_RE = /^[0-9A-Za-z.+-]{1,32}$/;
+
+/** Deterministic, salted, truncated hash — the only way caller strings are emitted. */
+function hashWithSalt(salt: string, value: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(salt)
+    .update("\u0000")
+    .update(value)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function coerceProp(
+  kind: PropKind,
+  value: PropValue,
+  hash: (v: string) => string,
+): string | undefined {
   switch (kind) {
     case "bool":
       return typeof value === "boolean" ? String(value) : undefined;
@@ -222,16 +294,33 @@ function coerceProp(kind: PropKind, value: PropValue): string | undefined {
     }
     case "hash":
       return typeof value === "string" && HASH_RE.test(value) ? value : undefined;
+    case "saltedHash":
+      // Never forward the raw string — always a code-computed salted hash.
+      return typeof value === "string" && value.length > 0 ? hash(value) : undefined;
     case "code":
       return typeof value === "string" && ALLOWED_ERROR_CODES.has(value) ? value : UNKNOWN_CODE;
-    case "token":
-      return typeof value === "string" && TOKEN_RE.test(value) ? value : TOKEN_FALLBACK;
+    case "agentPresetEnum": {
+      const allowed = ENUM_VALUES.agentPresetEnum;
+      return typeof value === "string" && allowed.has(value) ? value : AGENT_PRESET_FALLBACK;
+    }
     default: {
       const allowed = ENUM_VALUES[kind];
       if (!allowed) return undefined;
       return typeof value === "string" && allowed.has(value) ? value : ENUM_FALLBACK;
     }
   }
+}
+
+/** Classify a raw agent preset into a known category; unknown → `custom`. */
+function classifyAgentPreset(value: unknown): string {
+  return typeof value === "string" && ENUM_VALUES.agentPresetEnum.has(value)
+    ? value
+    : AGENT_PRESET_FALLBACK;
+}
+
+/** Bound trusted version metadata; anything unusual → `unknown`. */
+function boundedVersion(value: string): string {
+  return typeof value === "string" && VERSION_RE.test(value) ? value : "unknown";
 }
 
 /** Map an error's `name` to a bounded code. Never inspects message/stack/cause. */
@@ -334,6 +423,11 @@ export function createTelemetry(deps: TelemetryDeps = {}): Telemetry {
     return (getEnv()[CONNECTION_STRING_ENV] ?? "").trim();
   }
 
+  /** Instance hash: salted with the install-level random id (or a fixed fallback). */
+  function saltedHash(value: string): string {
+    return hashWithSalt(installId || HASH_SALT_FALLBACK, value);
+  }
+
   function loadOrCreateInstallId(storageDir: string): string {
     const idFile = path.join(storageDir, "telemetry-id");
     try {
@@ -371,6 +465,7 @@ export function createTelemetry(deps: TelemetryDeps = {}): Telemetry {
       const loader = opts.sdkLoader ?? sdkLoader;
       const appInsights = loader();
       const conn = connectionString; // read from env only; never logged or stored.
+      const version = boundedVersion(opts.version);
 
       appInsights
         .setup(conn)
@@ -384,16 +479,19 @@ export function createTelemetry(deps: TelemetryDeps = {}): Telemetry {
         .start();
 
       const c = appInsights.defaultClient as unknown as AppInsightsClient;
+      // Every envelope tag is either a fixed constant, the random install id, or
+      // bounded version metadata — never raw caller text.
       c.context.tags[c.context.keys.cloudRole] = "wechat-acp";
       c.context.tags[c.context.keys.userId] = installId;
-      c.context.tags["ai.application.ver"] = opts.version;
+      c.context.tags["ai.application.ver"] = version;
       c.commonProperties = {
-        version: opts.version,
+        version,
         node: process.version,
         os: process.platform,
         arch: process.arch,
         installId,
-        ...(opts.agentPreset ? { agentPreset: opts.agentPreset } : {}),
+        // Raw preset is classified into a known category; unknown → `custom`.
+        ...(opts.agentPreset ? { agentPreset: classifyAgentPreset(opts.agentPreset) } : {}),
         ...(opts.daemon !== undefined ? { daemon: String(opts.daemon) } : {}),
       };
       client = c;
@@ -406,12 +504,15 @@ export function createTelemetry(deps: TelemetryDeps = {}): Telemetry {
   }
 
   /**
-   * Only a bounded session token is used; anything else falls back to the install
-   * id (or a constant when telemetry is off). Never pass raw user ids.
+   * The session tag is a code-computed salted hash of whatever the caller passes,
+   * or the install id when absent. The raw caller string is never forwarded — this
+   * single helper is used by BOTH trackEvent and trackException.
    */
   function buildTagOverrides(sessionId?: string): Record<string, string> {
     const token =
-      typeof sessionId === "string" && TOKEN_RE.test(sessionId) ? sessionId : installId || "anonymous";
+      typeof sessionId === "string" && sessionId.length > 0
+        ? saltedHash(sessionId)
+        : installId || "anonymous";
     return { "ai.session.id": token };
   }
 
@@ -428,7 +529,7 @@ export function createTelemetry(deps: TelemetryDeps = {}): Telemetry {
       if (props) {
         for (const [key, kind] of Object.entries(schema)) {
           if (!Object.prototype.hasOwnProperty.call(props, key)) continue;
-          const coerced = coerceProp(kind, props[key]);
+          const coerced = coerceProp(kind, props[key], saltedHash);
           if (coerced !== undefined) properties[key] = coerced;
         }
       }

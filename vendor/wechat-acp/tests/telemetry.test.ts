@@ -299,7 +299,8 @@ test("enabled: trackEvent keeps only allow-listed keys with bounded values", asy
     } as never);
     // Invalid enum/hash values fall back to a bounded value or are dropped.
     t.trackEvent("message.received", { userIdHash: "NOT-HEX", kind: "not-a-kind" });
-    // Free-text stops are collapsed; numbers are bounded integers; negatives drop.
+    // Free-text stops collapse to `other`; unknown preset -> `custom`; numbers are
+    // bounded integers; negatives drop.
     t.trackEvent("prompt.completed", {
       stopReason: `secret ${TESTONLY_CRED}`,
       agentPreset: "a b c",
@@ -307,13 +308,15 @@ test("enabled: trackEvent keeps only allow-listed keys with bounded values", asy
       durationMs: 12.9,
       replyChars: -5,
     });
+    // A known preset is preserved as its category.
+    t.trackEvent("app.start", { agentPreset: "copilot", daemon: true });
     // Unknown event names are dropped entirely.
     t.trackEvent("evil.event" as never, { x: 1 } as never);
     // Raw session id (not a bounded token) must not be forwarded as a tag.
     t.trackEvent("message.received", { userIdHash: "deadbeefdeadbeef", kind: "text" }, "user@example.com");
 
     const events = fake.calls.events;
-    assert.equal(events.length, 4, "unknown event name must be dropped");
+    assert.equal(events.length, 5, "unknown event name must be dropped");
 
     assert.deepEqual(Object.keys(events[0].properties as object).sort(), ["kind", "userIdHash"]);
     assert.deepEqual(events[0].properties, { userIdHash: "deadbeefdeadbeef", kind: "text" });
@@ -322,13 +325,16 @@ test("enabled: trackEvent keeps only allow-listed keys with bounded values", asy
 
     assert.deepEqual(events[2].properties, {
       stopReason: "other",
-      agentPreset: "other",
+      agentPreset: "custom",
       success: "true",
       durationMs: "12",
     });
 
-    const tag = (events[3].tagOverrides as Record<string, string>)["ai.session.id"];
+    assert.deepEqual(events[3].properties, { agentPreset: "copilot", daemon: "true" });
+
+    const tag = (events[4].tagOverrides as Record<string, string>)["ai.session.id"];
     assert.notEqual(tag, "user@example.com", "raw session id must not be forwarded");
+    assert.match(tag, /^[0-9a-f]{16}$/, "session tag must be a salted hash");
 
     for (const event of events) {
       for (const value of Object.values(event.properties as Record<string, unknown>)) {
@@ -423,6 +429,110 @@ test("hashUserId works without telemetry and creates no install-id file", async 
     assert.notEqual(a, t.hashUserId("user-2"));
     assert.equal(t.hashUserId(""), "");
     assert.equal(fs.existsSync(idFile(dir)), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SKEY-F003 regression: the exact audit probe path. A synthetic value that is a
+// "valid-looking identifier" (sk- + repeated TESTONLY, 35 chars) is passed through
+// optionValue / configId / session tag / agentPreset and must NOT egress verbatim.
+// ---------------------------------------------------------------------------
+
+test("SKEY-F003: audit canary (sk-identifier shape) never egresses via config/tag/preset", async () => {
+  const fake = makeFakeSdk();
+  const dir = tmpDir();
+  try {
+    const canary = "sk-" + "TESTONLY".repeat(4); // the audit's 35-char synthetic value
+    assert.equal(canary.length, 35);
+    const t = createTelemetry({ getEnv: enabledEnv, sdkLoader: () => fake.sdk });
+    t.init({ version: "synthetic", storageDir: dir, agentPreset: canary });
+
+    t.trackEvent(
+      "command.acp_config.set",
+      { configId: canary, optionType: "select", optionValue: canary },
+      canary,
+    );
+    t.trackException(new Error(canary), "prompt", canary);
+
+    const event = fake.calls.events[0];
+    const exception = fake.calls.exceptions[0];
+
+    // No raw canary anywhere in what leaves the process.
+    assert.doesNotMatch(egressBlob(fake), /sk-TESTONLY/, "audit canary must never egress");
+
+    // The four r1 leak paths, asserted fixed.
+    assert.notEqual((event.properties as Record<string, string>).optionValue, canary);
+    assert.notEqual((event.tagOverrides as Record<string, string>)["ai.session.id"], canary);
+    assert.notEqual((exception.tagOverrides as Record<string, string>)["ai.session.id"], canary);
+    assert.notEqual(fake.client.commonProperties.agentPreset, canary);
+
+    // Config values egress only as salted hashes; preset collapses to a category.
+    const props = event.properties as Record<string, string>;
+    assert.match(props.optionValue, /^[0-9a-f]{16}$/);
+    assert.match(props.configId, /^[0-9a-f]{16}$/);
+    assert.equal(props.optionType, "select");
+    assert.equal(fake.client.commonProperties.agentPreset, "custom");
+    assert.match((event.tagOverrides as Record<string, string>)["ai.session.id"], /^[0-9a-f]{16}$/);
+    assert.match((exception.tagOverrides as Record<string, string>)["ai.session.id"], /^[0-9a-f]{16}$/);
+    // Event and exception share the same session-tag computation.
+    assert.equal(
+      (event.tagOverrides as Record<string, string>)["ai.session.id"],
+      (exception.tagOverrides as Record<string, string>)["ai.session.id"],
+    );
+    // The raw exception text is gone (message/stack scrubbed).
+    assert.doesNotMatch((exception.exception as Error).message, /sk-TESTONLY/);
+    assert.equal((exception.exception as Error).stack, undefined);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("full egress surface carries no raw credential, path, URL or free text", async () => {
+  const fake = makeFakeSdk();
+  const dir = tmpDir();
+  try {
+    const credential = TESTONLY_CRED;
+    const secretPath = "/Users/someone/private/secret-project/keys.txt";
+    const secretUrl = "https://internal.example.invalid/private?token=abc";
+    const freeText = "please summarize my private diary about finances";
+    const presets = [credential, secretPath, secretUrl, freeText];
+
+    for (const preset of presets) {
+      fake.calls.events.length = 0;
+      fake.calls.exceptions.length = 0;
+      const t = createTelemetry({ getEnv: enabledEnv, sdkLoader: () => fake.sdk });
+      // Inject raw text into every acceptable field position.
+      t.init({ version: credential, storageDir: dir, agentPreset: preset, daemon: true });
+      t.trackEvent(
+        "command.acp_config.set",
+        { configId: secretPath, optionType: "select", optionValue: secretUrl } as never,
+        secretPath,
+      );
+      t.trackEvent("prompt.completed", {
+        stopReason: freeText,
+        agentPreset: preset,
+        success: true,
+        durationMs: 1,
+        replyChars: 1,
+      });
+      t.trackException(new Error(credential + secretPath + secretUrl), "command", credential);
+
+      const blob = egressBlob(fake);
+      for (const raw of [credential, secretPath, secretUrl, freeText]) {
+        assert.ok(!blob.includes(raw), `raw value must not egress: ${raw.slice(0, 12)}…`);
+      }
+      // Version metadata is bounded (untrusted-looking version → "unknown").
+      assert.equal(fake.client.commonProperties.version, "unknown");
+      assert.ok(["custom", "copilot"].includes(fake.client.commonProperties.agentPreset));
+    }
+
+    // context.tags and commonProperties only ever contain bounded metadata.
+    assert.equal(fake.client.context.tags["ai.application.ver"], "unknown");
+    for (const tag of Object.values(fake.client.context.tags)) {
+      assert.ok(typeof tag === "string" && tag.length <= 64);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
