@@ -6,6 +6,7 @@
 - `suite.log`：测试输出摘录；4个相关文件的188条用例通过，server typecheck通过。
 - `telemetry-probe.mjs`：可重复的合成探针，默认从本机项目读 telemetry 源码，所有外部 SDK 和 fs 均为 fake。未调用真实 telemetry。
 - `telemetry-probe-results.json`：默认环境裸异常抵达假SDK，明确关闭时不初始化、不交付异常。
+- `telemetry-r1-probe.mjs` / `telemetry-r1-probe-results.json`：新返工默认关闭/异常正文擦除的限定接受；4个opt-in属性/tag反例。[SKEY-F003返工条件](../../2026-10-08-telemetry-r1-review.md)。探针成功执行/exit0不等于“泄漏检查通过”，逐项布尔观察才是证据。
 
 本机临时只读扫描资产位于 `/tmp/personal-ai-os-secret-audit.w2M4sz`；不是生产安装。Gitleaks8.30.1归档已按官方发布SHA256核验。原始工作树/mirror没有上传到外部模型。
 
@@ -17,13 +18,16 @@ CEZ_HOME=/tmp/personal-ai-os-secret-audit.w2M4sz/cez-test-state TMPDIR=/tmp/pers
 npm run typecheck:server
 ```
 
-复跑遥测探针（Node24；不启动应用或服务）：
+复跑遥测探针（Node24；不启动应用或服务；必须匹配各自sourceRef）：
 
 ```bash
 cd /Users/markus/ai-agent-cockpit
-node docs/audits/evidence/2026-10-08-secret-scan/telemetry-probe.mjs
+TELEMETRY_AUDIT_SOURCE=/tmp/personal-ai-os-secret-audit.w2M4sz/worktree-final/vendor/wechat-acp/src/telemetry/index.ts node docs/audits/evidence/2026-10-08-secret-scan/telemetry-probe.mjs
+TELEMETRY_AUDIT_SOURCE=/tmp/personal-ai-os-secret-audit.w2M4sz/telemetry-r1-source.ts node docs/audits/evidence/2026-10-08-secret-scan/telemetry-r1-probe.mjs
 ```
 
 探针开发期间的两次 harness 失败分别来自TypeScript7原生包没有旧JS transpile API、VM loader名称被被测源码局部require遮蔽；修正为Node stripTypeScriptTypes与独立auditRequire后复现成功。两次失败不是产品缺陷证据，未据此作安全判断。
 
 实际扫描采用 `gitleaks dir <冻结目录>` 与 `gitleaks git <公开mirror> --log-opts='--all --full-history'`，均带 `--redact=100 --ignore-gitleaks-allow --max-decode-depth=5 --max-archive-depth=3`，不使用baseline。默认原始命中仍分别为4和6，因此exit1是“需要逐项复核”，不是扫描器故障，也不是整体全绿。
+
+并行执行方的README返工使用CRLF，后续整个工作树diff-check可能报告其尾部空白；本轮先前exit0仅绑定此前快照。审计没有重写其未提交源文件格式，也不把格式告警当作密钥泄漏。

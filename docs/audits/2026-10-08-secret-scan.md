@@ -6,7 +6,7 @@
 
 本次扫描没有确认真实账户 API Key 在项目源码、可达公开 Git 历史或已扫描本地日志中泄漏。用户指出的 `vendor/cezar/packages/cezar/src/core/secret-redaction.test.ts:66` 确实含有完整 Google Key 形状，且 GitHub secret scanning 告警 #1 仍 open；但其值与公开上游的人工合成测试样例完全一致，可由固定前缀、连续数字及连续字母构造，不是从本机凭据读取的值。
 
-这不是整套系统安全签字：**SKEY-F002：微信连接器默认遥测将异常原样交给第三方 SDK，潜在密钥外发通道尚未修复。** 静态扫描未发现真实密钥，不能证明运行中所有异常都安全。
+这不是整套系统安全签字：最初复现 **SKEY-F002：默认遥测原样传递异常**。并行同事已返工，新源码的默认关闭与异常正文擦除限定接受；但独立复核又复现 **SKEY-F003：opt-in模式的事件属性/commonProperties/session tag可携带密钥形状原文**。见[最新返工复核](2026-10-08-telemetry-r1-review.md)。静态扫描未发现真实密钥，不能证明所有运行路径安全。
 
 ## 扫描范围及证据
 
@@ -53,9 +53,9 @@
 
 Azure 官方说明：[Connection strings in Application Insights](https://learn.microsoft.com/en-us/azure/azure-monitor/app/connection-strings) 明确指出 instrumentation identifiers 不是 security tokens/security keys。这个分类**不豁免**遥测隐私与错误正文外发风险。
 
-## SKEY-F002：第三方遥测裸异常外发通道
+## SKEY-F002：第三方遥测裸异常外发通道（原版本证据）
 
-严重性：**Major / CHANGES_REQUESTED**。绑定 telemetry 源码 SHA256 `fccfc087f2f15d402bbf38ca311b65cbf5224bb39a3cce7cb9400472e4f6133a`。
+严重性：**Major / CHANGES_REQUESTED**。以下证据绑定原 telemetry SHA256 `fccfc087f2f15d402bbf38ca311b65cbf5224bb39a3cce7cb9400472e4f6133a`，不得拿新版源码复跑旧expectation后误认产品失败。新版r1的默认关闭、删除硬编码连接串、原Error正文擦除已限定接受；整体Finding仍受SKEY-F003约束。
 
 源码默认未设置 `WECHAT_ACP_TELEMETRY` 时会初始化外部 SDK；`trackException` 把原始 `Error`（或 `String(err)` 构成的新错误）传给 SDK，未剥离 message/stack。若 SDK 启用且错误含 key、token、请求头或私人 URL，可能外发。即使实际 Application Insights 安装/网络不可用而碰巧没有外发，也不构成源码的安全保证。
 

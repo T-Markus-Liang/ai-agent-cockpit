@@ -216,5 +216,14 @@
   "postSnapshotTestHygiene": "Only an extra EOF blank line in the changed test file was removed; targeted scanner and relevant tests rerun afterward.",
   "diffCheckExit": 0,
   "finalPublicCredentialMatchCount": 0,
-  "finalPublicCredentialValueCount": 12
+  "finalPublicCredentialValueCount": 12,
+  "telemetryRepairR1Review": {
+    "sourceSha256": "4b2a7abc99469d12e3f04475624c19d4ca5f87e05608f60d31de7469540541da",
+    "providedTestsPassed": 11,
+    "defaultOffAccepted": true,
+    "rawExceptionTextScrubbingAccepted": true,
+    "optInPropertyAndTagCanaryCounterexamples": 4,
+    "verdict": "CHANGES_REQUESTED SKEY-F003",
+    "productionUpdatedVerified": false
+  }
 }
