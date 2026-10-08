@@ -215,6 +215,84 @@ test('live authority: an unchanged file is served from the parsed cache (no re-p
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
+// --- RR-F004 regression: the cache must never bypass the safety metadata -----
+// audit 2026-10-08-restart-readiness-r1 RR-F004 evidence:
+// docs/audits/evidence/2026-10-08-restart-review/auth-permission-probe.mjs
+
+test('live authority: widening permissions alone is refused though the change key is untouched (RR-F004)', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aios-live-chmod-'));
+  try {
+    const file = path.join(dir, 'authority.json');
+    await writeAtomic(file, config());
+    const live = createLiveRequestAuthority({ file });
+    const principal = { id: 'chief-test', role: 'chief', authenticated: true };
+    assert.deepEqual(live.authenticate({ authorization: `Bearer ${TOKENS.chief}` }), principal);
+
+    // chmod 600 -> 644 keeps ino, mtimeMs and size identical, so a change key of
+    // ino:mtimeMs:size reports "unchanged" and a cache-first implementation would
+    // serve the stale principal. Safety metadata is revalidated on every call, so
+    // the widened file must fail closed instead.
+    const before = await fs.stat(file);
+    await fs.chmod(file, 0o644);
+    const after = await fs.stat(file);
+    assert.equal(after.ino, before.ino, 'inode unchanged');
+    assert.equal(after.mtimeMs, before.mtimeMs, 'mtime unchanged by chmod');
+    assert.equal(after.size, before.size, 'size unchanged by chmod');
+    assert.equal(after.mode & 0o777, 0o644);
+    for (const attempt of [0, 1]) {
+      assert.throws(() => live.authenticate({ authorization: `Bearer ${TOKENS.chief}` }), error => error.code === 'AUTH_CONFIGURATION' && error.status === 500, `rejected on attempt ${attempt}`);
+    }
+    assert.equal(live.generation, 1, 'a rejected call never reloads');
+
+    // restoring the restrictive mode makes the (still-cached) authority usable again
+    await fs.chmod(file, 0o600);
+    assert.deepEqual(live.authenticate({ authorization: `Bearer ${TOKENS.chief}` }), principal);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('live authority: a warmed cache does not excuse a later permission drift', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aios-live-warm-'));
+  try {
+    const file = path.join(dir, 'authority.json');
+    await writeAtomic(file, config());
+    const live = createLiveRequestAuthority({ file });
+    // warm the cache with a healthy read, then prove the cached parse stays safe
+    assert.ok(live.authenticate({ authorization: `Bearer ${TOKENS.operator}` }));
+    assert.equal(live.generation, 1);
+    const cachedKey = (await fs.stat(file));
+    await fs.chmod(file, 0o640);
+    const drifted = await fs.stat(file);
+    assert.deepEqual([drifted.ino, drifted.mtimeMs, drifted.size], [cachedKey.ino, cachedKey.mtimeMs, cachedKey.size], 'change key identical across the chmod');
+    assert.throws(() => live.authenticate({ authorization: `Bearer ${TOKENS.operator}` }), error => error.code === 'AUTH_CONFIGURATION' && error.status === 500);
+    // every principal is refused, not just the one that warmed the cache
+    assert.throws(() => live.authenticate({ authorization: `Bearer ${TOKENS.chief}` }), error => error.code === 'AUTH_CONFIGURATION');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('live authority: a file already widened before the first call is refused with no cache', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aios-live-firstcall-'));
+  try {
+    const file = path.join(dir, 'authority.json');
+    await writeAtomic(file, config(), 0o644);
+    const live = createLiveRequestAuthority({ file });
+    assert.throws(() => live.authenticate({ authorization: `Bearer ${TOKENS.chief}` }), error => error.code === 'AUTH_CONFIGURATION' && error.status === 500);
+    assert.equal(live.generation, 0, 'nothing was ever cached or parsed');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('live authority: a symlinked authority path is refused (O_NOFOLLOW) from the first call', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aios-live-symlink-'));
+  try {
+    const real = path.join(dir, 'authority.json');
+    await writeAtomic(real, config());
+    const link = path.join(dir, 'link.json');
+    await fs.symlink(real, link);
+    const live = createLiveRequestAuthority({ file: link });
+    assert.throws(() => live.authenticate({ authorization: `Bearer ${TOKENS.chief}` }), error => error.code === 'AUTH_CONFIGURATION' && error.status === 500);
+    assert.equal(live.generation, 0);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
 test('live authority: every reload failure fails closed and never falls back to the previous cache', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aios-live-failclosed-'));
   try {

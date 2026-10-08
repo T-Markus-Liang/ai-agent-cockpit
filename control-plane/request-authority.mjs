@@ -91,9 +91,13 @@ export async function loadRequestAuthority({ file, required = false } = {}) {
 //
 // Change detection and TOCTOU: the file is opened with O_NOFOLLOW and the change
 // key (`ino:mtimeMs:size`) is taken from fstat on that same fd, so there is no
-// stat->read path-swap window. When the key is unchanged the cached parsed
-// authority is served without re-parsing; when it changes the fd's identity,
-// type, size, mode, uid and JSON/schema are revalidated in full on the same fd.
+// stat->read path-swap window. The safety metadata (regular file, `mode & 0o077
+// === 0`, uid, size) is revalidated on *every* call, on that same fd, *before*
+// the cache key is consulted — the cache only ever saves JSON parsing, never a
+// safety check, so a file widened in place (chmod changes neither ino, mtimeMs
+// nor size) is still refused on a warm cache. When the key is unchanged the
+// cached parsed authority is served without re-parsing; when it changes the JSON
+// and schema are revalidated in full on the same fd.
 //
 // Fail-closed: any reload failure (file gone, permissions drift, symlink, bad
 // JSON, bad schema) throws AuthorityError('AUTH_CONFIGURATION', 500) and the old
@@ -116,10 +120,15 @@ export function createLiveRequestAuthority({ file, required = false, clock = Dat
       try {
         fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
         const stat = fstatSync(fd);
-        const key = `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
-        if (cache !== null && cache.key === key) return cache.authority.authenticate(headers);
+        // Safety metadata is revalidated on *every* call, on this same fd, before
+        // any cache lookup: a cached parse may save JSON parsing but never these
+        // checks. A prior good parse must not mask a file widened in place — chmod
+        // changes neither ino, mtimeMs nor size, so a naive change key would miss
+        // it and serve the stale principal (RR-F004).
         if (!stat.isFile() || stat.size > MAX_AUTHORITY_BYTES || (stat.mode & 0o077) !== 0 ||
             (typeof process.getuid === 'function' && stat.uid !== process.getuid())) throw new AuthorityError('AUTH_CONFIGURATION', 500);
+        const key = `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+        if (cache !== null && cache.key === key) return cache.authority.authenticate(headers);
         const authority = createRequestAuthority(JSON.parse(readFileSync(fd, 'utf8')), { clock });
         cache = { key, authority };
         generation += 1;

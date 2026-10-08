@@ -12,6 +12,49 @@ import { prepareWorkspace } from '../control-plane/goal-workspace.mjs'
 import { createLiveRequestAuthority, AuthorityError } from '../control-plane/request-authority.mjs'
 
 const ORIGINS = new Set(['http://127.0.0.1:4321', 'http://localhost:4321'])
+
+// Role -> permitted action matrix (RR-F003). The role is taken from the
+// authenticated principal (authority document), never from a request header.
+// X-Goal-Actor keeps its owner-binding semantics only: a viewer that sends
+// `X-Goal-Actor: local` is still read-only, because authorization on the role
+// runs first and independently of the actor header.
+//
+//   viewer      read only
+//   coordinator read + wake            (a scheduler nudge, no state transition)
+//   chief       read + single-goal management (create/pause/resume/cancel/
+//               revise/wake); NOT grant, NOT the global pause-all/resume-all
+//   operator    everything, including grant and the global pause-all/resume-all
+const ROLE_ACTIONS = Object.freeze({
+  viewer: Object.freeze(['read']),
+  coordinator: Object.freeze(['read', 'wake']),
+  chief: Object.freeze(['read', 'create', 'pause', 'resume', 'cancel', 'revise', 'wake']),
+  operator: Object.freeze(['read', 'create', 'pause', 'resume', 'cancel', 'revise', 'wake', 'grant', 'pause-all', 'resume-all']),
+})
+
+// Map a request to its authorization action. Returns undefined for routes or
+// methods that are not part of the matrix, so unrecognised requests keep their
+// existing NOT_FOUND / INVALID_METHOD handling rather than being denied here.
+export function goalActionFor(method, pathname) {
+  if (method === 'GET' && /^\/api\/goals(\/[^/]+(\/proof)?)?$/.test(pathname)) return 'read'
+  if (method !== 'POST') return undefined
+  if (pathname === '/api/goals/pause-all') return 'pause-all'
+  if (pathname === '/api/goals/resume-all') return 'resume-all'
+  if (pathname === '/api/goals') return 'create'
+  const match = pathname.match(/^\/api\/goals\/[^/]+\/(grant|pause|resume|cancel|revise|wake)$/)
+  return match ? match[1] : undefined
+}
+
+// Throws GoalError AUTH_FORBIDDEN (403) when the authenticated role may not
+// perform the resolved action. Runs after authentication and before any
+// owner/actor check or state mutation.
+export function authorizeGoalRequest(principal, method, pathname) {
+  const action = goalActionFor(method, pathname)
+  if (action === undefined) return
+  if (!ROLE_ACTIONS[principal?.role]?.includes(action)) {
+    throw new GoalError('AUTH_FORBIDDEN', 'the authenticated role may not perform this goal action', 403)
+  }
+}
+
 export async function createGoalServer({ stateDir, goals = new GoalStore({ stateDir }), tasks, runtime, wechatStateFile = path.join(os.homedir(), '.wechat-acp/instances/cezar-codex/state.json') } = {}) {
   const root = goals.stateDir
   await fs.mkdir(root, { recursive: true, mode: 0o700 }); await fs.chmod(root, 0o700)
@@ -69,6 +112,10 @@ export async function createGoalServer({ stateDir, goals = new GoalStore({ state
         throw error
       }
       if (principal?.authenticated !== true) throw new GoalError('AUTH_REQUIRED', 'goal API authentication required', 401)
+      // Role authorization (RR-F003): independent of, and before, the owner/actor
+      // binding below. A viewer (or a viewer claiming X-Goal-Actor: local) cannot
+      // reach any write action, so no state transition can occur.
+      authorizeGoalRequest(principal, req.method, url.pathname)
       const actor = req.headers['x-goal-actor'] ?? 'local'
       if (actor !== 'local' && (!owner || actor !== owner)) throw new GoalError('OWNER_REQUIRED', 'only the bound WeChat owner may manage goals', 403)
       if (req.method === 'GET' && url.pathname === '/api/goals') return respond(res, 200, { goals: await goals.list(), paused: await goals.isPaused(), version: '0.2.2' }, origin)
