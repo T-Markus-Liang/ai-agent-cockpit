@@ -6,6 +6,14 @@ Start at 18:08:13
 Duration 433ms
 Exit 0
 
+After EOF-only formatting cleanup, same command rerun:
+RUN v4.1.10 /Users/markus/ai-agent-cockpit/vendor/cezar
+Test Files 4 passed (4)
+Tests 188 passed (188)
+Start at 18:24:41
+Duration 471ms
+Exit 0
+
 npm run typecheck:server
 npm run typecheck -w @open-mercato/cezar
 tsc --noEmit -p tsconfig.test.json

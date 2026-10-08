@@ -180,7 +180,7 @@
   "sourceRef": [
     {
       "file": "vendor/cezar/packages/cezar/src/core/secret-redaction.test.ts",
-      "sha256": "a1ba5dde0df2ab9f5a440f30509c6ddefb621006bd93c19e7a09ae5647b06a84"
+      "sha256": "cd7690163dff86010cd2b0d49f46810351e4774be60286333df4fe372879967d"
     },
     {
       "file": "vendor/cezar/packages/cezar/src/core/secret-redaction.ts",
@@ -205,9 +205,16 @@
       "rawCanaryForwarded": false
     }
   },
-  "workingTreeFixPushed": false,
+  "auditorPushedFix": false,
+  "publicFeatureFixObserved": true,
+  "publicFeatureFixObservedAt": "2026-10-08T10:26:53.961Z",
+  "publicFeatureFixSha256": "a1ba5dde0df2ab9f5a440f30509c6ddefb621006bd93c19e7a09ae5647b06a84",
   "githubAlertResolved": false,
-  "productionChanged": false,
+  "auditorChangedProduction": false,
   "finalHeadAtEvidence": "19e4e274a9306aa3fee0515b86ac22c90e8ca7d7",
-  "sourceDriftAfterSnapshot": []
+  "sourceDriftAfterSnapshot": [],
+  "postSnapshotTestHygiene": "Only an extra EOF blank line in the changed test file was removed; targeted scanner and relevant tests rerun afterward.",
+  "diffCheckExit": 0,
+  "finalPublicCredentialMatchCount": 0,
+  "finalPublicCredentialValueCount": 12
 }

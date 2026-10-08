@@ -4,7 +4,7 @@
 
 ## API Key 专项审计（优先交接）
 
-[2026-10-08 密钥扫描与执行交接](2026-10-08-secret-scan.md)：第66行是上游合成测试假密钥，本地已改为TESTONLY构造，188条相关用例及server typecheck通过。当前源码和公开历史未确认真实API Key泄漏；GitHub alert #1仍open，未推送或改历史。**SKEY-F002：默认第三方遥测原样传递异常，CHANGES_REQUESTED**；执行方可立即按报告做离线源码返工，不必等待生产审批。完整系统尚未安全签字。
+[2026-10-08 密钥扫描与执行交接](2026-10-08-secret-scan.md)：第66行是上游合成测试假密钥，已改为TESTONLY构造，188条相关用例及server typecheck通过；并行执行方已提交到公开feature分支，审计线程未操作远端。当前源码和公开历史未确认真实API Key泄漏；GitHub alert #1仍open，未改历史。**SKEY-F002：默认第三方遥测原样传递异常，CHANGES_REQUESTED**；执行方可立即按报告做离线源码返工，不必等待生产审批。完整系统尚未安全签字。
 
 ## 已审查的批次（逐版本限定）
 

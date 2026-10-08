@@ -152,4 +152,3 @@ it('redacts raw tracker key values from persisted task text', () => {
   const secrets = collectSecretValues({ JIRA_API_TOKEN: jira, LINEAR_API_KEY: linear });
   expect(redactSecrets(jira + ' ' + linear, secrets)).toBe(REDACTED + ' ' + REDACTED);
 });
-
