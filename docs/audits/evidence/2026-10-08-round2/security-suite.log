@@ -1,0 +1,35 @@
+✔ 1: normal pairing completes, authenticates and reports the requested role (0.975625ms)
+✔ 2: a pairing code is single-use (0.187333ms)
+✔ 3: an expired pairing code is denied (0.1405ms)
+✔ 4: an unknown pairing code is denied (0.091833ms)
+✔ 5: an unknown role cannot begin pairing (0.081333ms)
+✔ 6: rotation invalidates the old token and activates the new one (0.12075ms)
+✔ 7: revocation disables a principal; unknown ids are rejected (0.487583ms)
+✔ 8: an expired principal stops authenticating (0.100875ms)
+✔ 9: exportPrincipals emits only active principals in request-authority shape (0.275792ms)
+✔ 10: a serialized snapshot round-trips authentication, roles, revocation and expiry (0.341792ms)
+✔ 11: persisted state never contains plaintext tokens or pairing codes (0.07475ms)
+✔ 12: error messages never leak secrets and authenticate never throws (0.115791ms)
+✔ 13: malformed snapshots fail closed with invalid-state (0.167792ms)
+✔ 1: a registered session with a live approval returns allow_once and consumes it once (77.681459ms)
+✔ 2: an unregistered session is denied unknown-session and never touches the approval resolver (38.26975ms)
+✔ 3: a closed session is denied session-closed; closing an unknown session throws unknown-session (36.762ms)
+✔ 4: a replayed toolCallId is denied replay and never re-consumes the approval (64.970041ms)
+✔ 5: missing, expired, wrong-digest and unverified approvals deny without changing the store (227.492958ms)
+✔ 6: options that are not exactly one allow_once are denied unsupported-options (39.781709ms)
+✔ 7: an unknown tool kind is denied unknown-tool-kind (39.781792ms)
+✔ 8: registering a binding with a missing field is rejected (37.809125ms)
+✔ 9: the decision log keeps digests, never rawInput, and filters by session (68.620833ms)
+✔ 10: a serialized snapshot restores closed sessions and the log; replay is still denied (96.337958ms)
+✔ 11: every denied path leaves the store byte-identical (55.844584ms)
+✔ 12: error messages carry only codes, never payloads or secrets; the handler never throws (38.212042ms)
+✔ 13: injected now/random make session ids and timestamps deterministic (36.649208ms)
+✔ 14: malformed snapshots fail closed with invalid-state (37.637292ms)
+ℹ tests 27
+ℹ suites 0
+ℹ pass 27
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 945.255

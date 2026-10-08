@@ -1,0 +1,21 @@
+{
+  "answers": {
+    "draft_overclaims": {
+      "type": "noul",
+      "noul": 0.17
+    },
+    "control_overclaims": {
+      "type": "noul",
+      "noul": 0.97
+    }
+  },
+  "confidence": null,
+  "usage": {
+    "inputTokens": 656,
+    "outputTokens": 46
+  },
+  "cost": null,
+  "market_cost": null,
+  "elapsed_ms": 854.88,
+  "model": "jev-1.13.0"
+}
