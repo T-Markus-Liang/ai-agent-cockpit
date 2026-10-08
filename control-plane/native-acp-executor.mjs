@@ -150,6 +150,54 @@ function responseError(method, source, message, status = 502) {
   return new StoreError('NATIVE_ACP_ERROR', `${source} ${method} failed: ${message}`, status)
 }
 
+// Structurally bind an inbound sessionRefId to the (source, nativeSessionId) it
+// is about. EVERY provider in control-plane/session-index.mjs mints its SessionRef
+// id with one convention — `session:<provider>:<nativeSessionId>` — and the native
+// prompt hot path receives that id alongside the source/nativeSessionId it names.
+// This proves the ref is shaped for EXACTLY this pair, so a well-formed ref minted
+// for session A can never be silently used to drive a prompt against session B
+// (the classic mis-wire: the same native id under a different provider, or a
+// near-miss id such as `native-1` vs `native-10`). It is the honest, landable
+// half of the D56 "session index consistency" residual: a STRUCTURAL binding —
+// never an existence or freshness proof. Scanning a real CLI home on the prompt
+// hot path to prove the session still exists was rejected (latency, privacy,
+// unsynthesizable tests); that belongs to a deployment batch. See
+// docs/handoffs/p4-sessionref-consistency-r1.md.
+//
+// Two refusal classes, split by severity so a caller can tell them apart:
+//   - a reference that is not a `session:<provider>:<native>` triple at all is a
+//     malformed parameter → SESSION_REF_MALFORMED (400), raised with zero effects;
+//   - a well-formed reference whose provider or native segment disagrees with the
+//     request's source/nativeSessionId is a scope conflict → SESSION_REF_MISMATCH
+//     (409), the same "two things that must agree, disagree" shape as the existing
+//     EXECUTION_SESSION_MISMATCH / EXECUTION_SCOPE_CHANGED. Matching is literal:
+//     source and nativeSessionId must agree verbatim.
+export function assertSessionRefMatches(sessionRefId, { source, nativeSessionId } = {}) {
+  const malformed = () => new StoreError(
+    'SESSION_REF_MALFORMED',
+    `sessionRefId must be "session:<provider>:<nativeSessionId>"; got ${JSON.stringify(sessionRefId)}`,
+    400,
+  )
+  if (typeof sessionRefId !== 'string' || !sessionRefId.startsWith('session:')) throw malformed()
+  const rest = sessionRefId.slice('session:'.length)
+  const breakAt = rest.indexOf(':')
+  // A single non-empty provider segment followed by a non-empty native segment is
+  // required. `breakAt === -1` means there is no provider:native split at all, and
+  // `breakAt === 0` means the provider segment is empty.
+  if (breakAt <= 0) throw malformed()
+  const provider = rest.slice(0, breakAt)
+  const native = rest.slice(breakAt + 1)
+  if (native.length === 0) throw malformed()
+  if (provider !== source || native !== nativeSessionId) {
+    throw new StoreError(
+      'SESSION_REF_MISMATCH',
+      `sessionRefId ${sessionRefId} does not describe source ${source ?? '(none)'} / nativeSessionId ${nativeSessionId ?? '(none)'}`,
+      409,
+    )
+  }
+  return { source, nativeSessionId }
+}
+
 // sessionRefId is part of the immutable approval scope: it is carried into the
 // plan parameters (and therefore the parametersDigest) so an approval bound to
 // one session can never authorize a prompt on another. It is REQUIRED and never
@@ -382,6 +430,16 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
   if (!sessionRefId) throw new StoreError('SESSION_REF_REQUIRED', 'native session prompt requires the execution sessionRefId (no default is invented)', 400)
   if (execution.sessionRefId !== sessionRefId) throw new StoreError('EXECUTION_SESSION_MISMATCH', `execution ${executionId} is bound to session ${execution.sessionRefId ?? '(none)'}, not ${sessionRefId}`, 409)
   const plan = nativePromptPlan({ taskId, executionId, source, nativeSessionId, sessionRefId, cwd, prompt })
+  // (P4 gap-7 residual) The ref must structurally describe exactly THIS session
+  // before anything durable happens. Placement is deliberate and load-bearing:
+  // it runs AFTER nativePromptPlan — a PURE function with zero effects — so the
+  // plan's own required-field refusal (400 NATIVE_PROMPT_PLAN_INVALID) still fires
+  // first when source/nativeSessionId are genuinely absent, and the ref check only
+  // judges the provider/native relationship once both are known present (rather
+  // than blaming a well-formed ref for an unrelated missing field). Either way it
+  // sits strictly before any store write, approval consumption or spawn, so a
+  // refusal has confirmed zero side effects.
+  assertSessionRefMatches(sessionRefId, { source, nativeSessionId })
   if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'native session prompt requires an approved approval id', 403)
 
   const step = (name) => `${idempotencyKey ?? executionId}:${name}`
@@ -506,6 +564,20 @@ export async function cancelNativeExecution({ store, executionId, approvalId, id
   if (!live && !CANCELLABLE_EXECUTION_STATUSES.has(execution.status)) {
     throw new StoreError('EXECUTION_NOT_CANCELLABLE', `execution is ${execution.status}; only queued or running native executions may be cancelled`, 409)
   }
+  // (P4 gap-7 residual) The cancel scope's sessionRefId is DERIVED from the stored
+  // execution (D55: cancel carries no sessionRefId in its input), so bind that
+  // derived ref to the engine ref's OWN source/nativeSessionId: a cancel whose
+  // stored session names a different session than the ref being cancelled is
+  // refused here — before the approval is consumed, so the refusal has zero
+  // effects. A native launch always records source + nativeSessionId on the engine
+  // ref; a ref attached before those fields existed falls back to splitting the
+  // `<source>:<nativeSessionId>` engine id, so legacy refs still bind correctly.
+  const engineId = typeof execution.engineRef.id === 'string' ? execution.engineRef.id : ''
+  const idBreak = engineId.indexOf(':')
+  assertSessionRefMatches(execution.sessionRefId, {
+    source: typeof execution.engineRef.source === 'string' ? execution.engineRef.source : (idBreak === -1 ? undefined : engineId.slice(0, idBreak)),
+    nativeSessionId: typeof execution.engineRef.nativeSessionId === 'string' ? execution.engineRef.nativeSessionId : (idBreak === -1 ? undefined : engineId.slice(idBreak + 1)),
+  })
   const plan = nativeCancelPlan({ executionId, engineRef: execution.engineRef, sessionRefId: execution.sessionRefId })
   await store.consumeApproval(approvalId, { action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: `${idempotencyKey ?? executionId}:approval`, requireOperator })
   const signal = live ? live.cancel() : null

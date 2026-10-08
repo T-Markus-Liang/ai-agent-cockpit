@@ -19,6 +19,7 @@ import {
   NATIVE_CANCEL_GRACE_MS,
   REVIEWER_READONLY_APPLIED,
   applyReviewerReadonlyConstraint,
+  assertSessionRefMatches,
   cancelNativeExecution,
   executeNativeSessionPrompt,
   nativeAcpChildEnv,
@@ -799,11 +800,15 @@ test('executeNativeSessionPrompt refuses a sessionRefId that differs from the ex
 })
 
 test('an approval bound to one session cannot authorize a prompt on another session', async () => {
-  const f = await launchFixture({ sessionRefId: 'session:fake:A' })
+  // Both sessions here are structurally valid (`session:fake:<native>` for the
+  // request's source 'fake'/nativeSessionId 'native-1'): the two refs differ ONLY
+  // in the session, so only the approval digest can explain the refusal — the new
+  // ref-binding check (which passes for either) is deliberately not what fires.
+  const f = await launchFixture({ sessionRefId: 'session:fake:native-1' })
   try {
     // A plan identical to the executor's in every scope field EXCEPT sessionRefId:
     // only the session differs, so only the digest can explain a mismatch.
-    const otherSession = nativePromptPlan({ taskId: f.taskId, executionId: f.executionId, source: 'fake', nativeSessionId: 'native-1', sessionRefId: 'session:fake:B', cwd: '/tmp', prompt: '继续' })
+    const otherSession = nativePromptPlan({ taskId: f.taskId, executionId: f.executionId, source: 'fake', nativeSessionId: 'native-1', sessionRefId: 'session:fake:native-2', cwd: '/tmp', prompt: '继续' })
     assert.notEqual(otherSession.parametersDigest, f.plan.parametersDigest)
     const approvalB = await f.store.createApproval({ action: otherSession.action, target: otherSession.target, parametersDigest: otherSession.parametersDigest }, { idempotencyKey: 'xscope-approval-b' })
     await f.store.decideApproval(approvalB.approval.id, { decision: 'approved', approvedBy: 'tester' }, { idempotencyKey: 'xscope-decide-b' })
@@ -933,5 +938,153 @@ test('executeNativeSessionPrompt takes the role from the stored execution and re
     const log = evidence.find((item) => item.kind === 'log' && item.summary.includes(REVIEWER_READONLY_APPLIED))
     assert.ok(log, 'the read-only downgrade is recorded as an auditable Evidence log line')
     assert.match(log.summary, /must-not-write\.txt/)
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------------------
+// sessionRefId ↔ nativeSessionId/source consistency (P4 gap-7 residual, D56)
+//
+// Every provider mints its SessionRef id as `session:<provider>:<nativeSessionId>`
+// (control-plane/session-index.mjs). assertSessionRefMatches binds an inbound ref
+// to the (source, nativeSessionId) it must describe, so a well-formed ref minted
+// for session A can never be silently used against session B. This is the
+// STRUCTURAL half of the session-index-consistency residual: shape only, never
+// existence/freshness (that is a deployment-batch concern). Still fully synthetic:
+// fake ACP agent, spy sandbox, scratch store dir; no real CLI, no network.
+// ---------------------------------------------------------------------------
+
+test('assertSessionRefMatches binds a ref to the exact source/nativeSessionId, splitting malformed (400) from mismatched (409)', () => {
+  // Consistent → the parsed binding is returned.
+  assert.deepEqual(
+    assertSessionRefMatches('session:codex:native-1', { source: 'codex', nativeSessionId: 'native-1' }),
+    { source: 'codex', nativeSessionId: 'native-1' },
+  )
+  // A native id that itself contains a colon is carried through verbatim (only the
+  // FIRST colon after the prefix is the provider separator).
+  assert.deepEqual(
+    assertSessionRefMatches('session:codex:thread:2', { source: 'codex', nativeSessionId: 'thread:2' }),
+    { source: 'codex', nativeSessionId: 'thread:2' },
+  )
+  // Malformed: not a `session:<provider>:<native>` triple at all → 400 parameter error.
+  for (const bad of [undefined, null, 42, '', 'codex:native-1', 'session', 'session:', 'session:codex', 'session:codex:', 'session::native-1', 'Session:codex:native-1']) {
+    assert.throws(
+      () => assertSessionRefMatches(bad, { source: 'codex', nativeSessionId: 'native-1' }),
+      (error) => error.code === 'SESSION_REF_MALFORMED' && error.status === 400,
+      `malformed ref ${JSON.stringify(bad)} must be refused as a 400 parameter error`,
+    )
+  }
+  // Mismatch: well-formed but names a different provider or a different native id → 409.
+  assert.throws(
+    () => assertSessionRefMatches('session:opencode:native-1', { source: 'codex', nativeSessionId: 'native-1' }),
+    (error) => error.code === 'SESSION_REF_MISMATCH' && error.status === 409,
+  )
+  // The near-miss trap: same prefix, different suffix must NOT be treated as equal.
+  assert.throws(
+    () => assertSessionRefMatches('session:codex:native-10', { source: 'codex', nativeSessionId: 'native-1' }),
+    (error) => error.code === 'SESSION_REF_MISMATCH' && error.status === 409,
+  )
+  assert.throws(
+    () => assertSessionRefMatches('session:codex:native-1', { source: 'codex', nativeSessionId: 'native-10' }),
+    (error) => error.code === 'SESSION_REF_MISMATCH' && error.status === 409,
+  )
+})
+
+test('executeNativeSessionPrompt refuses a malformed sessionRefId as a 400 with zero store writes', async () => {
+  const f = await launchFixture({ sessionRefId: 'not-a-session-ref' })
+  try {
+    const events = []
+    await assert.rejects(
+      () => executeNativeSessionPrompt({ store: recordingStore(f.store, events), ...f.input, approvalId: f.approvalId, command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox, idempotencyKey: 'sr-malformed' }),
+      (error) => error.code === 'SESSION_REF_MALFORMED' && error.status === 400,
+    )
+    assert.deepEqual(events, [], 'a malformed ref must not touch the store at all (no attach/running/consume/evidence)')
+    const execution = await f.store.getExecution(f.executionId)
+    assert.equal(execution.status, 'queued', 'no launch intent is written for a malformed ref')
+    assert.equal(execution.engineRef, undefined)
+    assert.equal((await f.store.getApproval(f.approvalId)).usedAt, undefined, 'the approval is never consumed')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('executeNativeSessionPrompt refuses a sessionRefId whose provider is not the request source', async () => {
+  // The execution and the input agree on the ref (so the EXECUTION_SESSION_MISMATCH
+  // guard passes); only the ref's PROVIDER contradicts the request source.
+  const f = await launchFixture({ sessionRefId: 'session:opencode:native-1' })
+  try {
+    const events = []
+    await assert.rejects(
+      () => executeNativeSessionPrompt({ store: recordingStore(f.store, events), ...f.input, approvalId: f.approvalId, command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox, idempotencyKey: 'sr-provider' }),
+      (error) => error.code === 'SESSION_REF_MISMATCH' && error.status === 409,
+    )
+    assert.deepEqual(events, [], 'a provider-mismatched ref must not touch the store at all')
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'queued')
+    assert.equal((await f.store.getApproval(f.approvalId)).usedAt, undefined)
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('executeNativeSessionPrompt refuses a sessionRefId whose native segment is a near-miss of the requested one', async () => {
+  // 'native-10' shares the 'native-1' prefix but is a DIFFERENT session: a naive
+  // "startsWith" match would launder it, an exact match refuses it.
+  const f = await launchFixture({ sessionRefId: 'session:fake:native-10' })
+  try {
+    const events = []
+    await assert.rejects(
+      () => executeNativeSessionPrompt({ store: recordingStore(f.store, events), ...f.input, approvalId: f.approvalId, command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox, idempotencyKey: 'sr-nearmiss' }),
+      (error) => error.code === 'SESSION_REF_MISMATCH' && error.status === 409,
+    )
+    assert.deepEqual(events, [], 'a near-miss ref must not touch the store at all')
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'queued')
+    assert.equal((await f.store.getApproval(f.approvalId)).usedAt, undefined)
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('executeNativeSessionPrompt accepts a sessionRefId that structurally describes the requested session', async () => {
+  const f = await launchFixture({ sessionRefId: 'session:fake:native-1' })
+  try {
+    const result = await executeNativeSessionPrompt({ store: f.store, ...f.input, approvalId: f.approvalId, command: process.execPath, args: FAKE_OK, sandbox: makeSandbox().sandbox, idempotencyKey: 'sr-consistent' })
+    assert.equal(result.execution.status, 'verifying', 'a structurally consistent ref passes and the prompt runs')
+    const execution = await f.store.getExecution(f.executionId)
+    assert.equal(execution.engineRef.sessionRefId, 'session:fake:native-1', 'the bound ref is the consistent one')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+// A small fixture for the cancel-path ref binding: an execution whose stored
+// sessionRefId is deliberately at odds with its engine ref's source/nativeSessionId.
+async function refMismatchedCancelFixture({ sessionRefId, engineSource = 'fake', engineNativeSessionId = 'native-1' } = {}) {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-cancel-refbind-'))
+  const store = new ControlPlaneStore({ stateDir })
+  const task = await store.createTask({ goal: 'cancel ref binding' }, { idempotencyKey: 'crb-task' })
+  const created = await store.createExecution(task.task.id, { workerId: 'fake:native', sessionRefId }, { idempotencyKey: 'crb-exec' })
+  const executionId = created.execution.id
+  await store.attachExecutionRef(executionId, { engine: 'native-acp', id: `${engineSource}:${engineNativeSessionId}`, source: engineSource, nativeSessionId: engineNativeSessionId, sessionRefId, cwd: '/tmp' }, { idempotencyKey: 'crb-attach' })
+  await store.updateExecutionStatus(executionId, { status: 'running' }, { idempotencyKey: 'crb-running' })
+  const plan = nativeCancelPlan({ executionId, engineRef: { id: `${engineSource}:${engineNativeSessionId}` }, sessionRefId })
+  const approvalId = await approveCancel(store, plan, { idempotencyKey: 'crb-approval' })
+  return { stateDir, store, executionId, approvalId }
+}
+
+test('cancelNativeExecution refuses a stored session that does not match its engine ref, before consuming the approval', async () => {
+  // The cancel plan is approved for exactly this stored session (so consumeApproval
+  // would otherwise succeed): only the ref-binding check stands between the request
+  // and a cancel of a session the engine ref does not describe.
+  const f = await refMismatchedCancelFixture({ sessionRefId: 'session:fake:other' })
+  try {
+    await assert.rejects(
+      () => cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId: f.approvalId, idempotencyKey: 'crb-cancel' }),
+      (error) => error.code === 'SESSION_REF_MISMATCH' && error.status === 409,
+    )
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'running', 'a ref that names another session never cancels the execution')
+    assert.equal((await f.store.getApproval(f.approvalId)).usedAt, undefined, 'the cancel approval is never consumed')
+  } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
+})
+
+test('cancelNativeExecution refuses a malformed stored sessionRefId as a 400 before any effect', async () => {
+  const f = await refMismatchedCancelFixture({ sessionRefId: 'garbage' })
+  try {
+    await assert.rejects(
+      () => cancelNativeExecution({ store: f.store, executionId: f.executionId, approvalId: f.approvalId, idempotencyKey: 'crb-malformed-cancel' }),
+      (error) => error.code === 'SESSION_REF_MALFORMED' && error.status === 400,
+    )
+    assert.equal((await f.store.getExecution(f.executionId)).status, 'running', 'a malformed stored ref never cancels the execution')
+    assert.equal((await f.store.getApproval(f.approvalId)).usedAt, undefined, 'the cancel approval is never consumed')
   } finally { await fs.rm(f.stateDir, { recursive: true, force: true }) }
 })
