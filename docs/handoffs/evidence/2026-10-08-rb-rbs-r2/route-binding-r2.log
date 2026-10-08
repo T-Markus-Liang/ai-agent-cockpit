@@ -1,0 +1,25 @@
+npm notice run personal-ai-os@0.2.2 test:route-binding
+npm notice run node --test tests/route-binding.test.mjs
+✔ legacy and pi-durable bindings normalize to the frozen contract shape (1.6095ms)
+✔ V01: re-binding an identical requestKey is idempotent (same record, count 1) (0.136209ms)
+✔ V02: a differing field is a binding-conflict and leaves the existing binding untouched (0.210292ms)
+✔ no double-live: legacy then pi-durable for the same request is a binding-conflict (0.088583ms)
+✔ legacy requires an explicit expiry and a non-empty task scope (0.177333ms)
+✔ expiry is fail-closed on resolve: valid before expiresAt, binding-expired at it, record retained (0.109625ms)
+✔ legacy planEffect is scope-bounded: in-scope yields an intent, out-of-scope is denied (0.138542ms)
+✔ field validation fails closed with invalid-binding (0.226167ms)
+✔ effectKey mismatch is an effect-conflict (0.072167ms)
+✔ intent registration is idempotent per requestKey+effectKey (count stays 1) (0.109375ms)
+✔ toJSON/fromJSON round-trips behavior and rejects tampered data (0.758208ms)
+✔ records and intents are deeply frozen; expiry/conflict never mutate the registry (0.198ms)
+✔ RB-F001: two in-scope legacy tasks on the same request+effectKey conflict (no silent reuse) (0.094ms)
+✔ RB-F001: an omitted task and an explicit task are distinct intent bodies (0.0855ms)
+✔ RB-F001: fromJSON rejects a contradictory duplicate intent and skips an identical one (0.113166ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 45.306209

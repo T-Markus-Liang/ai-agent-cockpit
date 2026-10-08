@@ -86,14 +86,20 @@ class FakeTurns:
     ERASED = {"purged": True}  # the marker a scrubbed content field is left as
 
     def __init__(self, records):
-        self.rows = {
-            event_id: SimpleNamespace(
+        self.rows = {}
+        for event_id, record in records.items():
+            row = SimpleNamespace(
                 event_id=event_id, digest=record["digest"],
                 payload=record.get("payload"),
                 plan=record.get("plan", {"facts": [{"quote": "plan-quote"}]}),
                 purged=False)
-            for event_id, record in records.items()
-        }
+            # Authoritative-identity fields are exposed only when a record
+            # supplies them, so a test controls exactly what the boundary fence
+            # can see (an absent field is skipped, like a store that omits it).
+            for extra in ("user_id", "source_hash", "vector_ids"):
+                if extra in record:
+                    setattr(row, extra, record[extra])
+            self.rows[event_id] = row
         self.get_calls = []
         self.scrub_calls = []
 
@@ -603,13 +609,16 @@ class _SqliteTurns:
         self.path = path
         self.conn = sqlite3.connect(path)
         self.conn.execute(
-            "CREATE TABLE turns(event_id TEXT PRIMARY KEY, digest TEXT, payload TEXT,"
-            " plan TEXT, purged INTEGER NOT NULL DEFAULT 0)")
+            "CREATE TABLE turns(event_id TEXT PRIMARY KEY, user_id TEXT, digest TEXT,"
+            " source_hash TEXT, vector_ids TEXT, payload TEXT, plan TEXT,"
+            " purged INTEGER NOT NULL DEFAULT 0)")
         for event_id, record in records.items():
             self.conn.execute(
-                "INSERT INTO turns(event_id,digest,payload,plan,purged) VALUES(?,?,?,?,0)",
-                (event_id, record["digest"], json.dumps(record.get("payload")),
-                 json.dumps(record.get("plan"))))
+                "INSERT INTO turns(event_id,user_id,digest,source_hash,vector_ids,"
+                "payload,plan,purged) VALUES(?,?,?,?,?,?,?,0)",
+                (event_id, record.get("user_id"), record["digest"],
+                 record.get("source_hash"), json.dumps(record.get("vector_ids")),
+                 json.dumps(record.get("payload")), json.dumps(record.get("plan"))))
         self.conn.commit()
 
     def raw(self, event_id):
@@ -618,9 +627,22 @@ class _SqliteTurns:
             (event_id,)).fetchone()
 
     def get(self, event_id):
-        digest, payload, plan, purged = self.raw(event_id)
-        return SimpleNamespace(digest=digest, payload=json.loads(payload),
-                               plan=json.loads(plan), purged=bool(purged))
+        user_id, digest, source_hash, vector_ids, payload, plan, purged = (
+            self.conn.execute(
+                "SELECT user_id,digest,source_hash,vector_ids,payload,plan,purged"
+                " FROM turns WHERE event_id=?", (event_id,)).fetchone())
+        row = SimpleNamespace(event_id=event_id, digest=digest,
+                              payload=json.loads(payload), plan=json.loads(plan),
+                              purged=bool(purged))
+        # Expose identity fields only when the record supplies them, so this fake
+        # mirrors a real surface that may or may not carry them.
+        if user_id is not None:
+            row.user_id = user_id
+        if source_hash is not None:
+            row.source_hash = source_hash
+        if vector_ids is not None:
+            row.vector_ids = json.loads(vector_ids)
+        return row
 
     def scrub(self, event_id):
         marker = json.dumps({"purged": True})
@@ -678,6 +700,341 @@ class PurgeErrorCodeTests(unittest.TestCase):
             self.assertEqual(error.drifted, ["b"])
         with self.assertRaises(ValueError):
             PurgeError("not-a-real-code")
+
+    def test_error_carries_per_target_statuses(self):
+        error = PurgeError("drifted-target", statuses={"a": "refused-drift"})
+        self.assertEqual(error.statuses, {"a": "refused-drift"})
+        self.assertEqual(PurgeError("drifted-target").statuses, {})
+
+
+# --- 18. identity is re-fenced at each effect boundary (I02-R3 PG-F002) -------
+class EffectBoundaryFenceTests(unittest.TestCase):
+    """PG-F002 r3: a target's identity is re-read and re-compared to the plan
+    *immediately before every* delete/scrub, not merely once up front. A single
+    synchronous scan cannot prove the check-to-effect window is closed, because a
+    sibling target's own effect can let a concurrent writer change a later target
+    in between."""
+
+    def _two_target_plan(self):
+        rows = [receipt("e1", "u1", "d1", "sh", ["v1"]),
+                receipt("e2", "u1", "d2", "sh", ["v2"])]
+        return purge.plan_purge(rows, [tombstone("u1", "e1", "sh")],
+                                fact_request("u1", "sh"))
+
+    def test_sibling_effect_drift_keeps_second_target_untouched(self):
+        # The audit's exact interleaving: both digests match at preflight; during
+        # target 1's delete callback another writer rewrites target 2's digest and
+        # payload. Target 2 must still keep zero scrub and zero delete.
+        plan = self._two_target_plan()
+        vectors = FakeVectors(["v1", "v2"])
+        turns = FakeTurns({"e1": {"digest": "d1", "payload": {"text": "one"}},
+                           "e2": {"digest": "d2", "payload": {"text": "two"}}})
+
+        def delete_with_concurrent_writer(vector_id):
+            vectors.delete(vector_id)
+            if vector_id == "v1":
+                turns.rows["e2"].digest = "d2-NEW"
+                turns.rows["e2"].payload = {"text": "brand-new-secret"}
+
+        with self.assertRaises(PurgeError) as ctx:
+            purge.execute_purge(plan, delete_with_concurrent_writer, turns.scrub,
+                                vectors.exists, turns.get)
+        error = ctx.exception
+        self.assertEqual(error.code, "drifted-target")
+        self.assertEqual(error.completed, ["e1"])
+        self.assertEqual(error.drifted, ["e2"])
+        self.assertEqual(error.statuses, {"e1": "completed", "e2": "refused-drift"})
+        self.assertEqual(error.detail, "pre_effect_identity_drift")
+        # Target 1 was erased truthfully...
+        self.assertNotIn("v1", vectors.present)
+        self.assertTrue(turns.rows["e1"].purged)
+        # ...target 2 kept zero effects: its vector is NOT deleted and its NEW
+        # content is NOT scrubbed.
+        self.assertEqual(vectors.delete_calls, ["v1"])
+        self.assertIn("v2", vectors.present)
+        self.assertFalse(turns.rows["e2"].purged)
+        self.assertEqual(turns.rows["e2"].payload, {"text": "brand-new-secret"})
+
+    def test_commit_between_preflight_and_first_effect_is_refused(self):
+        # A commit that lands after the preflight read but before the target's
+        # boundary read is caught by the boundary re-check.
+        plan = purge.plan_purge([receipt("e1", "u1", "d1", "sh", ["v1"])],
+                                [tombstone("u1", "e1", "sh")],
+                                event_request("u1", "e1"))
+        vectors = FakeVectors(["v1"])
+        turns = FakeTurns({"e1": {"digest": "d1", "payload": {"text": "secret"}}})
+        calls = {"n": 0}
+        real_get = turns.get
+
+        def get_with_concurrent_commit(event_id):
+            calls["n"] += 1
+            if calls["n"] == 2:  # after preflight, right at the boundary read
+                turns.rows[event_id].digest = "d1-NEW"
+                turns.rows[event_id].payload = {"text": "new-secret"}
+            return real_get(event_id)
+
+        with self.assertRaises(PurgeError) as ctx:
+            purge.execute_purge(plan, vectors.delete, turns.scrub, vectors.exists,
+                                get_with_concurrent_commit)
+        error = ctx.exception
+        self.assertEqual(error.code, "drifted-target")
+        self.assertEqual(error.statuses, {"e1": "refused-drift"})
+        self.assertEqual(error.detail, "pre_effect_identity_drift")
+        # Zero effects: the new content is neither deleted nor scrubbed.
+        self.assertEqual(vectors.delete_calls, [])
+        self.assertEqual(turns.scrub_calls, [])
+        self.assertFalse(turns.rows["e1"].purged)
+        self.assertEqual(turns.rows["e1"].payload, {"text": "new-secret"})
+
+    def test_drift_before_current_vector_delete_stops_remaining_effects(self):
+        # Drift injected right before the current vector's delete: the remaining
+        # vector is left in place, the turn is NOT scrubbed, and the partial
+        # dispatch is reported honestly (not as a completed target).
+        plan = purge.plan_purge([receipt("e1", "u1", "d1", "sh", ["v1a", "v1b"])],
+                                [tombstone("u1", "e1", "sh")],
+                                event_request("u1", "e1"))
+        vectors = FakeVectors(["v1a", "v1b"])
+        turns = FakeTurns({"e1": {"digest": "d1", "payload": {"text": "secret"}}})
+
+        def delete_then_write(vector_id):
+            vectors.delete(vector_id)
+            if vector_id == "v1a":
+                turns.rows["e1"].digest = "d1-NEW"
+                turns.rows["e1"].payload = {"text": "rewritten"}
+
+        with self.assertRaises(PurgeError) as ctx:
+            purge.execute_purge(plan, delete_then_write, turns.scrub,
+                                vectors.exists, turns.get)
+        error = ctx.exception
+        self.assertEqual(error.code, "drifted-target")
+        self.assertEqual(error.drifted, ["e1"])
+        self.assertEqual(error.statuses, {"e1": "unknown"})
+        # v1b was NOT deleted (the turn changed under it) and content NOT scrubbed.
+        self.assertEqual(vectors.delete_calls, ["v1a"])
+        self.assertIn("v1b", vectors.present)
+        self.assertEqual(turns.scrub_calls, [])
+        self.assertFalse(turns.rows["e1"].purged)
+        self.assertEqual(turns.rows["e1"].payload, {"text": "rewritten"})
+
+    def test_withdrawn_approval_between_targets_refuses_the_second(self):
+        plan = self._two_target_plan()
+        vectors = FakeVectors(["v1", "v2"])
+        turns = FakeTurns({"e1": {"digest": "d1", "payload": {"text": "one"}},
+                           "e2": {"digest": "d2", "payload": {"text": "two"}}})
+
+        def approval(user_id, event_id, source_hash):
+            # Approval is revoked the moment the first target has been erased.
+            return not (event_id == "e2" and turns.rows["e1"].purged)
+
+        with self.assertRaises(PurgeError) as ctx:
+            purge.execute_purge(plan, vectors.delete, turns.scrub, vectors.exists,
+                                turns.get, guard_approval=approval)
+        error = ctx.exception
+        self.assertEqual(error.code, "drifted-target")
+        self.assertEqual(error.completed, ["e1"])
+        self.assertEqual(error.drifted, ["e2"])
+        self.assertEqual(error.statuses, {"e1": "completed", "e2": "refused-drift"})
+        self.assertEqual(vectors.delete_calls, ["v1"])
+        self.assertFalse(turns.rows["e2"].purged)
+        self.assertEqual(turns.rows["e2"].payload, {"text": "two"})
+
+    def test_non_drifted_batch_still_erases_every_target(self):
+        # Over-refusal guard: with no drift both targets erase as before.
+        plan = self._two_target_plan()
+        vectors = FakeVectors(["v1", "v2"])
+        turns = FakeTurns({"e1": {"digest": "d1", "payload": {"text": "one"}},
+                           "e2": {"digest": "d2", "payload": {"text": "two"}}})
+        result = purge.execute_purge(plan, vectors.delete, turns.scrub,
+                                     vectors.exists, turns.get)
+        self.assertEqual(result, {"purged": ["e1", "e2"], "already_purged": [],
+                                  "verified": True})
+        self.assertEqual(vectors.present, set())
+        self.assertEqual(turns.scrub_calls, ["e1", "e2"])
+
+
+# --- 19. atomic conditional effects narrow the window ------------------------
+class ConditionalEffectTests(unittest.TestCase):
+    """When the store can enforce the precondition in its own critical section,
+    the conditional callbacks are used so the check and the effect are one step."""
+
+    def _plan(self):
+        return purge.plan_purge([receipt("e1", "u1", "d1", "sh", ["v1"])],
+                                [tombstone("u1", "e1", "sh")],
+                                event_request("u1", "e1"))
+
+    def test_conditional_effects_receive_the_approved_digest(self):
+        vectors = FakeVectors(["v1"])
+        turns = FakeTurns({"e1": {"digest": "d1", "payload": {"text": "secret"}}})
+        delete_seen = []
+        scrub_seen = []
+
+        def cond_delete(vector_id, expected_digest):
+            delete_seen.append((vector_id, expected_digest))
+            vectors.delete(vector_id)
+            return True
+
+        def cond_scrub(event_id, expected_digest):
+            scrub_seen.append((event_id, expected_digest))
+            turns.scrub(event_id)
+            return True
+
+        result = purge.execute_purge(self._plan(), vectors.delete, turns.scrub,
+                                     vectors.exists, turns.get,
+                                     delete_vector_if=cond_delete,
+                                     scrub_turn_if=cond_scrub)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["purged"], ["e1"])
+        self.assertEqual(delete_seen, [("v1", "d1")])
+        self.assertEqual(scrub_seen, [("e1", "d1")])
+
+    def test_conditional_delete_precondition_failure_refuses_with_zero_effects(self):
+        # The store's conditional delete affects 0 rows (the digest changed under
+        # it): the effect is refused cleanly, with no delete and no scrub.
+        vectors = FakeVectors(["v1"])
+        turns = FakeTurns({"e1": {"digest": "d1", "payload": {"text": "secret"}}})
+
+        def refuse(vector_id, expected_digest):
+            return False
+
+        with self.assertRaises(PurgeError) as ctx:
+            purge.execute_purge(self._plan(), vectors.delete, turns.scrub,
+                                vectors.exists, turns.get,
+                                delete_vector_if=refuse)
+        error = ctx.exception
+        self.assertEqual(error.code, "drifted-target")
+        self.assertEqual(error.statuses, {"e1": "refused-drift"})
+        self.assertEqual(vectors.delete_calls, [])
+        self.assertEqual(turns.scrub_calls, [])
+        self.assertEqual(turns.rows["e1"].payload, {"text": "secret"})
+
+
+# --- 20. drift beyond the digest: source / owner / vector binding ------------
+class IdentityFieldDriftTests(unittest.TestCase):
+    def _plan(self):
+        return purge.plan_purge([receipt("e1", "u1", "d1", "sh", ["v1"])],
+                                [tombstone("u1", "e1", "sh")],
+                                event_request("u1", "e1"))
+
+    def _refuse(self, record):
+        vectors = FakeVectors(["v1"])
+        turns = FakeTurns({"e1": record})
+        with self.assertRaises(PurgeError) as ctx:
+            purge.execute_purge(self._plan(), vectors.delete, turns.scrub,
+                                vectors.exists, turns.get)
+        self.assertEqual(ctx.exception.code, "drifted-target")
+        self.assertEqual(ctx.exception.statuses, {"e1": "refused-drift"})
+        # Zero effects for the refused target.
+        self.assertEqual(vectors.delete_calls, [])
+        self.assertEqual(turns.scrub_calls, [])
+        self.assertFalse(turns.rows["e1"].purged)
+        return turns
+
+    def test_source_hash_drift_is_refused(self):
+        self._refuse({"digest": "d1", "source_hash": "sh-CHANGED",
+                      "payload": {"text": "secret"}})
+
+    def test_vector_binding_drift_is_refused(self):
+        self._refuse({"digest": "d1", "vector_ids": ["v-OTHER"],
+                      "payload": {"text": "secret"}})
+
+    def test_owner_change_is_refused(self):
+        self._refuse({"digest": "d1", "user_id": "u2", "payload": {"text": "secret"}})
+
+
+# --- 21. async commit / connection reopen interleaving -----------------------
+class AsyncCommitInterleavingTests(unittest.TestCase):
+    """A separate connection commits new content between the preflight read and a
+    later target's effect, simulating an asynchronous submit."""
+
+    def test_committed_change_between_preflight_and_effect_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "turns.sqlite")
+            store = _SqliteTurns(path, {
+                "e1": {"user_id": "u1", "digest": "d1", "source_hash": "sh",
+                       "vector_ids": ["v1"], "payload": {"text": "one"},
+                       "plan": {"facts": [{"quote": "one"}]}},
+                "e2": {"user_id": "u1", "digest": "d2", "source_hash": "sh",
+                       "vector_ids": ["v2"], "payload": {"text": "two"},
+                       "plan": {"facts": [{"quote": "two"}]}},
+            })
+            self.addCleanup(store.conn.close)
+            plan = purge.plan_purge(
+                [receipt("e1", "u1", "d1", "sh", ["v1"]),
+                 receipt("e2", "u1", "d2", "sh", ["v2"])],
+                [tombstone("u1", "e1", "sh")], fact_request("u1", "sh"))
+            self.assertEqual(plan["tombstones_required"], ())
+
+            def delete_and_commit_elsewhere(vector_id):
+                if vector_id == "v1":
+                    other = sqlite3.connect(path)
+                    other.execute(
+                        "UPDATE turns SET digest=?,payload=? WHERE event_id=?",
+                        ("d2-NEW", json.dumps({"text": "brand-new-secret"}), "e2"))
+                    other.commit()
+                    other.close()
+
+            with self.assertRaises(PurgeError) as ctx:
+                purge.execute_purge(plan, delete_and_commit_elsewhere, store.scrub,
+                                    lambda vector_id: False, store.get)
+            error = ctx.exception
+            self.assertEqual(error.code, "drifted-target")
+            self.assertEqual(error.completed, ["e1"])
+            self.assertEqual(error.drifted, ["e2"])
+            self.assertEqual(error.statuses, {"e1": "completed", "e2": "refused-drift"})
+
+            # e1's erase is durable; e2's brand-new content survives untouched.
+            digest, payload, _plan_json, purged = store.raw("e2")
+            self.assertEqual(digest, "d2-NEW")
+            self.assertIn("brand-new-secret", payload)
+            self.assertFalse(purged)
+            self.assertTrue(store.raw("e1")[3])
+
+            # Re-open the store: e1 stays erased (digest kept), e2 keeps its text.
+            store.reopen()
+            self.assertEqual(store.raw("e1")[0], "d1")
+            self.assertNotIn("one", store.raw("e1")[1])
+            self.assertIn("brand-new-secret", store.raw("e2")[1])
+            self.assertEqual(store.raw("e2")[0], "d2-NEW")
+
+    def test_connection_reopen_without_drift_still_erases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "turns.sqlite")
+            store = _SqliteTurns(path, {
+                "e1": {"user_id": "u1", "digest": "d1", "source_hash": "sh",
+                       "vector_ids": ["v1"], "payload": {"text": "secret"},
+                       "plan": {"facts": [{"quote": "secret"}]}},
+            })
+            self.addCleanup(store.conn.close)
+            store.reopen()  # a fresh connection: the identity must still match
+            plan = purge.plan_purge([receipt("e1", "u1", "d1", "sh", ["v1"])],
+                                    [tombstone("u1", "e1", "sh")],
+                                    event_request("u1", "e1"))
+            result = purge.execute_purge(plan, lambda vector_id: None, store.scrub,
+                                         lambda vector_id: False, store.get)
+            self.assertTrue(result["verified"])
+            self.assertEqual(result["purged"], ["e1"])
+            self.assertNotIn("secret", store.raw("e1")[1])
+            self.assertEqual(store.raw("e1")[0], "d1")
+
+
+# --- 22. per-target status is explicit on a partial batch --------------------
+class PerTargetStatusTests(unittest.TestCase):
+    def test_statuses_map_every_target_on_a_mid_batch_failure(self):
+        plan = purge.plan_purge(
+            [receipt("e1", "u1", "d1", "sh", ["v1"]),
+             receipt("e2", "u1", "d2", "sh", ["v2"])],
+            [tombstone("u1", "e1", "sh")], fact_request("u1", "sh"))
+        vectors = FakeVectors(["v1", "v2"], fail_on={"v2"})
+        turns = FakeTurns({"e1": {"digest": "d1", "payload": {"text": "one"}},
+                           "e2": {"digest": "d2", "payload": {"text": "two"}}})
+        with self.assertRaises(PurgeError) as ctx:
+            purge.execute_purge(plan, vectors.delete, turns.scrub,
+                                vectors.exists, turns.get)
+        error = ctx.exception
+        self.assertEqual(error.code, "purge-incomplete")
+        self.assertEqual(error.statuses, {"e1": "completed", "e2": "failed"})
+        self.assertEqual(error.completed, ["e1"])
+        self.assertEqual(error.failed, ["e2"])
 
 
 if __name__ == "__main__":

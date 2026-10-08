@@ -374,3 +374,157 @@ test("13. re-granting a settled scope retains the settled record for audit", () 
 	bad.grants[0].settled = false;
 	expectCode(() => createBudgetPolicy({ now: clock.now }).fromJSON(bad), "invalid-state");
 });
+
+// ---------------------------------------------------------------------------
+// Negative tests for audit finding M02-BP-F001 (clock anomaly kept the budget
+// usable). These pin the fail-closed barrier: a clock reading that cannot anchor
+// a deadline is refused on grant/charge/assertActive/remaining BEFORE any state
+// moves or any effect is authorised, and is never misread as "still active".
+// ---------------------------------------------------------------------------
+
+/**
+ * A clock whose reading can be swapped mid-test. `setValue` makes `now()` return
+ * an arbitrary (possibly invalid) value; `setThrow` makes it throw. This models a
+ * real host clock failing AFTER a budget was validly granted — the audit repro.
+ */
+function controllableClock(start = 1000) {
+	let mode = { kind: "value", value: start };
+	return {
+		now: () => {
+			if (mode.kind === "throw") throw new Error("clock failure");
+			return mode.value;
+		},
+		setValue: (value) => { mode = { kind: "value", value }; },
+		setThrow: () => { mode = { kind: "throw" }; },
+	};
+}
+
+test("14. a valid grant then an injected faulty clock fails closed with zero movement", () => {
+	const clock = controllableClock(100);
+	const policy = createBudgetPolicy({ now: clock.now });
+	policy.grant({ scopeKey: "s", maxTokens: 5, maxDurationMs: 1000, maxCalls: 3 }); // expiresAt = 1100
+
+	// While the clock is sound the budget is genuinely live and usable.
+	assert.deepEqual(policy.assertActive("s"), { remainingTokens: 5, remainingCalls: 3, remainingMs: 1000 });
+
+	const before = policy.toJSON(); // full record set, every field
+	const faulty = [NaN, Infinity, -Infinity, -1, "100", undefined, null, true];
+
+	for (const value of faulty) {
+		clock.setValue(value);
+		// The audit's exact repro: assertActive must REFUSE, never report success
+		// with a NaN remainingMs, and charge must not slip through.
+		expectCode(() => policy.assertActive("s"), "clock-invalid");
+		expectCode(() => policy.charge("s", { tokens: 1, calls: 1 }), "clock-invalid");
+		expectCode(() => policy.remaining("s"), "clock-invalid");
+		// No charge landed and no record moved, field by field.
+		assert.deepEqual(policy.toJSON(), before, `state unchanged after faulty clock ${String(value)}`);
+	}
+
+	// A clock that THROWS is a fault too, refused before any movement.
+	clock.setThrow();
+	expectCode(() => policy.assertActive("s"), "clock-invalid");
+	expectCode(() => policy.charge("s", { tokens: 1, calls: 1 }), "clock-invalid");
+	expectCode(() => policy.remaining("s"), "clock-invalid");
+	assert.deepEqual(policy.toJSON(), before, "state unchanged after a throwing clock");
+
+	// Restoring a sound clock restores the exact original behaviour.
+	clock.setValue(100);
+	assert.deepEqual(policy.assertActive("s"), { remainingTokens: 5, remainingCalls: 3, remainingMs: 1000 });
+	assert.deepEqual(policy.charge("s", { tokens: 1, calls: 1 }), { remainingTokens: 4, remainingCalls: 2, remainingMs: 1000 });
+});
+
+test("15. grant refuses a faulty clock and an overflowing derived expiry, leaving no record", () => {
+	const clock = controllableClock(1000);
+	const policy = createBudgetPolicy({ now: clock.now });
+
+	for (const value of [NaN, Infinity, -Infinity, -5, "1000"]) {
+		clock.setValue(value);
+		expectCode(() => policy.grant({ scopeKey: "g", maxTokens: 10, maxDurationMs: 1000 }), "clock-invalid");
+		expectCode(() => policy.remaining("g"), "unknown-budget");
+	}
+	clock.setThrow();
+	expectCode(() => policy.grant({ scopeKey: "g", maxTokens: 10, maxDurationMs: 1000 }), "clock-invalid");
+	assert.deepEqual(policy.toJSON(), { version: 1, grants: [] }, "a refused grant stores no record");
+
+	// A sound clock but a huge duration pushes the derived expiry past the
+	// safely-representable integer range -> invalid-grant, still no record.
+	clock.setValue(1);
+	expectCode(() => policy.grant({ scopeKey: "g", maxTokens: 10, maxDurationMs: Number.MAX_SAFE_INTEGER }), "invalid-grant");
+	assert.deepEqual(policy.toJSON(), { version: 1, grants: [] }, "an overflowing grant stores no record");
+
+	// The exact boundary: as long as the derived expiry fits, the grant stands.
+	clock.setValue(0);
+	const ok = policy.grant({ scopeKey: "g", maxTokens: 10, maxDurationMs: Number.MAX_SAFE_INTEGER });
+	assert.equal(ok.expiresAt, Number.MAX_SAFE_INTEGER);
+	assert.equal(policy.remaining("g").remainingMs, Number.MAX_SAFE_INTEGER);
+});
+
+test("16. boundary expiry holds and a clock fault is never misread as expiry", () => {
+	const clock = controllableClock(1000);
+	const policy = createBudgetPolicy({ now: clock.now });
+	policy.grant({ scopeKey: "s", maxTokens: 50, maxDurationMs: 5000 }); // expiresAt = 6000
+
+	// One ms before expiry the budget is active; AT expiry it is expired.
+	clock.setValue(5999);
+	assert.equal(policy.charge("s", { tokens: 1 }).remainingMs, 1);
+	clock.setValue(6000);
+	expectCode(() => policy.charge("s", { tokens: 1 }), "budget-expired");
+	expectCode(() => policy.assertActive("s"), "budget-expired");
+
+	// A broken clock is reported as the clock fault (the fail-closed cause) and
+	// moves nothing, rather than being silently swallowed as "expired" or active.
+	const before = policy.toJSON();
+	clock.setValue(NaN);
+	expectCode(() => policy.assertActive("s"), "clock-invalid");
+	assert.deepEqual(policy.toJSON(), before);
+
+	// The frozen numbers stay auditable once a sound clock is restored.
+	clock.setValue(6000);
+	assert.equal(policy.remaining("s").remainingTokens, 49);
+});
+
+test("17. fromJSON refuses out-of-range time windows in snapshots", () => {
+	const clock = fixedClock(1000);
+	const policy = createBudgetPolicy({ now: clock.now });
+	policy.grant({ scopeKey: "a", maxTokens: 100, maxDurationMs: 5000 }); // expiresAt 6000
+	const snapshot = JSON.parse(JSON.stringify(policy.toJSON()));
+
+	const tampers = [
+		(snap) => { snap.grants[0].issuedAt = -1; },
+		(snap) => { snap.grants[0].issuedAt = "1000"; },
+		(snap) => { snap.grants[0].expiresAt = Number.MAX_SAFE_INTEGER + 1; },
+		(snap) => { snap.grants[0].expiresAt = Infinity; },
+	];
+	for (const tamper of tampers) {
+		const copy = JSON.parse(JSON.stringify(snapshot));
+		tamper(copy);
+		expectCode(() => createBudgetPolicy({ now: clock.now }).fromJSON(copy), "invalid-state");
+	}
+});
+
+test("18. a restored budget keeps the same fail-closed clock behaviour", () => {
+	const clock = controllableClock(1000);
+	const source = createBudgetPolicy({ now: clock.now });
+	source.grant({ scopeKey: "s", maxTokens: 20, maxDurationMs: 4000, maxCalls: 2 }); // expiresAt 5000
+	source.charge("s", { tokens: 5, calls: 1 });
+
+	const snapshot = JSON.parse(JSON.stringify(source.toJSON()));
+	const restored = createBudgetPolicy({ now: clock.now });
+	restored.fromJSON(snapshot);
+
+	// Sound clock: identical remainder and an identical matching charge.
+	assert.deepEqual(restored.remaining("s"), source.remaining("s"));
+	assert.deepEqual(restored.charge("s", { tokens: 5 }), source.charge("s", { tokens: 5 }));
+
+	// Fault AFTER restore: the restored budget refuses and does not move.
+	const before = restored.toJSON();
+	clock.setValue(NaN);
+	expectCode(() => restored.charge("s", { tokens: 1, calls: 1 }), "clock-invalid");
+	expectCode(() => restored.assertActive("s"), "clock-invalid");
+	assert.deepEqual(restored.toJSON(), before);
+
+	// Reopening a sound clock makes it usable again, consistently.
+	clock.setValue(1000);
+	assert.deepEqual(restored.assertActive("s"), { remainingTokens: 10, remainingCalls: 1, remainingMs: 4000 });
+});

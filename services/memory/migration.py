@@ -158,11 +158,44 @@ def _check_target_alias(source_path: str, source_dir, copy_dir, copy_path: str) 
         raise _fail("target_alias")
 
 
+# Root-level system aliases (macOS) the OS installer creates and that a private
+# temp/copy tree legitimately lives under.  Only these exact link -> target
+# pairs, owned by root, are exempted from the symlink refusal: an arbitrary
+# ``/``-child symlink (or an alias pointing somewhere else) is not trusted.
+_ROOT_SYSTEM_ALIASES = {
+    "/var": "/private/var",
+    "/tmp": "/private/tmp",
+    "/etc": "/private/etc",
+}
+
+
+def _is_root_system_alias(path: str) -> bool:
+    """True only for a verified root-level system alias.
+
+    The path must be a direct child of ``/``, name one of
+    :data:`_ROOT_SYSTEM_ALIASES`, resolve to that alias's canonical target and
+    be owned by root.  Anything else -- including a ``/``-child symlink an
+    attacker could create -- is not exempt and is reported as a symlink.
+    """
+    if os.path.dirname(path) != os.sep:
+        return False
+    expected = _ROOT_SYSTEM_ALIASES.get(path)
+    if expected is None:
+        return False
+    try:
+        if os.path.realpath(path) != os.path.realpath(expected):
+            return False
+        return os.lstat(path).st_uid == 0
+    except OSError:
+        return False
+
+
 def _symlink_components(path):
-    """Symlink components of an absolute path, excluding root-level system
-    aliases (macOS ``/var`` -> ``/private/var``), which only the superuser and
-    the OS installer create.  Any symlink below the filesystem root is a
-    redirect an attacker (or a mistaken operator) can point at a victim.
+    """Symlink components of an absolute path, excluding the *verified*
+    root-level system aliases (:data:`_ROOT_SYSTEM_ALIASES`).  Any other
+    symlink -- including a ``/``-child symlink that is not a known root-owned
+    alias -- is a redirect an attacker (or a mistaken operator) can point at a
+    victim.
     """
     found = []
     current = os.path.abspath(os.fspath(path))
@@ -171,7 +204,7 @@ def _symlink_components(path):
         if parent == current:
             break
         try:
-            if os.path.islink(current) and parent != os.sep:
+            if os.path.islink(current) and not _is_root_system_alias(current):
                 found.append(current)
         except OSError:
             pass
@@ -254,20 +287,42 @@ def _read_target_rows_readonly(copy_path: str):
 
 
 def _copy_is_faithful_snapshot(copy_path: str, source_rows) -> bool:
-    """True when every target row is byte-identical to a source row.
+    """True when the target is a *complete* byte-faithful snapshot of the source.
 
-    A manifest-less target is only trusted when it is a verifiable content
-    mapping of the current source: same ``(digest, payload, created_at)`` for
-    every ``event_id`` it holds.  A same-schema impostor (e.g. one that copied
-    the payloads but rewrote ``created_at``) fails this and is refused.
+    A manifest-less target is only trusted when its immutable event set equals
+    the source's exactly: the same ``event_id`` set and the same
+    ``(digest, payload, created_at)`` for every id.  A strict subset (a
+    half-copy, or a copy the source has since outgrown) and an empty baseline
+    table both fail, because the id sets must match -- nothing in the source may
+    be left unaccounted for.  An empty source is handled explicitly (both id
+    sets empty) rather than by an empty loop.  A same-schema impostor (e.g. one
+    that copied the payloads but rewrote ``created_at``) also fails.
     """
     target_rows = _read_target_rows_readonly(copy_path)
     if target_rows is None:
         return False
-    for event_id, triple in target_rows.items():
-        if source_rows.get(event_id) != triple:
-            return False
-    return True
+    if set(target_rows) != set(source_rows):
+        return False
+    return all(source_rows[event_id] == triple
+               for event_id, triple in target_rows.items())
+
+
+def _is_stale_source_subset(copy_path: str, source_rows) -> bool:
+    """True when the target is a non-empty byte-faithful *strict* subset.
+
+    Every target row is byte-identical to the matching source row, but the
+    source holds events the target lacks: the signature of a copy the source has
+    since outgrown (post-snapshot drift) or a half-written copy.  Such a target
+    is refused as a conservation violation rather than silently resumed.  An
+    empty, equal or non-matching target is not a stale subset.
+    """
+    target_rows = _read_target_rows_readonly(copy_path)
+    if not target_rows:
+        return False
+    if not set(target_rows) < set(source_rows):
+        return False
+    return all(source_rows.get(event_id) == triple
+               for event_id, triple in target_rows.items())
 
 
 def _is_known_copy(copy_dir, copy_path: str, source_digest_hash: str, source_rows) -> bool:
@@ -276,9 +331,10 @@ def _is_known_copy(copy_dir, copy_path: str, source_digest_hash: str, source_row
     A copy is *known* when it carries our converter manifest with a matching
     ``converterVersion`` **and** a provenance fingerprint equal to the current
     source's digest-set hash.  Without a manifest, the target must be a
-    verifiable byte-faithful snapshot of the source.  A bare baseline ``turns``
-    schema, a forged/mismatched manifest, or a same-schema impostor is **not**
-    known and must never reach ``_backup``'s delete/rebuild.
+    *complete* verifiable byte-faithful snapshot of the source (equal event-id
+    sets).  A bare baseline ``turns`` schema, a forged/mismatched manifest, a
+    subset/half-copy or a same-schema impostor is **not** known and must never
+    reach ``_backup``'s delete/rebuild.
     """
     manifest = _load_manifest(copy_dir)
     if manifest is not None:
@@ -297,10 +353,18 @@ def snapshot(source_dir, copy_dir) -> dict:
 
     The source is validated with the preflight path-safety checks and opened
     read-only; the copy is produced with ``sqlite3.Connection.backup()`` so any
-    committed-but-uncheckpointed WAL content is included.  A pre-existing usable
+    committed-but-uncheckpointed WAL content is included.  A pre-existing known
     copy (see :func:`_is_known_copy`) is left untouched, which is what makes
-    :func:`convert` resumable.  A target that aliases the source, or a non-empty
-    unknown database, is refused rather than overwritten.
+    :func:`convert` resumable.
+
+    Every read/identity/provenance check runs *before* any ``mkdir``, ``chmod``,
+    DDL or delete, so a refused target keeps its bytes, mode and directory
+    entries exactly as they were.  Three destination shapes are told apart: an
+    absent target database (a fresh copy may be created), a known converter copy
+    (resumed: manifest provenance, or a complete byte-faithful snapshot of this
+    source), and anything else (refused, never touched).  A target that aliases
+    the source, a stale/partial subset or an unknown database is refused rather
+    than overwritten.
     """
     source_path = _validated_source(source_dir)
     copy_path = _db_path(copy_dir)
@@ -313,12 +377,17 @@ def snapshot(source_dir, copy_dir) -> dict:
     except PreflightError:
         raise _fail("source_not_readable") from None
 
+    if os.path.lexists(copy_path):
+        if not _is_known_copy(copy_dir, copy_path, source_digest_hash, source_rows):
+            # A manifest-less target that is a byte-faithful strict subset is a
+            # copy the source has since outgrown (drift), not an unrelated db.
+            if not _has_manifest(copy_dir) and _is_stale_source_subset(
+                    copy_path, source_rows):
+                raise _fail("conservation_violation")
+            raise _fail("unknown_existing_db")
+
     os.makedirs(copy_dir, mode=0o700, exist_ok=True)
     os.chmod(copy_dir, 0o700)
-
-    if os.path.exists(copy_path):
-        if not _is_known_copy(copy_dir, copy_path, source_digest_hash, source_rows):
-            raise _fail("unknown_existing_db")
 
     if not _is_usable_copy(copy_path):
         try:
@@ -493,6 +562,15 @@ def _load_manifest(copy_dir):
     return data if isinstance(data, dict) else None
 
 
+def _has_manifest(copy_dir) -> bool:
+    """True when a manifest *file* is present, valid JSON or not.
+
+    Used only to tell a target that claims converter provenance (and must then
+    prove it) from a manifest-less target that is judged by content mapping.
+    """
+    return os.path.exists(os.path.join(os.fspath(copy_dir), MANIFEST_NAME))
+
+
 # ---------------------------------------------------------------------------
 # 3. journal
 # ---------------------------------------------------------------------------
@@ -634,7 +712,12 @@ def _classify(copy_path: str, rows: list, copy_dir, config: quality.QualityConfi
             outcomes[event_id] = journal.get(digest) or OUTCOME_SKIPPED
             continue
         if event_id not in copy_ids:
-            # Half-written / missing result: restore the source row and redo it.
+            # Half-written / missing result: only a converter copy that recorded
+            # this digest in its journal (an explicit resume marker) may be
+            # restored.  A missing source row with no marker is drift, not a
+            # resumable half-write, and must never be silently re-inserted.
+            if digest not in journal_set:
+                raise _fail("conservation_violation")
             _insert_row(copy_path, row)
             copy_ids.add(event_id)
         outcome = _convert_row(copy_path, row, config, store)

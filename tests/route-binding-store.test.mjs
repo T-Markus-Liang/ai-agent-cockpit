@@ -4,7 +4,8 @@
 // Every test uses a throwaway temp directory and REAL sqlite files; nothing here
 // touches production state, and no existing file/module is modified.
 //
-// Coverage (>= 10):
+// Coverage (>= 10); 11-15 are the RBS-F001 fail-closed poison negatives, 16-18
+// the RBS-E001 provenance-gate negatives:
 //   1  persistence across close/reopen (fields intact)
 //   2  binding-conflict writes nothing (dump identical before/after)
 //   3  idempotent re-bind writes nothing (row count stays 1)
@@ -15,9 +16,18 @@
 //   8  legacy scope violation survives a reopen
 //   9  file 0600 / directory 0700
 //   10 memory/DB consistency: DB key set == memory-visible key set
+//   11 after close() every API is refused
+//   12 INSERT failure -> poisoned; the idempotent retry is refused, not faked
+//   13 write failure + reload failure stays poisoned (no ghost success)
+//   14 COMMIT failure -> poisoned (no ghost success)
+//   15 intent INSERT failure -> poisoned
+//   16 a foreign database is refused untouched (bytes/mode/entries identical)
+//   17 a zero-byte file initializes fresh; a valid store reopens normally
+//   18 symlink / non-regular path refused (never followed)
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -373,6 +383,218 @@ test("10: the durable key set matches the memory-visible key set", async () => {
 		assert.equal(store.size, 3);
 		assert.equal(store.intentCount, 3);
 		store.close();
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+// --- RBS-F001: fail-closed poison after any failed write path ---
+
+test("11: every API is refused after close", async () => {
+	const dir = await tempDir();
+	try {
+		const file = join(dir, "bindings.sqlite");
+		const store = openBindingStore(file, { now: () => 0 });
+		store.bind(piBinding());
+		store.close();
+
+		const fresh = piBinding({ requestKey: { ownerId: "owner-3", sourceRequestId: "req-pi-2" }, effectKey: "effect-pi-2" });
+		throwsCode(() => store.bind(fresh), "store-closed");
+		throwsCode(() => store.resolve(PI_KEY), "store-closed");
+		throwsCode(() => store.planEffect(PI_KEY, { effectKey: "effect-pi" }), "store-closed");
+		throwsCode(() => store.recover(), "store-closed");
+		assert.throws(() => store.size, (error) => error instanceof RouteBindingError && error.code === "store-closed");
+		assert.throws(() => store.intentCount, (error) => error instanceof RouteBindingError && error.code === "store-closed");
+		assert.equal(countRows(file, "bindings"), 1, "the refused calls wrote nothing");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("12: a failed INSERT poisons the store; the idempotent retry is refused, not faked", async () => {
+	const dir = await tempDir();
+	try {
+		const file = join(dir, "bindings.sqlite");
+		const store = openBindingStore(file, { now: () => 0 });
+		store.bind(piBinding()); // 1 durable row
+
+		const raw = new DatabaseSync(file);
+		raw.exec("CREATE TRIGGER block_insert BEFORE INSERT ON bindings BEGIN SELECT RAISE(ABORT, 'blocked'); END");
+		raw.close();
+
+		const second = piBinding({ requestKey: { ownerId: "owner-3", sourceRequestId: "req-pi-2" }, effectKey: "effect-pi-2" });
+		assert.throws(() => store.bind(second), (error) => error instanceof Error, "the durable write failure surfaces");
+
+		// Audit repro ①: a same-binding retry must NOT report a ghost success.
+		throwsCode(() => store.bind(second), "store-poisoned");
+		throwsCode(() => store.resolve(PI_KEY), "store-poisoned");
+		assert.throws(() => store.size, (error) => error.code === "store-poisoned");
+		assert.equal(countRows(file, "bindings"), 1, "memorySize never diverges from durableSize");
+
+		// Controlled recovery once the fault is removed.
+		const raw2 = new DatabaseSync(file);
+		raw2.exec("DROP TRIGGER block_insert");
+		raw2.close();
+		store.recover();
+		assert.equal(store.size, 1, "recovered to the durable truth");
+		assert.equal(store.bind(second).requestKey.sourceRequestId, "req-pi-2");
+		assert.equal(countRows(file, "bindings"), 2);
+		store.close();
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("13: a write failure whose reload also fails stays poisoned (no ghost success)", async () => {
+	const dir = await tempDir();
+	try {
+		const file = join(dir, "bindings.sqlite");
+		const store = openBindingStore(file, { now: () => 0 });
+		store.bind(piBinding());
+		assert.equal(store.size, 1);
+
+		// Audit repro ②: with the store still OPEN, another connection poisons the
+		// durable rows (invalid JSON) and blocks INSERT, so the write fails AND the
+		// reload fails.
+		const raw = new DatabaseSync(file);
+		raw.prepare("INSERT INTO bindings (request_owner, request_id, record_json, created_at) VALUES (?, ?, ?, ?)").run("owner-bad", "req-bad", "{ this is not json", 0);
+		raw.exec("CREATE TRIGGER block_insert BEFORE INSERT ON bindings BEGIN SELECT RAISE(ABORT, 'blocked'); END");
+		raw.close();
+
+		const second = piBinding({ requestKey: { ownerId: "owner-3", sourceRequestId: "req-pi-2" }, effectKey: "effect-pi-2" });
+		assert.throws(() => store.bind(second), (error) => error instanceof Error);
+
+		throwsCode(() => store.bind(second), "store-poisoned");
+		throwsCode(() => store.resolve(PI_KEY), "store-poisoned");
+		assert.throws(() => store.size, (error) => error.code === "store-poisoned");
+		throwsCode(() => store.recover(), "store-poisoned", "recovery fails while the corrupt/blocked DB remains");
+		store.close();
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("14: a failed COMMIT poisons the store (no ghost success)", async () => {
+	const dir = await tempDir();
+	try {
+		const file = join(dir, "bindings.sqlite");
+		const store = openBindingStore(file, { now: () => 0 });
+
+		// A second connection holds a SHARED read transaction, so our INSERT
+		// succeeds but COMMIT (needing EXCLUSIVE) fails.
+		const holder = new DatabaseSync(file);
+		holder.exec("BEGIN");
+		holder.prepare("SELECT COUNT(*) AS n FROM bindings").get();
+
+		const binding = piBinding();
+		assert.throws(() => store.bind(binding), (error) => error instanceof Error, "the durable COMMIT failure surfaces");
+		throwsCode(() => store.bind(binding), "store-poisoned");
+		throwsCode(() => store.resolve(PI_KEY), "store-poisoned");
+
+		holder.exec("ROLLBACK");
+		holder.close();
+		assert.equal(countRows(file, "bindings"), 0, "the aborted COMMIT left no durable row");
+
+		store.recover();
+		assert.equal(store.size, 0, "recovered to the durable truth (empty)");
+		assert.equal(store.bind(binding).runtime, "pi-durable");
+		assert.equal(countRows(file, "bindings"), 1);
+		store.close();
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("15: a failed intent INSERT poisons the store too", async () => {
+	const dir = await tempDir();
+	try {
+		const file = join(dir, "bindings.sqlite");
+		const store = openBindingStore(file, { now: () => 1000 });
+		store.bind(legacyBinding()); // durable binding, no intent yet
+
+		const raw = new DatabaseSync(file);
+		raw.exec("CREATE TRIGGER block_intent BEFORE INSERT ON intents BEGIN SELECT RAISE(ABORT, 'blocked-intent'); END");
+		raw.close();
+
+		assert.throws(() => store.planEffect(LEGACY_KEY, { effectKey: "effect-legacy", taskId: "task-1" }), (error) => error instanceof Error);
+		throwsCode(() => store.planEffect(LEGACY_KEY, { effectKey: "effect-legacy", taskId: "task-1" }), "store-poisoned");
+		throwsCode(() => store.resolve(LEGACY_KEY), "store-poisoned");
+		assert.equal(countRows(file, "intents"), 0, "no ghost intent row is reported as persisted");
+		store.close();
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+// --- RBS-E001: provenance gate before any chmod/DDL ---
+
+test("16: an existing foreign database is refused untouched (no chmod, no DDL)", async () => {
+	const dir = await tempDir();
+	try {
+		const file = join(dir, "foreign.sqlite");
+		const foreign = new DatabaseSync(file);
+		foreign.exec("CREATE TABLE widget (id INTEGER PRIMARY KEY, name TEXT)");
+		foreign.prepare("INSERT INTO widget (name) VALUES (?)").run("w1");
+		foreign.close();
+		chmodSync(file, 0o644);
+
+		const bytesBefore = readFileSync(file);
+		const modeBefore = (await stat(file)).mode & 0o777;
+		const entriesBefore = readdirSync(dir).sort();
+
+		throwsCode(() => openBindingStore(file, { now: () => 0 }), "unknown_existing_db");
+
+		assert.equal(Buffer.compare(bytesBefore, readFileSync(file)), 0, "file bytes unchanged");
+		assert.equal((await stat(file)).mode & 0o777, modeBefore, "file mode unchanged (never forced to 0600)");
+		assert.deepEqual(readdirSync(dir).sort(), entriesBefore, "no journal/wal/extra directory entries");
+		const probe = new DatabaseSync(file, { readOnly: true });
+		try {
+			const tables = probe.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all();
+			assert.deepEqual(tables.map((row) => row.name), ["widget"], "the foreign schema is intact; our tables were never created");
+		} finally {
+			probe.close();
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("17: a zero-byte file is initialized fresh and a valid store reopens normally", async () => {
+	const dir = await tempDir();
+	try {
+		const file = join(dir, "bindings.sqlite");
+		writeFileSync(file, ""); // 0-byte placeholder: safe to initialize
+		const s1 = openBindingStore(file, { now: () => 0 });
+		assert.equal(s1.size, 0);
+		const written = s1.bind(piBinding());
+		s1.close();
+
+		// Provenance marker now present -> normal reopen, record intact.
+		const s2 = openBindingStore(file, { now: () => 0 });
+		assert.deepEqual(s2.resolve(PI_KEY), written);
+		s2.close();
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("18: a symlink or a non-regular path is refused without being followed", async () => {
+	const dir = await tempDir();
+	try {
+		const real = join(dir, "real.sqlite");
+		const store = openBindingStore(real, { now: () => 0 });
+		store.bind(piBinding());
+		store.close();
+		const realBytes = readFileSync(real);
+
+		const link = join(dir, "link.sqlite");
+		symlinkSync(real, link);
+		throwsCode(() => openBindingStore(link, { now: () => 0 }), "unsafe-store-path");
+		assert.equal(Buffer.compare(realBytes, readFileSync(real)), 0, "the symlink target was not touched");
+
+		const adir = join(dir, "adir.sqlite");
+		mkdirSync(adir);
+		throwsCode(() => openBindingStore(adir, { now: () => 0 }), "unsafe-store-path");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

@@ -53,17 +53,23 @@
 //   now:   () => number  epoch milliseconds; default Date.now.
 //
 //   classifyFailure(failure) -> frozen { eligible, reason }
-//     failure = { kind, hasProducedMessage?, hasUsedTools? }. Rules:
-//       startup_error                        -> eligible  "startup-failure"
-//       timeout & !hasProducedMessage & !hasUsedTools -> eligible "timeout-clean"
-//       timeout otherwise                    -> not       "timeout-dirty"
-//       protocol_error                       -> eligible  "protocol-failure"
+//     failure = { kind, hasProducedMessage?, hasUsedTools? }. A fallback is
+//     authorized ONLY on an explicit host proof that nothing ran —
+//     `hasProducedMessage === false` AND `hasUsedTools === false`. A missing or
+//     undefined (or otherwise non-`false`) flag reads as unknown and is refused:
+//     a same-named error can land mid tool-loop, so `kind` alone never proves a
+//     clean start. The side-effect barrier is applied to EVERY degradable kind:
 //       auth_error                           -> not       "auth-failure"
-//       rate_limit                           -> eligible  "rate-limited"
+//                                              (never swapped to another engine)
+//       startup_error   & proven clean       -> eligible  "startup-failure"
+//       protocol_error  & proven clean       -> eligible  "protocol-failure"
+//       rate_limit      & proven clean       -> eligible  "rate-limited"
+//       timeout         & proven clean       -> eligible  "timeout-clean"
+//       timeout otherwise                    -> not       "timeout-dirty"
+//       startup_error / protocol_error / rate_limit, not proven clean
+//                                            -> not       "unclean-side-effects"
 //       mid_generation_failure / unknown / anything unrecognized
 //                                            -> not       "uncertain-side-effects"
-//     `hasProducedMessage`/`hasUsedTools` gate on the strict value `false`; an
-//     absent flag therefore reads as "possibly produced" (dirty, do not retry).
 //
 //   nextAttempt(scopeKey, failure)
 //       -> frozen { action: "fallback", candidate, attempt, reason }
@@ -73,14 +79,20 @@
 //       OR the chain has no next candidate          -> stop "fallback-exhausted".
 //     eligible, candidate available                -> fallback to the next
 //       untried candidate in chain order, attempt = 1.
+//     A refused (stop) decision authorizes NO candidate and consumes NO attempt.
 //     Every call appends one decision record (see `decisions`).
 //
 //   buildFallbackContext({ originalContext, fromRef, toRef, attempt })
 //       -> frozen deep-copied context + fallback marker
-//     originalContext must be a plain, JSON-compatible object and must NOT
-//     already carry a `fallback` key. Output = deep copy with every original key
-//     preserved, plus `fallback: { from: fromRef, to: toRef, attempt, at }`.
-//     fromRef / toRef must be refs present in the chain
+//     originalContext must be a plain, strictly JSON-compatible object and must
+//     NOT already carry a `fallback` key. ONLY JSON is accepted: a Date/Map/Set,
+//     custom prototype, undefined, NaN/Infinity, function/symbol/bigint, a
+//     symbol-keyed or non-enumerable property, a sparse array, or a reserved key
+//     (`__proto__` / `constructor` / `prototype`) is REJECTED — never silently
+//     dropped. Output = a deep clone of every original key plus
+//     `fallback: { from: fromRef, to: toRef, attempt, at }`, DEEP-frozen so no
+//     part can drift after the provenance marker is written. The caller's input
+//     is never modified. fromRef / toRef must be refs present in the chain
 //       -> otherwise FallbackError("invalid-chain").
 //
 //   reset(scopeKey) -> this
@@ -120,10 +132,20 @@ function fail(code, message) {
 	throw new FallbackError(code, message);
 }
 
-/** True for a non-null, non-array, plain-ish object. */
+/** True for a non-null, non-array, plain-ish object (loose, shape-only check). */
 function isPlainObject(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+/** True only for a plain JSON object — an Object.prototype or null prototype. */
+function isPlainJsonObject(value) {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const proto = Object.getPrototypeOf(value);
+	return proto === Object.prototype || proto === null;
+}
+
+/** Keys unsafe to copy by assignment (prototype-pollution guard). */
+const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 /** Recursively freeze an object graph in place, returning it. */
 function deepFreeze(value) {
@@ -134,23 +156,54 @@ function deepFreeze(value) {
 }
 
 /**
- * Deep-copy JSON-compatible data (plain objects, arrays, primitives). A
- * non-plain object (Date, Map, function, ...) or a symbol/bigint is refused with
- * the given code — the context must be plain assembled data, and nothing is ever
- * silently dropped.
+ * Deep-copy strictly JSON-compatible data and refuse anything JSON would
+ * reshape: non-finite numbers (NaN / Infinity), undefined, function/symbol/
+ * bigint, non-plain objects (Date/Map/Set/custom prototype), symbol-keyed or
+ * non-enumerable properties, sparse arrays and reserved keys. Nothing is ever
+ * silently dropped — an unsupported node is refused with the given code. The
+ * input is never modified.
  */
 function cloneData(value, path, code) {
-	if (value === null || typeof value !== "object") {
-		const kind = typeof value;
-		if (kind === "function" || kind === "symbol" || kind === "bigint") {
-			fail(code, `context contains a non-serializable ${kind} at ${path}`);
-		}
+	const type = typeof value;
+	if (value === null) return null;
+	if (type === "string" || type === "boolean") return value;
+	if (type === "number") {
+		if (!Number.isFinite(value)) fail(code, `context contains a non-finite number at ${path}`);
 		return value;
 	}
-	if (Array.isArray(value)) return value.map((item, index) => cloneData(item, `${path}[${index}]`, code));
-	if (!isPlainObject(value)) fail(code, `context contains a non-plain object at ${path}`);
+	if (type === "undefined") fail(code, `context contains undefined at ${path}`);
+	if (type === "function" || type === "symbol" || type === "bigint") {
+		fail(code, `context contains a non-serializable ${type} at ${path}`);
+	}
+	// Object graph node: reject anything JSON.stringify would reshape or drop.
+	if (Object.getOwnPropertySymbols(value).length > 0) {
+		fail(code, `context contains a symbol-keyed property at ${path}`);
+	}
+	if (Array.isArray(value)) {
+		// Exactly the array's indices plus the intrinsic `length`; a hole or an
+		// extra/aliased property would be silently reshaped, so refuse instead.
+		if (Object.getOwnPropertyNames(value).length !== value.length + 1) {
+			fail(code, `context array at ${path} is sparse or carries non-index properties`);
+		}
+		const items = [];
+		for (let index = 0; index < value.length; index += 1) items.push(cloneData(value[index], `${path}[${index}]`, code));
+		return items;
+	}
+	if (!isPlainJsonObject(value)) fail(code, `context contains a non-plain object at ${path}`);
+	const keys = Object.keys(value);
+	if (Object.getOwnPropertyNames(value).length !== keys.length) {
+		fail(code, `context contains a non-enumerable property at ${path}`);
+	}
 	const copy = {};
-	for (const key of Object.keys(value)) copy[key] = cloneData(value[key], `${path}.${key}`, code);
+	for (const key of keys) {
+		if (RESERVED_KEYS.has(key)) fail(code, `context contains a reserved key at ${path}: ${key}`);
+		Object.defineProperty(copy, key, {
+			value: cloneData(value[key], `${path}.${key}`, code),
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
 	return copy;
 }
 
@@ -188,30 +241,30 @@ function normalizeChain(chain, code) {
 const DECISION_FIELDS = ["scopeKey", "fromRef", "toRef", "attempt", "outcome", "reason", "at"];
 const DECISION_REQUIRED_FIELDS = ["scopeKey", "fromRef", "attempt", "outcome", "reason", "at"];
 
+/** Kinds that MAY fall back, mapped to the reason a PROVEN-CLEAN one reports. */
+const DEGRADABLE_KINDS = new Map([
+	["startup_error", "startup-failure"],
+	["timeout", "timeout-clean"],
+	["protocol_error", "protocol-failure"],
+	["rate_limit", "rate-limited"],
+]);
+
 /**
  * Whether a classified failure may be replayed on a fallback candidate. Returns
- * `{ eligible, reason }`. A failure we cannot parse, or an unrecognized kind, is
- * treated as uncertain and NOT eligible (fail closed — never retry blindly).
+ * `{ eligible, reason }`. The side-effect barrier runs for EVERY degradable kind:
+ * only `hasProducedMessage === false && hasUsedTools === false` (an explicit host
+ * proof that nothing ran) authorizes a fallback; a missing, undefined or truthy
+ * flag reads as unknown and is refused. auth_error and every unrecognized kind
+ * are always refused (fail closed — never retry blindly, never swap engines).
  */
 function classify(kind, hasProducedMessage, hasUsedTools) {
-	switch (kind) {
-		case "startup_error":
-			return { eligible: true, reason: "startup-failure" };
-		case "timeout":
-			return hasProducedMessage === false && hasUsedTools === false
-				? { eligible: true, reason: "timeout-clean" }
-				: { eligible: false, reason: "timeout-dirty" };
-		case "protocol_error":
-			return { eligible: true, reason: "protocol-failure" };
-		case "auth_error":
-			return { eligible: false, reason: "auth-failure" };
-		case "rate_limit":
-			return { eligible: true, reason: "rate-limited" };
-		case "mid_generation_failure":
-		case "unknown":
-		default:
-			return { eligible: false, reason: "uncertain-side-effects" };
+	if (kind === "auth_error") return { eligible: false, reason: "auth-failure" };
+	const cleanReason = DEGRADABLE_KINDS.get(kind);
+	if (cleanReason === undefined) return { eligible: false, reason: "uncertain-side-effects" };
+	if (hasProducedMessage !== false || hasUsedTools !== false) {
+		return { eligible: false, reason: kind === "timeout" ? "timeout-dirty" : "unclean-side-effects" };
 	}
+	return { eligible: true, reason: cleanReason };
 }
 
 /**
@@ -295,8 +348,8 @@ export function createFallbackPolicy({ chain, now } = {}) {
 
 	function buildFallbackContext(spec) {
 		const { originalContext, fromRef, toRef, attempt } = spec ?? {};
-		if (!isPlainObject(originalContext)) {
-			fail("invalid-state", "originalContext must be a plain object");
+		if (!isPlainJsonObject(originalContext)) {
+			fail("invalid-state", "originalContext must be a plain JSON object");
 		}
 		requireRef(fromRef, "fromRef");
 		requireRef(toRef, "toRef");
@@ -310,7 +363,9 @@ export function createFallbackPolicy({ chain, now } = {}) {
 		}
 		const copy = cloneData(originalContext, "originalContext", "invalid-state");
 		copy.fallback = Object.freeze({ from: fromRef, to: toRef, attempt, at: clock() });
-		return Object.freeze(copy);
+		// Deep-freeze the WHOLE output: a later edit (e.g. between asynchronous
+		// candidate switches) must be impossible at every level, not just the top.
+		return deepFreeze(copy);
 	}
 
 	function reset(scopeKey) {

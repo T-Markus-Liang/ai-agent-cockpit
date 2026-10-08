@@ -40,6 +40,13 @@
 //     refused with `budget-settled`. The module never invents success, never
 //     manufactures a completion, never reports a settled scope as active, and
 //     carries no completion/marker concept to fabricate.
+//   * The injected clock is validated on EVERY deadline-sensitive call
+//     (`grant`, `charge`, `assertActive`, `remaining`). A clock that throws, or
+//     returns a non-number / non-finite / negative value, is `clock-invalid`; a
+//     grant whose derived `expiresAt` overflows the safe-integer range is
+//     `invalid-grant`. A reading that cannot be trusted is refused BEFORE any
+//     state moves or any effect is authorised — an unverifiable remaining
+//     duration is NEVER treated as "still active" (`NaN >= expiresAt` is `false`).
 //
 // Pure ESM, zero dependencies, side-effect free: no I/O, no network, no timers,
 // no environment access, no globals. Time is the only ambient input and it is
@@ -61,12 +68,15 @@
 //     A live (unsettled) budget for the same scopeKey already existing is
 //     `invalid-grant` — the existing grant is never overwritten or renewed. If
 //     the previous budget for that scope was settled, this opens a new cycle and
-//     the settled record is RETAINED (see toJSON), never replaced.
+//     the settled record is RETAINED (see toJSON), never replaced. An unusable
+//     clock is `clock-invalid`, and a derived `expiresAt` that overflows the
+//     safe-integer range is `invalid-grant` — neither stores a record.
 //
 //   charge(scopeKey, { tokens = 0, calls = 0 })
 //       -> { remainingTokens, remainingCalls, remainingMs }
 //     unknown scope        -> BudgetError("unknown-budget")
 //     settled scope        -> BudgetError("budget-settled")
+//     unusable clock       -> BudgetError("clock-invalid")
 //     now() >= expiresAt   -> BudgetError("budget-expired")
 //     negative / non-finite / non-number tokens or calls -> BudgetError("invalid-grant")
 //     deduction would push chargedTokens > maxTokens or (when capped)
@@ -77,14 +87,16 @@
 //
 //   assertActive(scopeKey) -> { remainingTokens, remainingCalls, remainingMs }
 //     unknown  -> "unknown-budget"; settled -> "budget-settled";
-//     expired  -> "budget-expired"; budget already fully used up
-//     (chargedTokens >= maxTokens, or a cap reached) -> "budget-exhausted".
+//     unusable clock -> "clock-invalid"; expired -> "budget-expired"; budget
+//     already fully used up (chargedTokens >= maxTokens, or a cap reached) ->
+//     "budget-exhausted".
 //     Returns the remaining amounts while the budget is genuinely active.
 //
 //   remaining(scopeKey) -> { remainingTokens, remainingCalls, remainingMs }
-//     Pure query, never mutates state. Only an unknown scope is refused
-//     ("unknown-budget"); a settled or expired scope is still readable so a
-//     caller can audit the frozen numbers.
+//     Pure query, never mutates state. An unknown scope is refused
+//     ("unknown-budget") and an unusable clock is refused ("clock-invalid");
+//     otherwise a settled or expired scope is still readable so a caller can
+//     audit the frozen numbers.
 //
 //   settle(scopeKey) -> frozen settled record
 //     Marks the live record settled and KEEPS it for audit. Repeating it is
@@ -96,10 +108,12 @@
 //     its live record.
 //   fromJSON(data) -> this
 //     Full-validation restore. Any structural violation (wrong version, wrong
-//     field set, wrong types, charged > max, non-object, or more than one
-//     UNSETTLED record for a scope) is "invalid-state". One scope may carry
-//     several records (older settled cycles plus one live cycle). After restore,
-//     charge / expiry / settle behave exactly as before serialization.
+//     field set, wrong types, charged > max, non-object, out-of-range time
+//     window — non-finite, negative or overflowing the safe-integer range — or
+//     more than one UNSETTLED record for a scope) is "invalid-state". One scope
+//     may carry several records (older settled cycles plus one live cycle).
+//     After restore, charge / expiry / settle behave exactly as before
+//     serialization.
 //
 // `remainingCalls` is `Infinity` when the grant carried no `maxCalls` cap.
 
@@ -163,7 +177,11 @@ function normalizeRecord(raw) {
 	if (raw.maxCalls !== null && !isPositiveInteger(raw.maxCalls)) {
 		fail("invalid-state", `grant record for ${raw.scopeKey}: maxCalls must be null or a positive integer`);
 	}
-	if (!Number.isFinite(raw.issuedAt) || !Number.isFinite(raw.expiresAt) || raw.expiresAt <= raw.issuedAt) {
+	if (
+		typeof raw.issuedAt !== "number" || !Number.isFinite(raw.issuedAt) || raw.issuedAt < 0 ||
+		typeof raw.expiresAt !== "number" || !Number.isFinite(raw.expiresAt) ||
+		raw.expiresAt > Number.MAX_SAFE_INTEGER || raw.expiresAt <= raw.issuedAt
+	) {
 		fail("invalid-state", `grant record for ${raw.scopeKey}: invalid time window`);
 	}
 	if (!isFiniteNonNegative(raw.chargedTokens) || raw.chargedTokens > raw.maxTokens) {
@@ -232,12 +250,34 @@ export function createBudgetPolicy({ now } = {}) {
 		return list[list.length - 1];
 	}
 
-	/** Current remaining amounts for a live record (never mutates). */
-	function remainders(record) {
+	/**
+	 * Read the injected clock for one operation. A deadline can only be evaluated
+	 * against a real instant, so an unusable reading — the clock threw, or returned
+	 * a non-number / non-finite / negative value — is refused BEFORE any state
+	 * moves or any effect is authorised. This is the fail-closed barrier that stops
+	 * a faulty clock from being read as "still within the deadline": `NaN >=
+	 * expiresAt` is `false` and `-Infinity` compares as unexpired, so an unchecked
+	 * reading would silently keep an unverifiable budget active.
+	 */
+	function readClock() {
+		let value;
+		try {
+			value = clock();
+		} catch {
+			fail("clock-invalid", "clock threw while reading the current time");
+		}
+		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+			fail("clock-invalid", "clock must return a finite, non-negative number");
+		}
+		return value;
+	}
+
+	/** Current remaining amounts for a live record at the given instant. */
+	function remainders(record, now) {
 		return {
 			remainingTokens: record.maxTokens - record.chargedTokens,
 			remainingCalls: record.maxCalls === null ? Infinity : record.maxCalls - record.chargedCalls,
-			remainingMs: record.expiresAt - clock(),
+			remainingMs: record.expiresAt - now,
 		};
 	}
 
@@ -260,13 +300,22 @@ export function createBudgetPolicy({ now } = {}) {
 		if (existing?.some((record) => !record.settled)) {
 			fail("invalid-grant", `scope ${scopeKey} already has an active budget (no overwrite, no renewal)`);
 		}
-		const issuedAt = clock();
+		const issuedAt = readClock();
+		const expiresAt = issuedAt + maxDurationMs;
+		// The derived absolute expiry must itself be a usable instant: finite,
+		// inside the safely-representable integer range and strictly after issue.
+		// An overflowing window (e.g. a huge maxDurationMs) is refused rather than
+		// stored, so no record can ever carry an expiry that comparisons cannot
+		// trust — and the refused grant leaves no record behind.
+		if (!Number.isFinite(expiresAt) || expiresAt > Number.MAX_SAFE_INTEGER || expiresAt <= issuedAt) {
+			fail("invalid-grant", `scope ${scopeKey}: derived expiry is out of range`);
+		}
 		const record = {
 			scopeKey,
 			maxTokens,
 			maxCalls: callsCap,
 			issuedAt,
-			expiresAt: issuedAt + maxDurationMs,
+			expiresAt,
 			chargedTokens: 0,
 			chargedCalls: 0,
 			settled: false,
@@ -280,7 +329,8 @@ export function createBudgetPolicy({ now } = {}) {
 	function charge(scopeKey, usage) {
 		const record = requireRecord(scopeKey);
 		if (record.settled) fail("budget-settled", `budget for scope ${scopeKey} is settled`);
-		if (clock() >= record.expiresAt) fail("budget-expired", `budget for scope ${scopeKey} expired`);
+		const now = readClock();
+		if (now >= record.expiresAt) fail("budget-expired", `budget for scope ${scopeKey} expired`);
 		const tokens = usage?.tokens ?? 0;
 		const calls = usage?.calls ?? 0;
 		if (!isFiniteNonNegative(tokens) || !isFiniteNonNegative(calls)) {
@@ -299,21 +349,26 @@ export function createBudgetPolicy({ now } = {}) {
 		}
 		record.chargedTokens = nextTokens;
 		record.chargedCalls = nextCalls;
-		return remainders(record);
+		return remainders(record, now);
 	}
 
 	function assertActive(scopeKey) {
 		const record = requireRecord(scopeKey);
 		if (record.settled) fail("budget-settled", `budget for scope ${scopeKey} is settled`);
-		if (clock() >= record.expiresAt) fail("budget-expired", `budget for scope ${scopeKey} expired`);
+		const now = readClock();
+		if (now >= record.expiresAt) fail("budget-expired", `budget for scope ${scopeKey} expired`);
 		if (record.chargedTokens >= record.maxTokens || (record.maxCalls !== null && record.chargedCalls >= record.maxCalls)) {
 			fail("budget-exhausted", `budget for scope ${scopeKey} is fully used up`);
 		}
-		return remainders(record);
+		return remainders(record, now);
 	}
 
 	function remaining(scopeKey) {
-		return remainders(requireRecord(scopeKey));
+		// Pure query, but the remaining duration is only meaningful against a real
+		// instant: an unusable clock is refused rather than reported as a
+		// meaningless `remainingMs: NaN`. The frozen counters stay readable whenever
+		// the clock is sound, whether the scope is live, settled or expired.
+		return remainders(requireRecord(scopeKey), readClock());
 	}
 
 	function settle(scopeKey) {

@@ -2,9 +2,12 @@
 //
 // Pure-module tests: a synthetic injected clock, no network, no file reads, no
 // side effects, no real provider. They pin the V39 fallback-policy contract —
-// bounded fallback (MAX 1 automatic attempt, no retry storm), uncertain
-// side effects are never replayed on another engine, context provenance is
-// preserved and never dropped, and every decision names refs only (no secret).
+// bounded fallback (MAX 1 automatic attempt, no retry storm), a unified
+// side-effect barrier (a fallback needs BOTH `hasProducedMessage` and
+// `hasUsedTools` strictly `false` for EVERY degradable kind; a missing/unknown
+// flag is refused), context provenance preserved by a strict JSON deep clone and
+// deep freeze (non-JSON input is rejected, never dropped), and every decision
+// names refs only (no secret).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -69,9 +72,9 @@ test("2. startup_error is eligible and falls back to the second candidate, attem
 	const clock = fixedClock();
 	const policy = createFallbackPolicy({ chain: CHAIN, now: clock.now });
 
-	assert.deepEqual(policy.classifyFailure({ kind: "startup_error" }), { eligible: true, reason: "startup-failure" });
+	assert.deepEqual(policy.classifyFailure({ kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }), { eligible: true, reason: "startup-failure" });
 
-	const result = policy.nextAttempt("user-1", { kind: "startup_error" });
+	const result = policy.nextAttempt("user-1", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false });
 	assert.equal(result.action, "fallback");
 	assert.equal(result.attempt, 1);
 	assert.equal(result.reason, "startup-failure");
@@ -127,14 +130,14 @@ test("5. rate_limit and protocol_error are eligible fallbacks", () => {
 	const clock = fixedClock();
 	const policy = createFallbackPolicy({ chain: CHAIN, now: clock.now });
 
-	assert.deepEqual(policy.classifyFailure({ kind: "rate_limit" }), { eligible: true, reason: "rate-limited" });
-	const limited = policy.nextAttempt("rl", { kind: "rate_limit" });
+	assert.deepEqual(policy.classifyFailure({ kind: "rate_limit", hasProducedMessage: false, hasUsedTools: false }), { eligible: true, reason: "rate-limited" });
+	const limited = policy.nextAttempt("rl", { kind: "rate_limit", hasProducedMessage: false, hasUsedTools: false });
 	assert.equal(limited.action, "fallback");
 	assert.equal(limited.reason, "rate-limited");
 	assert.equal(limited.attempt, 1);
 
-	assert.deepEqual(policy.classifyFailure({ kind: "protocol_error" }), { eligible: true, reason: "protocol-failure" });
-	const protocol = policy.nextAttempt("proto", { kind: "protocol_error" });
+	assert.deepEqual(policy.classifyFailure({ kind: "protocol_error", hasProducedMessage: false, hasUsedTools: false }), { eligible: true, reason: "protocol-failure" });
+	const protocol = policy.nextAttempt("proto", { kind: "protocol_error", hasProducedMessage: false, hasUsedTools: false });
 	assert.equal(protocol.action, "fallback");
 	assert.equal(protocol.reason, "protocol-failure");
 });
@@ -158,21 +161,21 @@ test("7. bounded: a second eligible request for the same scope stops with fallba
 	const clock = fixedClock();
 	const policy = createFallbackPolicy({ chain: CHAIN, now: clock.now });
 
-	const first = policy.nextAttempt("bounded", { kind: "startup_error" });
+	const first = policy.nextAttempt("bounded", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false });
 	assert.equal(first.action, "fallback");
 	assert.equal(first.attempt, 1);
 
 	// Even a fresh, clean, eligible failure is refused the second time — the
 	// retry is bounded to ONE automatic attempt. Reported as a plain stop, never
 	// thrown, never a storm.
-	const second = policy.nextAttempt("bounded", { kind: "startup_error" });
+	const second = policy.nextAttempt("bounded", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false });
 	assert.equal(second.action, "stop");
 	assert.equal(second.reason, "fallback-exhausted");
 	assert.ok(!("candidate" in second), "a stop carries no candidate");
 
 	// A chain with no fallback candidate also exhausts immediately.
 	const solo = createFallbackPolicy({ chain: [CHAIN[0]], now: clock.now });
-	const only = solo.nextAttempt("solo", { kind: "startup_error" });
+	const only = solo.nextAttempt("solo", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false });
 	assert.equal(only.action, "stop");
 	assert.equal(only.reason, "fallback-exhausted");
 });
@@ -181,20 +184,20 @@ test("8. reset re-arms exactly one attempt; different scopeKeys are counted inde
 	const clock = fixedClock();
 	const policy = createFallbackPolicy({ chain: CHAIN, now: clock.now });
 
-	assert.equal(policy.nextAttempt("a", { kind: "startup_error" }).action, "fallback");
-	assert.equal(policy.nextAttempt("a", { kind: "startup_error" }).action, "stop");
+	assert.equal(policy.nextAttempt("a", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }).action, "fallback");
+	assert.equal(policy.nextAttempt("a", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }).action, "stop");
 	policy.reset("a"); // a new user-request cycle begins
-	const rearmed = policy.nextAttempt("a", { kind: "startup_error" });
+	const rearmed = policy.nextAttempt("a", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false });
 	assert.equal(rearmed.action, "fallback");
 	assert.equal(rearmed.attempt, 1, "counting restarts at 1 after reset");
 
 	// Scope b was never touched and is unaffected by a's history or reset.
-	const b = policy.nextAttempt("b", { kind: "startup_error" });
+	const b = policy.nextAttempt("b", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false });
 	assert.equal(b.action, "fallback");
 	assert.equal(b.attempt, 1);
 	// Resetting an unknown scope is a harmless no-op.
 	policy.reset("never-seen");
-	assert.equal(policy.nextAttempt("c", { kind: "startup_error" }).action, "fallback");
+	assert.equal(policy.nextAttempt("c", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }).action, "fallback");
 });
 
 test("9. buildFallbackContext preserves every original key and adds the provenance marker", () => {
@@ -243,7 +246,7 @@ test("9. buildFallbackContext preserves every original key and adds the provenan
 test("10. decision log names refs/reasons only and survives a toJSON/fromJSON round-trip", () => {
 	const clock = fixedClock(1234);
 	const policy = createFallbackPolicy({ chain: CHAIN, now: clock.now });
-	policy.nextAttempt("a", { kind: "startup_error" }); // fallback
+	policy.nextAttempt("a", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }); // fallback
 	policy.nextAttempt("a", { kind: "timeout", hasUsedTools: true, credential: FAKE_SECRET }); // stop timeout-dirty
 	policy.nextAttempt("b", { kind: "auth_error" }); // stop auth-failure
 
@@ -274,8 +277,8 @@ test("10. decision log names refs/reasons only and survives a toJSON/fromJSON ro
 	assert.deepEqual(restored.decisions(), log, "decision log survives round-trip");
 	assert.deepEqual(restored.toJSON(), policy.toJSON(), "snapshot is stable across round-trip");
 	// The restored counters keep the bound: scope a already spent its attempt.
-	assert.equal(restored.nextAttempt("a", { kind: "startup_error" }).reason, "fallback-exhausted");
-	assert.equal(restored.nextAttempt("b", { kind: "startup_error" }).action, "fallback", "scope b still has its one attempt");
+	assert.equal(restored.nextAttempt("a", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }).reason, "fallback-exhausted");
+	assert.equal(restored.nextAttempt("b", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }).action, "fallback", "scope b still has its one attempt");
 
 	// fromJSON validates fully and fails closed.
 	const tamperCases = [
@@ -296,8 +299,8 @@ test("11. deterministic: the same input sequence yields deeply equal output", ()
 		const policy = createFallbackPolicy({ chain: CHAIN, now: () => 4242 });
 		const output = [
 			policy.classifyFailure({ kind: "timeout", hasProducedMessage: false, hasUsedTools: false }),
-			policy.nextAttempt("s", { kind: "startup_error" }),
-			policy.nextAttempt("s", { kind: "rate_limit" }),
+			policy.nextAttempt("s", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }),
+			policy.nextAttempt("s", { kind: "rate_limit", hasProducedMessage: false, hasUsedTools: false }),
 			policy.nextAttempt("t", { kind: "mid_generation_failure" }),
 			policy.buildFallbackContext({ originalContext: { persona: "p" }, fromRef: "openai/gpt-4o", toRef: "kimi/kimi-k2", attempt: 1 }),
 		];
@@ -318,5 +321,153 @@ test("12. the configured chain is deep-frozen in place (no later mutation possib
 	assert.throws(() => { chain[0].provider = "attacker"; }, TypeError);
 	assert.throws(() => { chain.push({ ref: "evil/evil", provider: "evil", modelId: "evil" }); }, TypeError);
 	// The frozen candidate chain still resolves to the original provider.
-	assert.equal(policy.nextAttempt("z", { kind: "startup_error" }).candidate.provider, "kimi");
+	assert.equal(policy.nextAttempt("z", { kind: "startup_error", hasProducedMessage: false, hasUsedTools: false }).candidate.provider, "kimi");
+});
+
+test("13. side-effect barrier: every degradable kind needs BOTH flags strictly false", () => {
+	const policy = createFallbackPolicy({ chain: CHAIN, now: () => 1 });
+	const clean = { hasProducedMessage: false, hasUsedTools: false };
+	const notCleanCases = [
+		{ hasProducedMessage: true, hasUsedTools: false },
+		{ hasProducedMessage: false, hasUsedTools: true },
+		{ hasProducedMessage: true, hasUsedTools: true },
+		{}, // both flags missing -> unknown -> refuse
+		{ hasProducedMessage: undefined, hasUsedTools: undefined },
+		{ hasProducedMessage: false }, // one flag missing -> not proven clean
+		{ hasUsedTools: false },
+		{ hasProducedMessage: 0, hasUsedTools: 0 }, // only the strict `false` proves clean
+		{ hasProducedMessage: null, hasUsedTools: null },
+		{ hasProducedMessage: "false", hasUsedTools: "false" },
+	];
+	const cleanReason = {
+		startup_error: "startup-failure",
+		timeout: "timeout-clean",
+		protocol_error: "protocol-failure",
+		rate_limit: "rate-limited",
+	};
+	for (const kind of Object.keys(cleanReason)) {
+		assert.deepEqual(policy.classifyFailure({ kind, ...clean }), { eligible: true, reason: cleanReason[kind] }, `${kind} clean is eligible`);
+		let i = 0;
+		for (const flags of notCleanCases) {
+			const reason = kind === "timeout" ? "timeout-dirty" : "unclean-side-effects";
+			const failure = { kind, ...flags };
+			assert.deepEqual(policy.classifyFailure(failure), { eligible: false, reason }, `${kind} not proven clean -> ${reason}`);
+			const stop = policy.nextAttempt(`barrier-${kind}-${i++}`, failure);
+			assert.equal(stop.action, "stop", `${kind} not proven clean never authorizes a candidate`);
+			assert.equal(stop.reason, reason);
+			assert.ok(!("candidate" in stop), "a refused fallback carries no candidate");
+		}
+	}
+	// No refused failure ever consumed the one automatic attempt.
+	assert.equal(policy.toJSON().scopes.length, 0, "dirty/unknown paths consume no attempt budget");
+});
+
+test("14. audit repro flipped: a dirty protocol/rate_limit/startup and a flag-less protocol_error never fall back", () => {
+	const policy = createFallbackPolicy({ chain: CHAIN, now: () => 100 });
+	const dirty = { hasProducedMessage: true, hasUsedTools: true };
+	for (const kind of ["protocol_error", "rate_limit", "startup_error"]) {
+		assert.deepEqual(policy.classifyFailure({ kind, ...dirty }), { eligible: false, reason: "unclean-side-effects" });
+		const stop = policy.nextAttempt(`dirty-${kind}`, { kind, ...dirty });
+		assert.equal(stop.action, "stop");
+		assert.equal(stop.reason, "unclean-side-effects");
+		assert.ok(!("candidate" in stop), "a failure that already produced a message/used tools gets no candidate");
+	}
+	// protocol_error with BOTH flags absent (the r1 miss) is refused as well.
+	assert.deepEqual(policy.classifyFailure({ kind: "protocol_error" }), { eligible: false, reason: "unclean-side-effects" });
+	assert.deepEqual(policy.nextAttempt("missing-proto", { kind: "protocol_error" }), { action: "stop", reason: "unclean-side-effects" });
+});
+
+test("15. auth_error and mid-tool/unknown results are refused regardless of the side-effect flags", () => {
+	const policy = createFallbackPolicy({ chain: CHAIN, now: () => 1 });
+	for (const flags of [{}, { hasProducedMessage: false, hasUsedTools: false }, { hasProducedMessage: true, hasUsedTools: true }]) {
+		assert.deepEqual(policy.classifyFailure({ kind: "auth_error", ...flags }), { eligible: false, reason: "auth-failure" });
+	}
+	// A clean-LOOKING mid_generation_failure / unknown is still uncertain: a
+	// same-named error can land mid tool-loop, so flags alone never rescue it.
+	for (const kind of ["mid_generation_failure", "unknown", "some_future_kind"]) {
+		assert.deepEqual(policy.classifyFailure({ kind, hasProducedMessage: false, hasUsedTools: false }), { eligible: false, reason: "uncertain-side-effects" });
+	}
+	assert.equal(policy.toJSON().scopes.length, 0, "no attempt spent by a refused failure");
+});
+
+test("16. buildFallbackContext rejects every non-JSON value instead of silently dropping it", () => {
+	const policy = createFallbackPolicy({ chain: CHAIN, now: () => 1 });
+	const refs = { fromRef: CHAIN[0].ref, toRef: CHAIN[1].ref, attempt: 1 };
+	const badValues = [
+		["Date", new Date(1234)],
+		["Map", new Map([["a", 1]])],
+		["Set", new Set([1])],
+		["custom-prototype", Object.create({ inherited: 1 })],
+		["undefined", undefined],
+		["NaN", Number.NaN],
+		["Infinity", Infinity],
+		["-Infinity", -Infinity],
+		["function", () => 1],
+		["symbol", Symbol("s")],
+		["bigint", 10n],
+	];
+	for (const [, value] of badValues) {
+		// The unsupported value is refused whether nested in an object or an array.
+		expectCode(() => policy.buildFallbackContext({ originalContext: { persona: "p", nested: { value } }, ...refs }), "invalid-state");
+		expectCode(() => policy.buildFallbackContext({ originalContext: { persona: "p", list: [value] }, ...refs }), "invalid-state");
+	}
+	// The r1 repro: a Date source time is refused, never silently turned into `{}`.
+	expectCode(() => policy.buildFallbackContext({ originalContext: { turns: [{ text: "x" }], sourceTime: new Date(1234) }, ...refs }), "invalid-state");
+	// A non-plain TOP-LEVEL context is refused too (not just nested values).
+	expectCode(() => policy.buildFallbackContext({ originalContext: new Date(1234), ...refs }), "invalid-state");
+});
+
+test("17. buildFallbackContext blocks reserved keys, symbol-keyed and non-enumerable properties", () => {
+	const policy = createFallbackPolicy({ chain: CHAIN, now: () => 1 });
+	const refs = { fromRef: CHAIN[0].ref, toRef: CHAIN[1].ref, attempt: 1 };
+	for (const key of ["__proto__", "constructor", "prototype"]) {
+		const context = JSON.parse(`{"persona":"p","${key}":"boom"}`);
+		expectCode(() => policy.buildFallbackContext({ originalContext: context, ...refs }), "invalid-state");
+	}
+	const withSymbol = { persona: "p", [Symbol("s")]: 1 };
+	expectCode(() => policy.buildFallbackContext({ originalContext: withSymbol, ...refs }), "invalid-state");
+	const nonEnumerable = { persona: "p" };
+	Object.defineProperty(nonEnumerable, "hidden", { value: 1, enumerable: false });
+	expectCode(() => policy.buildFallbackContext({ originalContext: nonEnumerable, ...refs }), "invalid-state");
+	const sparse = [1, , 3];
+	expectCode(() => policy.buildFallbackContext({ originalContext: { persona: "p", sparse }, ...refs }), "invalid-state");
+	// Nothing ever leaked onto the global Object prototype.
+	assert.equal(Object.prototype.polluted, undefined);
+});
+
+test("18. buildFallbackContext deep-clones and deep-freezes the whole output; the input is untouched", () => {
+	const policy = createFallbackPolicy({ chain: CHAIN, now: () => 777 });
+	const original = {
+		persona: "comrade",
+		turns: [{ role: "user", text: "早上好" }, { role: "assistant", text: "早" }],
+		facts: ["a", "b"],
+		nested: { deep: { list: [1, 2, { x: 3 }] } },
+	};
+	const snapshot = JSON.stringify(original);
+	const context = policy.buildFallbackContext({ originalContext: original, fromRef: CHAIN[0].ref, toRef: CHAIN[1].ref, attempt: 1 });
+
+	// Provenance marker accurate and frozen.
+	assert.deepEqual(context.fallback, { from: CHAIN[0].ref, to: CHAIN[1].ref, attempt: 1, at: 777 });
+	assert.ok(Object.isFrozen(context.fallback));
+	// Every level of the output is frozen — nothing can drift between candidate switches.
+	assert.ok(Object.isFrozen(context));
+	assert.ok(Object.isFrozen(context.turns));
+	assert.ok(Object.isFrozen(context.turns[0]));
+	assert.ok(Object.isFrozen(context.nested.deep.list));
+	assert.ok(Object.isFrozen(context.nested.deep.list[2]));
+	assert.throws(() => { context.turns[0].text = "late edit"; }, TypeError);
+	assert.throws(() => { context.nested.deep.list.push(9); }, TypeError);
+	// Building the context never modified the caller's input...
+	assert.equal(JSON.stringify(original), snapshot, "input is never modified");
+	// ...and mutating the input afterwards cannot reach the frozen copy.
+	original.turns[0].text = "changed";
+	original.nested.deep.list[2].x = 99;
+	assert.equal(context.turns[0].text, "早上好");
+	assert.equal(context.nested.deep.list[2].x, 3);
+	// A null-prototype object is a valid plain JSON object and is accepted.
+	const nullProto = Object.create(null);
+	nullProto.persona = "p";
+	const fromNull = policy.buildFallbackContext({ originalContext: nullProto, fromRef: CHAIN[0].ref, toRef: CHAIN[1].ref, attempt: 1 });
+	assert.equal(fromNull.persona, "p");
+	assert.ok(Object.isFrozen(fromNull));
 });

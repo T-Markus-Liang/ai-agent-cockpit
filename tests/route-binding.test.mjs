@@ -5,7 +5,10 @@
 // per request (idempotent re-bind, fail-closed on any differing field),
 // term-limited legacy bindings (explicit expiry + non-empty task scope,
 // fail-closed on expiry with the record retained), integrity fields locked at
-// creation, and the pure advisory EffectIntent skeleton.
+// creation, the pure advisory EffectIntent skeleton, and (RB-F001) an intent
+// identity that binds the full task/parameters — the same request+effectKey with
+// a different task is "intent-conflict", and restore() rejects contradictory
+// duplicate intents instead of taking the last one.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -270,4 +273,60 @@ test("records and intents are deeply frozen; expiry/conflict never mutate the re
 	assert.equal(expiring.size, 1);
 	assert.equal(expiring.toJSON().bindings[0], held, "identical frozen record retained");
 	assert.equal(held.expiresAt, 5000, "record fields unchanged by expiry");
+});
+
+test("RB-F001: two in-scope legacy tasks on the same request+effectKey conflict (no silent reuse)", () => {
+	const registry = createRouteBindingRegistry({ now: () => 1000 });
+	registry.bind(legacyBinding()); // scope: task-1, task-2 (both in scope)
+	const first = registry.planEffect(LEGACY_KEY, { effectKey: "effect-legacy", taskId: "task-1" });
+	const snapshot = registry.toJSON();
+
+	// Audit repro: a second request for the same key with task-2 previously
+	// returned the task-1 intent and said nothing. Now it must fail closed.
+	throwsCode(() => registry.planEffect(LEGACY_KEY, { effectKey: "effect-legacy", taskId: "task-2" }), "intent-conflict");
+
+	// Zero state change: the original intent is intact and still idempotent.
+	assert.deepEqual(registry.toJSON(), snapshot, "a denied conflict mutates nothing");
+	assert.equal(registry.intentCount, 1);
+	const again = registry.planEffect(LEGACY_KEY, { effectKey: "effect-legacy", taskId: "task-1" });
+	assert.equal(again, first, "the original intent is unchanged and still returned");
+	assert.equal(again.taskId, "task-1");
+});
+
+test("RB-F001: an omitted task and an explicit task are distinct intent bodies", () => {
+	const registry = createRouteBindingRegistry({ now: () => 1000 });
+	registry.bind(piBinding());
+	const noTask = registry.planEffect(PI_KEY, { effectKey: "effect-pi" });
+	assert.equal(noTask.taskId, undefined, "pi-durable intent may omit taskId");
+
+	// Explicit undefined normalizes to the same body -> idempotent.
+	assert.equal(registry.planEffect(PI_KEY, { effectKey: "effect-pi", taskId: undefined }), noTask);
+	// A real explicit task is a different body -> conflict, nothing mutated.
+	const snapshot = registry.toJSON();
+	throwsCode(() => registry.planEffect(PI_KEY, { effectKey: "effect-pi", taskId: "task-9" }), "intent-conflict");
+	assert.deepEqual(registry.toJSON(), snapshot);
+	assert.equal(registry.intentCount, 1);
+});
+
+test("RB-F001: fromJSON rejects a contradictory duplicate intent and skips an identical one", () => {
+	const registry = createRouteBindingRegistry({ now: () => 1000 });
+	registry.bind(legacyBinding());
+	const intent = registry.planEffect(LEGACY_KEY, { effectKey: "effect-legacy", taskId: "task-1" });
+	const data = roundTripJSON(registry.toJSON());
+
+	// An identical duplicate is an idempotent skip, not a last-wins overwrite.
+	const dupOk = roundTripJSON(data);
+	dupOk.intents.push(roundTripJSON(intent));
+	const restored = createRouteBindingRegistry.fromJSON(dupOk, { now: () => 1000 });
+	assert.equal(restored.intentCount, 1);
+	assert.deepEqual(restored.planEffect(LEGACY_KEY, { effectKey: "effect-legacy", taskId: "task-1" }), intent);
+	// The rebuilt registry's re-plan is consistent with the original.
+	assert.deepEqual(restored.toJSON(), registry.toJSON());
+
+	// Audit repro: a snapshot that appends a second legal intent with the SAME
+	// request+effectKey but a DIFFERENT in-scope task must be rejected, not
+	// silently resolved to the last one.
+	const contradictory = roundTripJSON(data);
+	contradictory.intents.push({ ...roundTripJSON(intent), taskId: "task-2" });
+	throwsCode(() => createRouteBindingRegistry.fromJSON(contradictory, { now: () => 1000 }), "intent-conflict");
 });

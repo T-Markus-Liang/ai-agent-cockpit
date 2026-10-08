@@ -1,0 +1,79 @@
+✔ legacy and pi-durable bindings normalize to the frozen contract shape (1.093333ms)
+✔ V01: re-binding an identical requestKey is idempotent (same record, count 1) (0.123167ms)
+✔ V02: a differing field is a binding-conflict and leaves the existing binding untouched (0.192375ms)
+✔ no double-live: legacy then pi-durable for the same request is a binding-conflict (0.086333ms)
+✔ legacy requires an explicit expiry and a non-empty task scope (0.11275ms)
+✔ expiry is fail-closed on resolve: valid before expiresAt, binding-expired at it, record retained (0.070917ms)
+✔ legacy planEffect is scope-bounded: in-scope yields an intent, out-of-scope is denied (0.107666ms)
+✔ field validation fails closed with invalid-binding (0.209375ms)
+✔ effectKey mismatch is an effect-conflict (0.069292ms)
+✔ intent registration is idempotent per requestKey+effectKey (count stays 1) (0.081791ms)
+✔ toJSON/fromJSON round-trips behavior and rejects tampered data (0.657167ms)
+✔ records and intents are deeply frozen; expiry/conflict never mutate the registry (0.168625ms)
+✖ RB-F001: two in-scope legacy tasks on the same request+effectKey conflict (no silent reuse) (0.2405ms)
+✖ RB-F001: an omitted task and an explicit task are distinct intent bodies (0.073709ms)
+✖ RB-F001: fromJSON rejects a contradictory duplicate intent and skips an identical one (0.136125ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 12
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 37.142167
+
+✖ failing tests:
+
+test at tests/route-binding.test.mjs:275:1
+✖ RB-F001: two in-scope legacy tasks on the same request+effectKey conflict (no silent reuse) (0.2405ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception: expected RouteBindingError(intent-conflict)
+      at throwsCode (file:///private/tmp/negcheck-rb/tests/route-binding.test.mjs:57:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rb/tests/route-binding.test.mjs:283:2)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    operator: 'throws',
+    diff: 'simple'
+  }
+
+test at tests/route-binding.test.mjs:293:1
+✖ RB-F001: an omitted task and an explicit task are distinct intent bodies (0.073709ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception: expected RouteBindingError(intent-conflict)
+      at throwsCode (file:///private/tmp/negcheck-rb/tests/route-binding.test.mjs:57:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rb/tests/route-binding.test.mjs:303:2)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    operator: 'throws',
+    diff: 'simple'
+  }
+
+test at tests/route-binding.test.mjs:308:1
+✖ RB-F001: fromJSON rejects a contradictory duplicate intent and skips an identical one (0.136125ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception: expected RouteBindingError(intent-conflict)
+      at throwsCode (file:///private/tmp/negcheck-rb/tests/route-binding.test.mjs:57:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rb/tests/route-binding.test.mjs:328:2)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    operator: 'throws',
+    diff: 'simple'
+  }

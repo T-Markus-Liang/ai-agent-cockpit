@@ -41,10 +41,14 @@
 //       execute in one uninterrupted critical section: no other reader can ever
 //       observe the in-memory record while the DB row is still missing.
 //     - If the INSERT/COMMIT fails, the durable state is unchanged (the
-//       transaction rolled back), so we re-load the registry FROM THE DB. Memory
-//       is thereby rolled back to exactly the durable state; the error is
-//       rethrown and the caller sees a failure with zero durable effect — never
-//       "memory has it, DB does not".
+//       transaction rolled back), but the store does NOT pretend to have
+//       recovered: it enters a POISONED state. The grown in-memory record is
+//       discarded (best-effort re-load from the DB; if even that fails the
+//       registry is left empty), the original error is rethrown, and every later
+//       authoritative read/write/idempotent retry is refused with
+//       "store-poisoned" until an explicit recover(). A failed write therefore
+//       can never masquerade as a persisted success — never "memory has it, DB
+//       does not".
 //     - A crash *between* the in-memory update and the COMMIT kills the process,
 //       so the volatile in-memory record vanishes with it; the DB is either fully
 //       committed or fully rolled back. No half state is durable either way.
@@ -53,7 +57,7 @@
 //
 // Schema (SCHEMA_VERSION = 1):
 //   meta(key TEXT PRIMARY KEY, value TEXT)
-//     one row: ('schema_version', '1').
+//     rows: ('store_namespace', STORE_NAMESPACE), ('schema_version', '1').
 //   bindings(request_owner, request_id, record_json, created_at,
 //            PRIMARY KEY (request_owner, request_id))
 //     one normalized route-binding record per request.
@@ -61,14 +65,31 @@
 //           PRIMARY KEY (request_owner, request_id, effect_key))
 //     one advisory EffectIntent per (request, effectKey).
 //
-// Fail-closed schema handling: a store whose meta.schema_version exists and is
-// not SCHEMA_VERSION is refused with RouteBindingError("unsupported-schema-version").
-// It is never migrated, never erased, never read at a downgraded version.
+// Provenance / source gate (RBS-E001): before ANY chmod or DDL, an existing
+// non-empty file must already carry this module's provenance marker
+// (meta.store_namespace === STORE_NAMESPACE). A non-empty file without it is
+// refused with RouteBindingError("unknown_existing_db") and left byte-, mode-
+// and directory-entry-identical; a symlink or other non-regular path is refused
+// with RouteBindingError("unsafe-store-path"). Only an absent or zero-byte file
+// may be initialized fresh. No arbitrary SQLite file is ever assumed to be ours.
+//
+// Fail-closed schema handling: a store we own (valid namespace) whose
+// meta.schema_version exists and is not SCHEMA_VERSION is refused with
+// RouteBindingError("unsupported-schema-version"). It is never migrated, never
+// erased, never read at a downgraded version.
+//
+// Fail-closed write handling (RBS-F001): if any durable write path fails
+// (INSERT / COMMIT) or the recovery reload fails, the store enters a POISONED
+// state and every subsequent authoritative read/write/idempotent retry is
+// refused with RouteBindingError("store-poisoned") — never a fake success —
+// until an explicit recover() reloads-and-validates from the durable rows. After
+// close() every API is refused with RouteBindingError("store-closed"). An
+// uncommitted record is never reported as a successful persistence.
 //
 // Dependencies: `node:sqlite` and ./route-binding.mjs only. No network, no
 // environment access; the clock is injected via `now`.
 
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -86,6 +107,12 @@ const SERIALIZATION_VERSION = 1;
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
 
+// Provenance marker identifying a file as OUR store (RBS-E001). Any existing
+// non-empty database without this marker is refused before we touch it, so an
+// unrelated SQLite file is never adopted, chmod-ed or given our tables.
+const STORE_NAMESPACE_KEY = "store_namespace";
+const STORE_NAMESPACE = "personal-ai-os/route-binding-store";
+
 /**
  * Wrap a caller clock. A non-function clock fails closed before any IO; a broken
  * clock is surfaced by the registry itself where it matters (expiry/created_at).
@@ -98,19 +125,68 @@ function createClock(now) {
 }
 
 /**
+ * Provenance gate (RBS-E001). Decide whether `absolute` may be initialized or
+ * opened, WITHOUT mutating it. Throws fail-closed otherwise:
+ *   - absent path                          -> allowed (fresh initialization)
+ *   - zero-byte regular file               -> allowed (treated as fresh)
+ *   - symlink / non-regular path           -> "unsafe-store-path" (never followed)
+ *   - non-empty file with our namespace    -> allowed
+ *   - any other non-empty file             -> "unknown_existing_db" (untouched)
+ */
+function assertStoreProvenance(absolute) {
+	let stats;
+	try {
+		stats = lstatSync(absolute);
+	} catch (error) {
+		if (error !== null && error.code === "ENOENT") return; // fresh path
+		throw error;
+	}
+	if (stats.isSymbolicLink() || !stats.isFile()) {
+		throw new RouteBindingError("unsafe-store-path", "store path must be a regular file (no symlink or special file)");
+	}
+	if (stats.size === 0) return; // empty placeholder, safe to initialize
+
+	// Non-empty existing file: it must already be ours. Probe read-only so the
+	// file's bytes, mode and directory entries are left exactly as they are.
+	let probe;
+	try {
+		probe = new DatabaseSync(absolute, { readOnly: true });
+	} catch {
+		throw new RouteBindingError("unknown_existing_db", "existing file is not a readable route-binding store");
+	}
+	try {
+		let row;
+		try {
+			row = probe.prepare("SELECT value FROM meta WHERE key = ?").get(STORE_NAMESPACE_KEY);
+		} catch {
+			throw new RouteBindingError("unknown_existing_db", "existing database has no recognizable route-binding meta");
+		}
+		if (row === undefined || row.value !== STORE_NAMESPACE) {
+			throw new RouteBindingError("unknown_existing_db", "existing database is not a Personal AI OS route-binding store");
+		}
+	} finally {
+		probe.close();
+	}
+}
+
+/**
  * Open a durable route-binding store at `dbPath`.
  *
- * The parent directory is created 0700 when missing, the database file is
- * restricted to 0600. An unknown/absent schema version is initialized to
- * SCHEMA_VERSION; a conflicting version fails closed.
+ * The parent directory is created 0700 when missing; the database file is
+ * restricted to 0600. An absent/zero-byte file is initialized to SCHEMA_VERSION;
+ * an existing file that already carries our provenance marker is opened; any
+ * other existing file fails closed ("unknown_existing_db"), as do symlinks and
+ * non-regular paths ("unsafe-store-path"). A conflicting schema version fails
+ * closed. Any durable write failure poisons the store until recover().
  *
  * Store API (all synchronous, backed by node:sqlite `DatabaseSync`):
  *   bind(binding)                              -> frozen Binding (idempotent, durable)
  *   resolve(requestKey)                        -> frozen Binding (expiry-gated)
  *   planEffect(requestKey, { effectKey, taskId? }) -> frozen EffectIntent (idempotent, durable)
- *   close()                                    -> close the DB handle
- *   size / intentCount                         -> live registry counters
- *   dbPath                                     -> the resolved absolute path
+ *   recover()                                  -> reload durable truth, clear poison
+ *   close()                                    -> close the DB handle; all APIs then refuse
+ *   size / intentCount                         -> live registry counters (refused if closed/poisoned)
+ *   dbPath                                     -> the resolved absolute path (pure locator, never refuses)
  *
  * @param {string} dbPath
  * @param {{ now?: () => number }} [options]
@@ -123,15 +199,28 @@ export function openBindingStore(dbPath, { now } = {}) {
 	const absolute = resolvePath(dbPath);
 
 	// Private parent (created 0700 only when missing; an existing directory is
-	// left exactly as it is) + private file (0600).
+	// left exactly as it is).
 	mkdirSync(dirname(absolute), { recursive: true, mode: DIR_MODE });
+
+	// Source gate FIRST: no chmod and no DDL may run against a file we do not own.
+	assertStoreProvenance(absolute);
+
+	// Private file (0600). Reached only for a fresh/empty file or a file that
+	// already carries our provenance marker.
 	const db = new DatabaseSync(absolute);
 	chmodSync(absolute, FILE_MODE);
 
-	// Schema bootstrap. `meta` is ensured first so the version can be inspected
-	// BEFORE any other table is touched. On a version conflict we refuse without
-	// creating bindings/intents, so a foreign DB is never modified.
+	// Schema bootstrap. `meta` is ensured first so provenance and version are
+	// inspected BEFORE any other table is created. On a namespace/version
+	// conflict we refuse without creating bindings/intents.
 	db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+	const nsRow = db.prepare("SELECT value FROM meta WHERE key = ?").get(STORE_NAMESPACE_KEY);
+	if (nsRow === undefined) {
+		db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)").run(STORE_NAMESPACE_KEY, STORE_NAMESPACE);
+	} else if (nsRow.value !== STORE_NAMESPACE) {
+		db.close();
+		throw new RouteBindingError("unknown_existing_db", "existing database is not a Personal AI OS route-binding store");
+	}
 	const versionRow = db.prepare("SELECT value FROM meta WHERE key = ?").get("schema_version");
 	if (versionRow === undefined) {
 		db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)").run("schema_version", String(SCHEMA_VERSION));
@@ -152,9 +241,12 @@ export function openBindingStore(dbPath, { now } = {}) {
 			"PRIMARY KEY (request_owner, request_id, effect_key))",
 	);
 
-	// Mutable holder so a rollback can swap in a freshly-reloaded registry while
-	// every closure keeps reading the current authority.
+	// Mutable holder so a reload can swap in a fresh registry while every closure
+	// keeps reading the current authority. `poisonReason` and `closed` gate every
+	// API (see assertUsable).
 	const state = { registry: undefined };
+	let closed = false;
+	let poisonReason = null;
 
 	/**
 	 * Rebuild the in-memory registry from the durable rows, through route-binding's
@@ -221,18 +313,39 @@ export function openBindingStore(dbPath, { now } = {}) {
 		});
 	}
 
-	// Roll the in-memory registry back to the durable truth after a failed write.
-	// Best-effort: if even the reload fails the original error is preserved.
-	function rollbackMemory(originalError) {
+	/**
+	 * Fail-closed usability gate shared by every API. Once the store is closed or
+	 * poisoned (a durable write path or the recovery reload failed),
+	 * authoritative reads, writes and idempotent retries are refused with an
+	 * honest reason — never a fake success.
+	 */
+	function assertUsable() {
+		if (closed) throw new RouteBindingError("store-closed", "the store is closed");
+		if (poisonReason !== null) {
+			throw new RouteBindingError("store-poisoned", `the store is poisoned: ${poisonReason}`);
+		}
+	}
+
+	/**
+	 * Enter the poisoned state after a failed write path (INSERT/COMMIT/reload).
+	 * The grown in-memory record must NOT survive as authoritative: best-effort
+	 * reload the durable truth, and if even that fails leave the registry empty.
+	 * Either way every API now rejects until an explicit recover().
+	 */
+	function poisonAfterWriteFailure(error) {
+		const reason = error && error.message ? error.message : String(error);
+		poisonReason = reason;
 		try {
 			state.registry = loadRegistry();
-		} catch {
-			// Preserve the original write failure.
+		} catch (reloadError) {
+			state.registry = undefined;
+			const reloadReason = reloadError && reloadError.message ? reloadError.message : String(reloadError);
+			poisonReason = `${reason}; reload also failed: ${reloadReason}`;
 		}
-		throw originalError;
 	}
 
 	function bind(binding) {
+		assertUsable();
 		const before = state.registry.size;
 		// Reuse route-binding semantics: validates, returns the existing record on
 		// an identical re-bind, throws on conflict/invalid. A throw mutates nothing.
@@ -241,28 +354,49 @@ export function openBindingStore(dbPath, { now } = {}) {
 		try {
 			insertBindingRow(record);
 		} catch (error) {
-			rollbackMemory(error);
+			poisonAfterWriteFailure(error);
+			throw error;
 		}
 		return record;
 	}
 
 	function resolve(requestKey) {
+		assertUsable();
 		return state.registry.resolve(requestKey);
 	}
 
 	function planEffect(requestKey, options = {}) {
+		assertUsable();
 		const before = state.registry.intentCount;
 		const intent = state.registry.planEffect(requestKey, options);
 		if (state.registry.intentCount === before) return intent; // idempotent: no DB write
 		try {
 			insertIntentRow(intent, clock());
 		} catch (error) {
-			rollbackMemory(error);
+			poisonAfterWriteFailure(error);
+			throw error;
 		}
 		return intent;
 	}
 
-	let closed = false;
+	/**
+	 * Explicit controlled recovery from the poisoned state: reload the durable
+	 * truth (re-validated through route-binding's loader) and clear the poison. If
+	 * the reload fails the store stays poisoned. Refused once the store is closed.
+	 */
+	function recover() {
+		if (closed) throw new RouteBindingError("store-closed", "the store is closed");
+		let reloaded;
+		try {
+			reloaded = loadRegistry();
+		} catch (error) {
+			poisonReason = error && error.message ? error.message : String(error);
+			throw new RouteBindingError("store-poisoned", `recovery failed: ${poisonReason}`);
+		}
+		state.registry = reloaded;
+		poisonReason = null;
+	}
+
 	function close() {
 		if (closed) return;
 		closed = true;
@@ -275,11 +409,14 @@ export function openBindingStore(dbPath, { now } = {}) {
 		bind,
 		resolve,
 		planEffect,
+		recover,
 		close,
 		get size() {
+			assertUsable();
 			return state.registry.size;
 		},
 		get intentCount() {
+			assertUsable();
 			return state.registry.intentCount;
 		},
 		get dbPath() {

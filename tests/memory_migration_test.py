@@ -1531,5 +1531,213 @@ class CliTests(MigrationFixture):
         fake_reverify.assert_called_once()
 
 
+# --- 15. F001 r3: refusal happens before any write --------------------------
+class TargetRefusalBeforeWriteTests(MigrationFixture):
+    """F001 r3: every read/identity/provenance check precedes mkdir/chmod/DDL.
+
+    A refused target must keep byte-for-byte identical content, mode and
+    directory entries -- in particular its directory mode must not be tightened
+    to 0700 on the way to the refusal.
+    """
+
+    def _seed_source(self, text="alpha durable preference"):
+        make_db(self.source)
+        conn = self.connect(self.source_db)
+        insert_original(conn, "e1", "u1", "user", text)
+        conn.commit()
+        conn.close()
+
+    def _unknown_target(self, dir_mode):
+        """An existing, independently created db with no ``turns`` schema."""
+        os.makedirs(self.copy, mode=dir_mode)
+        os.chmod(self.copy, dir_mode)
+        conn = sqlite3.connect(self.copy_db)
+        conn.execute("CREATE TABLE unrelated(value TEXT)")
+        conn.execute("INSERT INTO unrelated(value) VALUES('x')")
+        conn.commit()
+        conn.close()
+        os.chmod(self.copy_db, 0o600)
+
+    def _assert_zero_mutation(self, before_bytes, before_entries):
+        self.assertEqual(Path(self.copy_db).read_bytes(), before_bytes)
+        self.assertEqual(sorted(os.listdir(self.copy)), before_entries)
+
+    def test_unknown_target_0755_is_refused_without_touching_mode(self):
+        self._seed_source()
+        self._unknown_target(0o755)
+        before_bytes = Path(self.copy_db).read_bytes()
+        before_entries = sorted(os.listdir(self.copy))
+        with self.assertRaises(MigrationError) as ctx:
+            snapshot(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+        self._assert_zero_mutation(before_bytes, before_entries)
+        self.assertEqual(stat.S_IMODE(os.stat(self.copy).st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(os.stat(self.copy_db).st_mode), 0o600)
+
+    def test_unknown_target_0770_is_refused_without_touching_mode(self):
+        self._seed_source()
+        self._unknown_target(0o770)
+        before_bytes = Path(self.copy_db).read_bytes()
+        before_entries = sorted(os.listdir(self.copy))
+        with self.assertRaises(MigrationError) as ctx:
+            snapshot(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+        self._assert_zero_mutation(before_bytes, before_entries)
+        self.assertEqual(stat.S_IMODE(os.stat(self.copy).st_mode), 0o770)
+
+    def test_unknown_target_0755_via_convert_is_refused_without_change(self):
+        self._seed_source()
+        self._unknown_target(0o755)
+        before_bytes = Path(self.copy_db).read_bytes()
+        before_entries = sorted(os.listdir(self.copy))
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, self.copy)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+        self._assert_zero_mutation(before_bytes, before_entries)
+        self.assertEqual(stat.S_IMODE(os.stat(self.copy).st_mode), 0o755)
+        self.assertFalse(
+            os.path.exists(os.path.join(self.copy, "migration-manifest.json")))
+
+
+# --- 16. F001 r3: a manifest-less target must be a COMPLETE snapshot ---------
+class FaithfulSnapshotSetEqualityTests(MigrationFixture):
+    """F001 r3: a manifest-less target must be a complete faithful snapshot."""
+
+    def _source_with(self, event_ids):
+        make_db(self.source)
+        conn = self.connect(self.source_db)
+        for index, event_id in enumerate(event_ids, start=1):
+            insert_original(conn, event_id, "u1", "user", f"durable line {index}")
+        conn.commit()
+        conn.close()
+
+    def _baseline_target(self, event_ids, name):
+        directory = os.path.join(self.tmp, name)
+        os.makedirs(directory, mode=0o700)
+        path = make_db(directory)
+        for index, event_id in enumerate(event_ids, start=1):
+            insert_row(path, event_id, "u1", "user", f"durable line {index}")
+        return directory, path
+
+    def test_empty_baseline_target_snapshot_is_refused(self):
+        # The exact audit probe: source 1 row, independent 0-row target.
+        self._source_with(["e1"])
+        directory, path = self._baseline_target([], "empty-baseline")
+        before_bytes = Path(path).read_bytes()
+        before_entries = sorted(os.listdir(directory))
+        with self.assertRaises(MigrationError) as ctx:
+            snapshot(self.source, directory)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+        self.assertEqual(Path(path).read_bytes(), before_bytes)
+        self.assertEqual(sorted(os.listdir(directory)), before_entries)
+
+    def test_empty_baseline_target_convert_is_refused_without_backup(self):
+        self._source_with(["e1"])
+        directory, path = self._baseline_target([], "empty-baseline-2")
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, directory)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+        conn = sqlite3.connect(path)
+        try:
+            self.assertEqual(
+                conn.execute("SELECT count(*) FROM turns").fetchone()[0], 0)
+        finally:
+            conn.close()
+        self.assertFalse(
+            os.path.exists(os.path.join(directory, "migration-manifest.json")))
+
+    def test_non_empty_subset_target_is_refused(self):
+        # source {e1,e2}, independent byte-faithful subset {e1}.
+        self._source_with(["e1", "e2"])
+        directory, path = self._baseline_target(["e1"], "subset-baseline")
+        before_bytes = Path(path).read_bytes()
+        before_entries = sorted(os.listdir(directory))
+        with self.assertRaises(MigrationError) as ctx:
+            snapshot(self.source, directory)
+        self.assertEqual(str(ctx.exception), "conservation_violation")
+        self.assertEqual(Path(path).read_bytes(), before_bytes)
+        self.assertEqual(sorted(os.listdir(directory)), before_entries)
+
+    def test_half_copy_without_marker_is_refused(self):
+        # A target missing source rows and carrying no manifest/journal marker
+        # is not a resumable converter copy.
+        self._source_with(["e1", "e2"])
+        directory, path = self._baseline_target(["e1"], "half-no-marker")
+        before_bytes = Path(path).read_bytes()
+        with self.assertRaises(MigrationError) as ctx:
+            convert(self.source, directory)
+        self.assertEqual(str(ctx.exception), "conservation_violation")
+        self.assertEqual(Path(path).read_bytes(), before_bytes)
+        self.assertFalse(
+            os.path.exists(os.path.join(directory, "migration-manifest.json")))
+
+    def test_half_copy_with_manifest_marker_is_resumed(self):
+        # A converter copy that lost a row but kept its manifest marker is
+        # resumed (the missing row is restored), not refused.
+        self._source_with(["e1", "e2"])
+        convert(self.source, self.copy)
+        conn = self.connect(self.copy_db)
+        conn.execute("DELETE FROM turns WHERE event_id='e1'")
+        conn.commit()
+        conn.close()
+        self.assertIsNone(read_row(self.copy_db, "e1"))
+
+        report = convert(self.source, self.copy)
+        self.assertTrue(report["conservation"]["digests_match"])
+        self.assertEqual(set(self.copy_state()), {"e1", "e2"})
+        self.assertEqual(read_row(self.copy_db, "e1")["status"], "pending")
+
+    def test_complete_same_source_snapshot_is_accepted_and_reentrant(self):
+        self._source_with(["e1", "e2"])
+        first = snapshot(self.source, self.copy)
+        second = snapshot(self.source, self.copy)
+        self.assertEqual(first["total"], 2)
+        self.assertEqual(second["total"], 2)
+
+    def test_complete_independent_same_schema_copy_is_accepted(self):
+        # Independently built rows that are byte-identical to the source form a
+        # verifiable content mapping (equal id set + digest + payload + time).
+        self._source_with(["e1", "e2"])
+        directory, _ = self._baseline_target(["e1", "e2"], "independent-full")
+        report = snapshot(self.source, directory)
+        self.assertEqual(report["total"], 2)
+        self.assertTrue(
+            verify_conservation(self.source, directory)["digests_match"])
+
+    def test_empty_source_with_empty_target_is_accepted(self):
+        self._source_with([])
+        directory, _ = self._baseline_target([], "empty-both")
+        report = snapshot(self.source, directory)
+        self.assertEqual(report["total"], 0)
+
+    def test_empty_source_with_nonempty_target_is_refused(self):
+        self._source_with([])
+        directory, _ = self._baseline_target(["e1"], "source-empty-target-full")
+        with self.assertRaises(MigrationError) as ctx:
+            snapshot(self.source, directory)
+        self.assertEqual(str(ctx.exception), "unknown_existing_db")
+
+
+# --- 17. root-level symlink exemption is narrowed ---------------------------
+class RootAliasExemptionTests(MigrationFixture):
+    """F001 r3: only verified, root-owned system aliases are exempt."""
+
+    def test_unknown_root_child_name_is_not_exempt(self):
+        self.assertFalse(migration._is_root_system_alias("/not-a-system-alias"))
+
+    def test_alias_named_symlink_below_root_is_not_exempt(self):
+        target = os.path.join(self.tmp, "alias-target")
+        os.makedirs(target, mode=0o700)
+        fake = os.path.join(self.tmp, "var")
+        os.symlink(target, fake)
+        self.assertFalse(migration._is_root_system_alias(fake))
+
+    def test_verified_root_alias_is_exempt_only_when_it_is_a_system_alias(self):
+        if os.path.islink("/var"):
+            self.assertTrue(migration._is_root_system_alias("/var"))
+        else:
+            self.assertFalse(migration._is_root_system_alias("/var"))
+
+
 if __name__ == "__main__":
     unittest.main()

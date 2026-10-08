@@ -24,6 +24,11 @@
 //   4. EFFECT INTENT skeleton. planEffect produces a pure advisory EffectIntent
 //      ({ requiresApproval: true, sideEffects: false }), the same shape family
 //      as control-plane/router.mjs RoutePlan — no side effect is performed here.
+//      The intent's identity is the FULL effect body (request + runtime +
+//      effectKey + normalized task), not just request+effectKey: the same key
+//      with a different task/parameters is a fail-closed "intent-conflict"
+//      rather than a silent reuse, and restore() rejects contradictory
+//      duplicates instead of taking the last one.
 //
 // NOT WIRED IN THIS SLICE: this is a pure in-memory library. It is not called by
 // the bridge, the runtime adapter or the control plane; persistence/transport
@@ -42,7 +47,10 @@
 //     missing -> "unbound-request"; expired -> "binding-expired"; else the binding.
 //   registry.planEffect(requestKey, { effectKey, taskId? }) -> frozen EffectIntent
 //     effectKey mismatch -> "effect-conflict"; out-of-scope legacy taskId ->
-//     "legacy-scope-violation"; repeated same requestKey+effectKey -> same intent.
+//     "legacy-scope-violation"; a repeated requestKey+effectKey with the SAME
+//     task/parameters returns the same intent (idempotent); the same
+//     requestKey+effectKey with a DIFFERENT task/parameters ->
+//     "intent-conflict" (the existing intent is never overwritten).
 //   registry.toJSON() -> stable plain data.
 //   createRouteBindingRegistry.fromJSON(data, { now? }) -> new registry (fully
 //     re-validated; corrupt data -> "invalid-registry" / "invalid-binding").
@@ -113,6 +121,11 @@ function deepEqual(a, b) {
 /** Stable Map key for a requestKey pair (JSON avoids any separator collisions). */
 function requestKeyString(requestKey) {
 	return JSON.stringify([requestKey.ownerId, requestKey.sourceRequestId]);
+}
+
+/** Stable Map key for an intent slot (requestKey + effectKey), collision-free. */
+function intentKeyString(requestKey, effectKey) {
+	return JSON.stringify([requestKey.ownerId, requestKey.sourceRequestId, effectKey]);
 }
 
 /**
@@ -251,6 +264,19 @@ function buildIntent(binding, effectKey, taskId) {
 }
 
 /**
+ * Canonical serialization of an intent's FULL identity — request, runtime,
+ * effectKey and the normalized task — with keys sorted so two intents are equal
+ * iff they describe the same effect. A missing `taskId` simply omits the key, so
+ * an omitted task and a different explicit task never alias; any differing
+ * task/parameter therefore reads as a conflict, never as an idempotent success.
+ */
+function intentIdentity(intent) {
+	const ordered = {};
+	for (const key of Object.keys(intent).sort()) ordered[key] = intent[key];
+	return JSON.stringify(ordered);
+}
+
+/**
  * Create an in-memory, fail-closed route-binding registry.
  * @param {{ now?: () => number }} [options]
  */
@@ -307,12 +333,21 @@ export function createRouteBindingRegistry({ now } = {}) {
 		if (binding.runtime === "legacy" && !binding.legacyScope.allowedTaskIds.includes(taskId)) {
 			throw new RouteBindingError("legacy-scope-violation", "task is not in the legacy binding scope");
 		}
-		const intentKey = `${requestKeyString(binding.requestKey)}::${effectKey}`;
+		// The intent slot is keyed by request+effectKey, but its identity is the
+		// FULL effect body: a repeated key with a different task/parameters must
+		// fail closed instead of silently returning the first intent.
+		const intentKey = intentKeyString(binding.requestKey, effectKey);
+		const candidate = buildIntent(binding, effectKey, taskId);
 		const existing = intents.get(intentKey);
-		if (existing !== undefined) return existing;
-		const intent = buildIntent(binding, effectKey, taskId);
-		intents.set(intentKey, intent);
-		return intent;
+		if (existing !== undefined) {
+			if (intentIdentity(existing) === intentIdentity(candidate)) return existing;
+			throw new RouteBindingError(
+				"intent-conflict",
+				"an effect intent already exists for this request and effectKey with a different task/parameters",
+			);
+		}
+		intents.set(intentKey, candidate);
+		return candidate;
 	}
 
 	function toJSON() {
@@ -375,7 +410,19 @@ export function createRouteBindingRegistry({ now } = {}) {
 			if (!deepEqual(canonical, intent)) {
 				throw new RouteBindingError("invalid-binding", "serialized intent does not round-trip");
 			}
-			intents.set(`${requestKeyString(requestKey)}::${intent.effectKey}`, canonical);
+			// No last-wins: an identical duplicate is skipped (idempotent), but a
+			// contradictory duplicate (same key, different task/parameters) is
+			// rejected so a tampered/ambiguous snapshot cannot decide the winner.
+			const intentKey = intentKeyString(requestKey, intent.effectKey);
+			const existing = intents.get(intentKey);
+			if (existing !== undefined) {
+				if (intentIdentity(existing) === intentIdentity(canonical)) continue;
+				throw new RouteBindingError(
+					"intent-conflict",
+					"serialized registry contains conflicting intents for the same request and effectKey",
+				);
+			}
+			intents.set(intentKey, canonical);
 		}
 	}
 
