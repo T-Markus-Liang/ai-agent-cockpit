@@ -118,6 +118,49 @@ function normalizeModelRef(modelRef, code = "invalid-model-ref") {
 }
 
 /**
+ * Validate the injected budget port (V31). A supplied policy must expose the
+ * read-only `assertActive` precondition and the `charge` mutator, so a malformed
+ * port is refused at construction rather than failing halfway through admission.
+ */
+function normalizeBudgetPolicy(policy) {
+	if (policy === undefined) return undefined;
+	if (!isPlainObject(policy) || typeof policy.assertActive !== "function" || typeof policy.charge !== "function") {
+		throw new ContractRejected("invalid-budget-policy", "budgetPolicy must expose assertActive() and charge()");
+	}
+	return policy;
+}
+
+/**
+ * The explicit unbudgeted escape hatch. Only a literal `true` opts a construction
+ * out of the mandatory budget admission; the default (and any non-boolean) fails
+ * closed, so an unbudgeted adapter is always a visible, greppable choice rather
+ * than a silent default.
+ */
+function normalizeAllowUnbudgeted(value) {
+	if (value === undefined) return false;
+	if (typeof value !== "boolean") throw new ContractRejected("invalid-allow-unbudgeted", "allowUnbudgeted must be a boolean");
+	return value;
+}
+
+/**
+ * The request-scoped budget key (V31). Execution-bound work is charged against
+ * `exec:<executionId>`; work that only carries a product task falls back to
+ * `task:<productTaskId>`. A request resolving to neither has no budget scope and
+ * is refused. How one goal's total budget is apportioned across these scopes is
+ * the host's wiring responsibility, not this adapter's.
+ *
+ * Exported so the fail-closed derivation is directly testable. Under the current
+ * `validateRequest` contract both references are mandatory, so a request that
+ * reaches admission always resolves an `exec:` scope; the remaining branches keep
+ * the guard honest should that contract ever relax them.
+ */
+export function budgetScopeFor(request) {
+	if (typeof request?.executionId === "string" && request.executionId.trim() !== "") return `exec:${request.executionId}`;
+	if (typeof request?.productTaskId === "string" && request.productTaskId.trim() !== "") return `task:${request.productTaskId}`;
+	return undefined;
+}
+
+/**
  * This adapter intentionally offers no tools. Reject any nonempty registry and
  * any setting that could inject extensions/tools before the Harness starts, so
  * a CodingTools registry can never be quietly accepted here.
@@ -193,16 +236,20 @@ export class PiRuntimeAdapter {
 	#models;
 	#defaultModelRef;
 	#toolProfile;
+	#budgetPolicy;
+	#allowUnbudgeted;
 	#leaseTimer;
 	#closed = false;
 
-	constructor(owned, harness, registry, models, defaultModelRef, toolProfile) {
+	constructor(owned, harness, registry, models, defaultModelRef, toolProfile, budgetPolicy, allowUnbudgeted) {
 		this.#owned = owned;
 		this.#harness = harness;
 		this.#registry = registry;
 		this.#models = models;
 		this.#defaultModelRef = defaultModelRef;
 		this.#toolProfile = toolProfile;
+		this.#budgetPolicy = budgetPolicy;
+		this.#allowUnbudgeted = allowUnbudgeted;
 	}
 
 	/**
@@ -229,8 +276,13 @@ export class PiRuntimeAdapter {
 		if (defaultModelRef !== undefined && models.getModel(defaultModelRef.provider, defaultModelRef.modelId) === undefined) {
 			throw new ContractRejected("unresolved-model", `default modelRef ${defaultModelRef.provider}/${defaultModelRef.modelId} is not resolved in the supplied models`);
 		}
+		// The budget port is validated BEFORE the Harness opens, so a malformed port
+		// fails closed with no durable effect. With no policy an explicit
+		// `allowUnbudgeted: true` is required; otherwise submit() refuses (V31).
+		const budgetPolicy = normalizeBudgetPolicy(options.budgetPolicy);
+		const allowUnbudgeted = normalizeAllowUnbudgeted(options.allowUnbudgeted);
 		const harness = await Harness.open(owned.storage, { models, registry, ...(settings === undefined ? {} : { settings }) }, context);
-		const adapter = new PiRuntimeAdapter(owned, harness, registry, models, defaultModelRef, toolProfile);
+		const adapter = new PiRuntimeAdapter(owned, harness, registry, models, defaultModelRef, toolProfile, budgetPolicy, allowUnbudgeted);
 		try {
 			await adapter.#loadMapping();
 		} catch (error) {
@@ -312,6 +364,27 @@ export class PiRuntimeAdapter {
 		if (typeof ownership.executionId !== "string" || ownership.executionId.trim() === "") {
 			throw new ContractRejected("missing-execution-binding", "background ownership requires a resolvable executionId");
 		}
+	}
+
+	/**
+	 * Fail-closed budget admission (V31). With no injected policy an explicit
+	 * `allowUnbudgeted` escape is REQUIRED; the default refuses. A configured policy
+	 * is consulted through the read-only `assertActive` BEFORE any admission effect,
+	 * so an exhausted/expired/unknown scope — or an unusable clock — rejects with
+	 * zero conversation, mapping or SDK side effects. Returns the resolved scope
+	 * key, or `undefined` when the request is explicitly admitted unbudgeted.
+	 */
+	#assertBudgetAdmission(request) {
+		if (this.#budgetPolicy === undefined) {
+			if (this.#allowUnbudgeted) return undefined;
+			throw new ContractRejected("budget-unconfigured", "submit requires a budgetPolicy or an explicit allowUnbudgeted escape");
+		}
+		const scopeKey = budgetScopeFor(request);
+		if (scopeKey === undefined) {
+			throw new ContractRejected("budget-scope-missing", "submit requires an executionId or productTaskId to resolve a budget scope");
+		}
+		this.#budgetPolicy.assertActive(scopeKey);
+		return scopeKey;
 	}
 
 	#mappingOwners(mapping) {
@@ -479,6 +552,11 @@ export class PiRuntimeAdapter {
 	 * Admit a request. Validates the schema/digest before any effect, verifies the
 	 * same request key, reserves the binding, then submits to Pi. Same-request-ID
 	 * retries reuse the durable submission; changed identity/body/profile rejects.
+	 *
+	 * Budget admission (V31): with a configured `budgetPolicy` the request's scope
+	 * is checked (read-only `assertActive`) before any effect and exactly one call
+	 * is charged when a NEW admission lands; without a policy an explicit
+	 * `allowUnbudgeted: true` is required, otherwise `budget-unconfigured` refuses.
 	 */
 	async submit(request) {
 		this.#assertOpen();
@@ -498,6 +576,11 @@ export class PiRuntimeAdapter {
 		if (normalized.payloadDigest !== undefined && normalized.payloadDigest !== digest) {
 			throw new ContractRejected("payload-digest-mismatch", "supplied payloadDigest does not match the computed request digest");
 		}
+		// V31 budget admission. The scope precondition is evaluated (read-only, no
+		// state movement) BEFORE any effect, and the actual call charge happens only
+		// when a NEW admission lands below — so an idempotent reuse or a conflict
+		// never double-charges, and a budget refusal leaves no trace.
+		const budgetScope = this.#assertBudgetAdmission(normalized);
 		const ownerHash = hashKey(normalized.ownerId);
 		const requestKey = requestKeyFor(normalized.ownerId, normalized.sourceRequestId);
 		await this.#renew();
@@ -575,6 +658,11 @@ export class PiRuntimeAdapter {
 				ownership: normalized.ownership,
 				conversationId: owner.conversationId,
 			};
+			// The mapping has landed: charge exactly one admission call. Only a NEW
+			// admission reaches here (a reuse returns above; a conflict throws above),
+			// so a same-request replay never double-charges. A refused charge throws and
+			// rolls this transaction back, so the admission is never reported as success.
+			if (budgetScope !== undefined) this.#budgetPolicy.charge(budgetScope, { calls: 1 });
 			return { conversationId: owner.conversationId, reused: false };
 		}, BACKGROUND_CONTEXT);
 

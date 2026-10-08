@@ -24,7 +24,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { Harness, createRegistry } from "@earendil-works/pi-durable";
 
-import { AdmissionDoc, PiRuntimeAdapter } from "../runtime/pi-adapter.mjs";
+import { AdmissionDoc, PiRuntimeAdapter, budgetScopeFor } from "../runtime/pi-adapter.mjs";
+import { createBudgetPolicy, BudgetError } from "../runtime/budget-policy.mjs";
 import { openOwnedSqliteStorage } from "../runtime/owner-sqlite.mjs";
 
 const MODEL_REF = Object.freeze({ provider: "faux", modelId: "faux-1" });
@@ -73,7 +74,9 @@ async function withTempDir(run) {
 
 async function openAdapter(file, models) {
 	const owned = await openOwnedSqliteStorage(file);
-	const adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF });
+	// Budget admission is mandatory; these ownership cases are not about budget,
+	// so they opt out through the explicit escape hatch.
+	const adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF, allowUnbudgeted: true });
 	return { adapter, owned };
 }
 
@@ -400,7 +403,7 @@ test("a legacy mapping record without an ownership field keeps its stored shape"
 /** Open an adapter with explicit settings (the shared helper pins none). */
 async function openAdapterWith(file, models, settings) {
 	const owned = await openOwnedSqliteStorage(file);
-	const adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF, settings });
+	const adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF, settings, allowUnbudgeted: true });
 	return { adapter, owned };
 }
 
@@ -741,6 +744,291 @@ test("F003: legacy records without ownership stay foreground and are unaffected"
 			assert.equal(await reopened.abort({ kind: "conversation", conversationId: mapping.requests[0].conversationId }), "aborted");
 		} finally {
 			await reopened.close();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// M02 budget admission wiring (V31). The adapter takes an injected budget port;
+// submit() fails closed without one and charges exactly one CALL per NEW
+// admission. A budget refusal must leave zero admission side effects (no
+// conversation, no mapping row, no SDK call), and a charge that throws inside
+// the admission is never reported as success.
+// ---------------------------------------------------------------------------
+
+/** A fixed, advanceable epoch-ms clock for the injected budget policy. */
+function budgetClock(start = 1_000_000) {
+	let t = start;
+	return { now: () => t, advance: (ms) => { t += ms; }, set: (value) => { t = value; } };
+}
+
+/** Open an adapter whose budget port / escape hatch is chosen by the caller. */
+async function openBudgeted(file, models, options = {}) {
+	const owned = await openOwnedSqliteStorage(file);
+	const adapter = await PiRuntimeAdapter.open(owned, {
+		models,
+		modelRef: MODEL_REF,
+		...(options.budgetPolicy === undefined ? {} : { budgetPolicy: options.budgetPolicy }),
+		...(options.allowUnbudgeted === undefined ? {} : { allowUnbudgeted: options.allowUnbudgeted }),
+	});
+	return { adapter, owned };
+}
+
+/** Assert nothing was admitted: no owner/request row, no task and no model call. */
+async function assertNoAdmissionEffects(adapter, faux) {
+	const observed = await adapter.observe();
+	assert.equal(observed.requests.length, 0, "a refused admission writes no request row");
+	assert.equal(observed.owners.length, 0, "a refused admission creates no owner/conversation");
+	assert.equal((await adapter.inspect()).tasks, 0, "a refused admission starts no task");
+	assert.equal(faux.state.callCount, 0, "a refused admission never calls the model");
+}
+
+test("budget: submit without a budgetPolicy and without allowUnbudgeted is refused", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("unused")]);
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models);
+		try {
+			await assert.rejects(() => adapter.submit(request()), (error) => error?.code === "budget-unconfigured");
+			await assertNoAdmissionEffects(adapter, faux);
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: the explicit allowUnbudgeted escape admits without a policy", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("answer")]);
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { allowUnbudgeted: true });
+		try {
+			const accepted = await adapter.submit(request());
+			assert.equal(accepted.reused, false);
+			assert.equal((await adapter.wait(accepted.submissionId)).status, "done");
+			assert.equal(faux.state.callCount, 1, "the unbudgeted escape still performs the real submission");
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: the scope derivation prefers the execution id, falls back to the task, else none", () => {
+	assert.equal(budgetScopeFor({ executionId: "exec-1", productTaskId: "task-1" }), "exec:exec-1");
+	assert.equal(budgetScopeFor({ productTaskId: "task-1" }), "task:task-1");
+	assert.equal(budgetScopeFor({}), undefined);
+	assert.equal(budgetScopeFor(undefined), undefined);
+	// Under the current validateRequest contract BOTH references are mandatory, so
+	// a request that reaches admission always resolves an `exec:` scope and the
+	// `budget-scope-missing` branch stays defense-in-depth (see the schema test below).
+});
+
+test("budget: a malformed budget port or a non-boolean escape is refused at construction", async () => {
+	await withTempDir(async (dir) => {
+		const { models } = makeModels([fauxAssistantMessage("unused")]);
+		const badPolicies = [{}, { assertActive() {} }, { charge() {} }, "policy", 5];
+		for (const [index, budgetPolicy] of badPolicies.entries()) {
+			const owned = await openOwnedSqliteStorage(join(dir, `bad-policy-${index}.sqlite`));
+			try {
+				await assert.rejects(
+					() => PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF, budgetPolicy }),
+					(error) => error?.code === "invalid-budget-policy",
+					`budgetPolicy ${JSON.stringify(budgetPolicy)} must be refused`,
+				);
+			} finally {
+				await owned.close();
+			}
+		}
+		const owned = await openOwnedSqliteStorage(join(dir, "bad-allow.sqlite"));
+		try {
+			await assert.rejects(
+				() => PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF, allowUnbudgeted: "yes" }),
+				(error) => error?.code === "invalid-allow-unbudgeted",
+			);
+		} finally {
+			await owned.close();
+		}
+	});
+});
+
+test("budget: a scope with no grant is refused with unknown-budget and zero effects", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("unused")]);
+		const policy = createBudgetPolicy({ now: budgetClock().now });
+		policy.grant({ scopeKey: "exec:other-execution", maxTokens: 100, maxDurationMs: 60_000 });
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			await assert.rejects(() => adapter.submit(request({ executionId: "exec-1" })), (error) => error?.code === "unknown-budget");
+			await assertNoAdmissionEffects(adapter, faux);
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: an expired scope is refused with budget-expired and zero effects", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("unused")]);
+		const clock = budgetClock(1000);
+		const policy = createBudgetPolicy({ now: clock.now });
+		policy.grant({ scopeKey: "exec:exec-1", maxTokens: 100, maxDurationMs: 5000 }); // expiresAt 6000
+		clock.set(6000);
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			await assert.rejects(() => adapter.submit(request()), (error) => error?.code === "budget-expired");
+			await assertNoAdmissionEffects(adapter, faux);
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: an exhausted scope is refused with budget-exhausted and zero effects", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("unused")]);
+		const policy = createBudgetPolicy({ now: budgetClock().now });
+		policy.grant({ scopeKey: "exec:exec-1", maxTokens: 100, maxDurationMs: 60_000, maxCalls: 1 });
+		policy.charge("exec:exec-1", { calls: 1 }); // the call cap is now full
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			await assert.rejects(() => adapter.submit(request()), (error) => error?.code === "budget-exhausted");
+			await assertNoAdmissionEffects(adapter, faux);
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: a settled scope is refused with budget-settled and zero effects", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("unused")]);
+		const policy = createBudgetPolicy({ now: budgetClock().now });
+		policy.grant({ scopeKey: "exec:exec-1", maxTokens: 100, maxDurationMs: 60_000 });
+		policy.settle("exec:exec-1");
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			await assert.rejects(() => adapter.submit(request()), (error) => error?.code === "budget-settled");
+			await assertNoAdmissionEffects(adapter, faux);
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: a faulty clock is refused with clock-invalid and zero effects", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("unused")]);
+		let mode = { kind: "value", value: 1000 };
+		const policy = createBudgetPolicy({ now: () => {
+			if (mode.kind === "throw") throw new Error("synthetic clock failure");
+			return mode.value;
+		} });
+		policy.grant({ scopeKey: "exec:exec-1", maxTokens: 100, maxDurationMs: 5000 });
+		mode = { kind: "value", value: NaN }; // the clock breaks AFTER a valid grant
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			await assert.rejects(() => adapter.submit(request()), (error) => error?.code === "clock-invalid");
+			await assertNoAdmissionEffects(adapter, faux);
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: a valid grant admits the request and charges exactly one call", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("answer")]);
+		const policy = createBudgetPolicy({ now: budgetClock().now });
+		policy.grant({ scopeKey: "exec:exec-1", maxTokens: 1000, maxDurationMs: 60_000, maxCalls: 5 });
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			const accepted = await adapter.submit(request());
+			assert.equal(accepted.reused, false);
+			assert.equal(policy.remaining("exec:exec-1").remainingCalls, 4, "exactly one admission call is charged");
+			assert.equal(policy.toJSON().grants[0].chargedCalls, 1, "the durable scope shows a single call");
+			assert.equal(policy.toJSON().grants[0].chargedTokens, 0, "no token dimension is charged on the admission path");
+			assert.equal((await adapter.wait(accepted.submissionId)).status, "done");
+			assert.equal(faux.state.callCount, 1);
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: a same-request replay reuses the admission and is not charged again", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("answer")]);
+		const policy = createBudgetPolicy({ now: budgetClock().now });
+		policy.grant({ scopeKey: "exec:exec-1", maxTokens: 1000, maxDurationMs: 60_000, maxCalls: 5 });
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			const first = await adapter.submit(request());
+			await adapter.wait(first.submissionId);
+			const second = await adapter.submit(request());
+			assert.equal(second.reused, true);
+			assert.equal(second.submissionId, first.submissionId);
+			assert.equal(policy.toJSON().grants[0].chargedCalls, 1, "an idempotent replay is not a second admission");
+			assert.equal(faux.state.callCount, 1, "a replayed request never reaches the model twice");
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: a request conflict is rejected without charging the scope", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("answer")]);
+		const policy = createBudgetPolicy({ now: budgetClock().now });
+		policy.grant({ scopeKey: "exec:exec-1", maxTokens: 1000, maxDurationMs: 60_000, maxCalls: 5 });
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			const accepted = await adapter.submit(request());
+			await adapter.wait(accepted.submissionId);
+			await assert.rejects(() => adapter.submit(request({ content: "different body" })), (error) => error?.code === "request-conflict");
+			assert.equal(policy.toJSON().grants[0].chargedCalls, 1, "a conflict charges nothing");
+			assert.equal(faux.state.callCount, 1, "a conflicting request never reaches the model");
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: a charge that throws inside the admission is never reported as success", async () => {
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("unused")]);
+		// A port whose read-only precondition passes but whose charge fails models a
+		// race between assertActive and the mapping landing; the failed charge must
+		// roll the admission back, not report a false success.
+		const policy = {
+			assertActive: () => ({ remainingTokens: 1, remainingCalls: 1, remainingMs: 1000 }),
+			charge: () => { throw new BudgetError("budget-exhausted", "synthetic charge failure"); },
+		};
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			await assert.rejects(() => adapter.submit(request()), (error) => error?.code === "budget-exhausted");
+			await assertNoAdmissionEffects(adapter, faux);
+		} finally {
+			await adapter.close();
+		}
+	});
+});
+
+test("budget: a request missing a scope reference is refused before admission (schema is stricter)", async () => {
+	// validateRequest makes BOTH executionId and productTaskId mandatory, so a
+	// scope-less request never reaches the budget guard: it fails closed earlier
+	// with invalid-request-field and zero effects. `budget-scope-missing` therefore
+	// stays defense-in-depth; its derivation is pinned by the scope test above.
+	await withTempDir(async (dir) => {
+		const { faux, models } = makeModels([fauxAssistantMessage("unused")]);
+		const policy = createBudgetPolicy({ now: budgetClock().now });
+		policy.grant({ scopeKey: "exec:exec-1", maxTokens: 100, maxDurationMs: 60_000 });
+		const { adapter } = await openBudgeted(join(dir, "session.sqlite"), models, { budgetPolicy: policy });
+		try {
+			await assert.rejects(
+				() => adapter.submit({ ...request(), executionId: undefined }),
+				(error) => error?.code === "invalid-request-field",
+			);
+			await assertNoAdmissionEffects(adapter, faux);
+		} finally {
+			await adapter.close();
 		}
 	});
 });

@@ -65,6 +65,7 @@ async function openAdapter(dir, models, options = {}) {
 		models,
 		modelRef: options.modelRef ?? MODEL_REF,
 		...(options.registry === undefined ? {} : { registry: options.registry }),
+		allowUnbudgeted: true,
 	});
 	return { adapter, owned, file };
 }
@@ -82,7 +83,7 @@ test("recover restores a lost submission link without replaying the input", asyn
     const file = join(dir, "session.sqlite");
     const { faux, models } = makeModels([fauxAssistantMessage("saved")]);
     let owned = await openOwnedSqliteStorage(file);
-    let adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF });
+    let adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF, allowUnbudgeted: true });
     const accepted = await adapter.submit(request());
     await adapter.wait(accepted.submissionId);
     await adapter.close();
@@ -94,7 +95,7 @@ test("recover restores a lost submission link without replaying the input", asyn
     }, BACKGROUND_CONTEXT);
     await fixture.close(BACKGROUND_CONTEXT);
     owned = await openOwnedSqliteStorage(file);
-    adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF });
+    adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF, allowUnbudgeted: true });
     try {
       const recovery = await adapter.recover();
       assert.deepEqual(recovery.restored, [accepted.requestKey]);
@@ -183,7 +184,7 @@ test("reopened adapter rejects reuse when the default model drifted", async () =
 		const file = join(dir, "session.sqlite");
 		const bound = makeModels([fauxAssistantMessage("bound to faux-1")]);
 		const firstOwned = await openOwnedSqliteStorage(file);
-		const firstAdapter = await PiRuntimeAdapter.open(firstOwned, { models: bound.models, modelRef: MODEL_REF });
+		const firstAdapter = await PiRuntimeAdapter.open(firstOwned, { models: bound.models, modelRef: MODEL_REF, allowUnbudgeted: true });
 		const submitted = await firstAdapter.submit(request());
 		await firstAdapter.wait(submitted.submissionId);
 		await firstAdapter.close();
@@ -193,6 +194,7 @@ test("reopened adapter rejects reuse when the default model drifted", async () =
 		const secondAdapter = await PiRuntimeAdapter.open(secondOwned, {
 			models: drifted.models,
 			modelRef: { provider: "faux", modelId: "faux-2" },
+			allowUnbudgeted: true,
 		});
 		try {
 			await assert.rejects(() => secondAdapter.submit(request()), conflict);
@@ -246,14 +248,14 @@ test("close and reopen reuses the same submission with zero extra model calls", 
 		const file = join(dir, "session.sqlite");
 		const { faux, models } = makeModels([fauxAssistantMessage("once")]);
 		const firstOwned = await openOwnedSqliteStorage(file);
-		const firstAdapter = await PiRuntimeAdapter.open(firstOwned, { models, modelRef: MODEL_REF });
+		const firstAdapter = await PiRuntimeAdapter.open(firstOwned, { models, modelRef: MODEL_REF, allowUnbudgeted: true });
 		const submitted = await firstAdapter.submit(request());
 		await firstAdapter.wait(submitted.submissionId);
 		assert.equal(faux.state.callCount, 1);
 		await firstAdapter.close();
 
 		const secondOwned = await openOwnedSqliteStorage(file);
-		const secondAdapter = await PiRuntimeAdapter.open(secondOwned, { models, modelRef: MODEL_REF });
+		const secondAdapter = await PiRuntimeAdapter.open(secondOwned, { models, modelRef: MODEL_REF, allowUnbudgeted: true });
 		try {
 			const again = await secondAdapter.submit(request());
 			assert.equal(again.reused, true);
@@ -412,7 +414,7 @@ test("an unknown admission mapping version is rejected and not erased", async ()
 
 		const owned = await openOwnedSqliteStorage(file);
 		await assert.rejects(
-			() => PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF }),
+			() => PiRuntimeAdapter.open(owned, { models, modelRef: MODEL_REF, allowUnbudgeted: true }),
 			(error) => error?.code === "unknown-mapping-version",
 		);
 

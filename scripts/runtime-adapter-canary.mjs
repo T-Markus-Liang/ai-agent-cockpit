@@ -94,7 +94,7 @@ export async function runAdapterCanary({ live = false } = {}) {
     const file = join(dir, 'session.sqlite');
     const open = async () => {
       owned = await openOwnedSqliteStorage(file);
-      adapter = await PiRuntimeAdapter.open(owned, { models: source.models, modelRef: source.ref, settings: SETTINGS });
+      adapter = await PiRuntimeAdapter.open(owned, { models: source.models, modelRef: source.ref, settings: SETTINGS, allowUnbudgeted: true });
     };
     await open();
     const request = { ownerId: 'synthetic-adapter-canary', sourceRequestId: 'canary-1',

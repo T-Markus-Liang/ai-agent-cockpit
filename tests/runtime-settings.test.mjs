@@ -100,7 +100,7 @@ test('documented settings work and caller mutation cannot inject code or change 
     const settings = { extensions: [], stream: { transport: 'sse', timeoutMs: 1000, maxRetries: 0, maxRetryDelayMs: 0, cacheRetention: 'none', deferred: false },
       retry: { enabled: false, maxRetries: 0, baseDelayMs: 0, maxAgentDelayMs: 0 }, compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0, backgroundTokens: 0 },
       progress: { partialIntervalMs: 0, outputIntervalMs: 0 }, toolExecution: 'sequential', steeringMode: 'all', followUpMode: 'one-at-a-time' };
-    const adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: REF, settings }); setHandle(adapter);
+    const adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: REF, settings, allowUnbudgeted: true }); setHandle(adapter);
     let callbacks = 0;
     settings.stream.onPayload = () => { callbacks++; };
     settings.stream.apiKey = SENTINEL;

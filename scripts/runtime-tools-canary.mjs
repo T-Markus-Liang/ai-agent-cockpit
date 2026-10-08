@@ -86,7 +86,7 @@ export async function runToolsCanary({ live = false, isolated = false } = {}) {
     const file = join(dir, 'session.sqlite');
     const open = async () => {
       owned = await openOwnedSqliteStorage(file);
-      adapter = await PiRuntimeAdapter.open(owned, { models: source.models, modelRef: source.ref, toolSuite: suite, settings: SETTINGS });
+      adapter = await PiRuntimeAdapter.open(owned, { models: source.models, modelRef: source.ref, toolSuite: suite, settings: SETTINGS, allowUnbudgeted: true });
     };
     await open();
     const request = { ...binding, sourceRequestId: 'readonly-query-1',

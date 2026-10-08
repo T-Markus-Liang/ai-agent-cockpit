@@ -26,7 +26,7 @@ async function setup(t) {
   const file = path.join(dir, 'runtime.sqlite');
   const open = async (extra = {}) => {
     owned = await openOwnedSqliteStorage(file);
-    try { adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL, toolSuite: suite, ...extra }); return adapter; }
+    try { adapter = await PiRuntimeAdapter.open(owned, { models, modelRef: MODEL, toolSuite: suite, allowUnbudgeted: true, ...extra }); return adapter; }
     catch (error) { await owned.close(); throw error; }
   };
   const request = { ...binding, sourceRequestId: 'request-1', content: 'synthetic planning only' };
