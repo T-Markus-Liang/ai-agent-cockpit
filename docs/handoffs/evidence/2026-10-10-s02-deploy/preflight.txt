@@ -1,0 +1,17 @@
+# S02 deploy preflight — 2026-10-10T07:34:44+08:00
+## launchd plist hashes
+73eecbd869bb817b38b50102d3f8486b398ee4132756cb0e50d79979fedcba7d  launchd/com.markus.personal-ai-os.goals.plist
+d2e9659395dc6c65df06d2cf156a720259a35d991d0273b6902868b15e364fb6  launchd/com.markus.personal-ai-os.memory.plist
+b2729f2d3630e06fdac1cc284d4558545b219c8c4e52510a99b1ca7d3cfb0e75  launchd/com.markus.ai-agent-cockpit.wechat-control.plist
+dbea10d60712a067a05b7353da08ea208074836eff43ad50262b1056c7267d79  launchd/com.markus.ai-agent-cockpit.wechat-bridge.plist
+## live service processes
+  PID STARTED                      COMMAND
+ 6573 Tue Oct  6 23:54:08 2026     /opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python -m uvicorn services.memory.service:app --host 127.0.0.1 --port 4325 --no-access-log
+15506 Wed Oct  7 14:24:49 2026     /usr/local/bin/node /Users/markus/ai-agent-cockpit/gateway/control-plane.mjs
+15509 Wed Oct  7 14:24:49 2026     /usr/local/bin/node /Users/markus/ai-agent-cockpit/gateway/goals.mjs
+32742 Tue Oct  6 19:02:09 2026     /usr/local/bin/node /Users/markus/ai-agent-cockpit/vendor/cezar/packages/cezar/dist/index.js --repo /Users/markus/ai-agent-cockpit --port 4321 --no-open
+73196 Mon Oct  5 09:59:47 2026     /usr/local/bin/node /Users/markus/ai-agent-cockpit/gateway/wechat-control.mjs
+## live auth probes
+GET :4326/api/goals no-auth -> 401
+GET :4326/health -> 200
+GET :4325/health -> 200

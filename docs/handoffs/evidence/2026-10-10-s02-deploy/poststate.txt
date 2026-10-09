@@ -1,0 +1,20 @@
+# S02 deploy post-state — 2026-10-10T07:37:18+08:00
+## service processes (new)
+COMMAND   PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    15506 markus   12u  IPv4 0xb0cec6b927a9a3fc      0t0  TCP localhost:4324 (LISTEN)
+node    32742 markus   26u  IPv4  0xaa65268bbb42ad7      0t0  TCP localhost:rwhois (LISTEN)
+node    57564 markus   14u  IPv4 0xddbe31690e1e40d2      0t0  TCP localhost:geognosis (LISTEN)
+Python  57681 markus   17u  IPv4 0xb23a3afcdc633d49      0t0  TCP localhost:geognosisman (LISTEN)
+node    58259 markus   12u  IPv4 0x51d28b332ba38821      0t0  TCP localhost:4322 (LISTEN)
+## modes after
+-rw------- markus /Users/markus/.local/state/personal-ai-os/goals/authority.json
+-rw------- markus /Users/markus/.local/state/personal-ai-os/goals/api-token
+-rw------- markus /Users/markus/.local/state/personal-ai-os/mem0/authority.json
+-rw------- markus /Users/markus/.local/state/personal-ai-os/mem0/api-token
+-rw------- markus /Users/markus/.local/state/personal-ai-os/mem0/history.sqlite
+drwx------ markus /Users/markus/.local/state/personal-ai-os/mem0/vectors
+-rw------- markus /Users/markus/.wechat-acp/instances/cezar-codex/telemetry-id
+-rw------- markus config/wechat-acp.json
+## config semantic diff (before backup vs live)
+>         "grantDeadlineMs": 300000,
+<         "promptTimeoutMs": 300000,

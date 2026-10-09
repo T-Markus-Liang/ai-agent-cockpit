@@ -63,13 +63,17 @@ export function createWechatControlServer(deps = {}) {
 
   function startBridge() {
     if (bridgeStarted || !existsSync(bridgeBin)) return
-    bridgeStarted = true
     const child = spawnImpl(process.execPath, [bridgeBin, '--instance', 'cezar-codex', '--agent', 'codex', '--cwd', PROJECT_ROOT, '--config', BRIDGE_CONFIG, '--session-resume', 'auto', '--hide-thoughts', '--show-diffs', '--daemon'], {
       cwd: BRIDGE_DIR,
       detached: true,
       stdio: 'ignore',
     })
+    // A failed spawn must not latch the once-guard: an async spawn error clears
+    // the flag (and the listener keeps an unhandled 'error' event from crashing
+    // the server), so the next explicit write can retry the bridge.
+    child.on('error', () => { bridgeStarted = false })
     child.unref()
+    bridgeStarted = true
   }
 
   async function beginQr() {
@@ -110,6 +114,8 @@ export function createWechatControlServer(deps = {}) {
         const saved = { token: data.bot_token, baseUrl: data.baseurl || WECHAT_BASE, accountId: data.ilink_bot_id, userId: data.ilink_user_id, savedAt: new Date().toISOString() }
         await fs.mkdir(path.dirname(tokenPath), { recursive: true })
         await fs.writeFile(tokenPath, JSON.stringify(saved, null, 2), { mode: 0o600 })
+        // mode only applies at creation; tighten pre-existing files too.
+        await fs.chmod(tokenPath, 0o600).catch(() => {})
         qr = null
         startBridge()
         return connectedPayload(saved)
@@ -155,6 +161,9 @@ export function createWechatControlServer(deps = {}) {
   return server
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// Compare against the resolved argv path so both absolute (launchd) and
+// relative (`node gateway/wechat-control.mjs` from the repo root) invocations
+// enter the listen branch, while imports and `node -e` stay silent.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   createWechatControlServer().listen(PORT, '127.0.0.1', () => console.log(`[wechat-control] listening at http://127.0.0.1:${PORT}`))
 }

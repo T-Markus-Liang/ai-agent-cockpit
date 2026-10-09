@@ -1,0 +1,16 @@
+== before: file modes ==
+drwxr-xr-x markus /Users/markus/.local/state/personal-ai-os
+drwx------ markus /Users/markus/.local/state/personal-ai-os/goals
+-rw------- markus /Users/markus/.local/state/personal-ai-os/goals/api-token
+-rw------- markus /Users/markus/.local/state/personal-ai-os/goals/goals.json
+-rw------- markus /Users/markus/.local/state/personal-ai-os/goals/wechat-owner
+drwx------ markus /Users/markus/.local/state/personal-ai-os/mem0
+-rw------- markus /Users/markus/.local/state/personal-ai-os/mem0/api-token
+-rw-r--r-- markus /Users/markus/.local/state/personal-ai-os/mem0/history.sqlite
+-rw------- markus /Users/markus/.local/state/personal-ai-os/mem0/ingest.sqlite
+drwxr-xr-x markus /Users/markus/.local/state/personal-ai-os/mem0/vectors
+drwx------ markus /Users/markus/.wechat-acp/instances/cezar-codex
+-rw-r--r-- markus /Users/markus/.wechat-acp/instances/cezar-codex/token.json
+-rw------- markus /Users/markus/.wechat-acp/instances/cezar-codex/state.json
+-rw-r--r-- markus /Users/markus/.wechat-acp/instances/cezar-codex/telemetry-id
+-rw-r--r-- markus config/wechat-acp.json

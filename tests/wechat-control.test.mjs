@@ -29,7 +29,15 @@ function makeHarness(options = {}) {
     }
     throw new Error(`unexpected remote URL: ${url}`)
   }
-  const spawnImpl = (...args) => { spawnCalls.push(args); return { unref() {} } }
+  const spawnImpl = (...args) => {
+    spawnCalls.push(args)
+    if (options.failSpawnAttempts && spawnCalls.length <= options.failSpawnAttempts) {
+      // Async spawn failure: the server must survive (no unhandled 'error') and
+      // clear its once-guard so a later explicit write can retry.
+      return { on(event, cb) { if (event === 'error') queueMicrotask(() => cb(new Error('spawn failed'))); return this }, unref() {} }
+    }
+    return { on() {}, unref() {} }
+  }
   return { remoteCalls, spawnCalls, spawnImpl, clock, fetchImpl, spawnCallsList: spawnCalls }
 }
 
@@ -173,6 +181,33 @@ test('CORS mirrors the control-plane allowlist: trusted origins answered, untrus
 
   const preflightUntrusted = await request('/api/wechat/status', { method: 'OPTIONS', headers: { Origin: 'http://evil.example' } })
   assert.equal(preflightUntrusted.response.status, 403)
+})
+
+test('bridge spawn failure does not latch: the next explicit write retries', async (t) => {
+  const harness = makeHarness({ failSpawnAttempts: 1 })
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wechat-control-suite-'))
+  const tokenPath = path.join(stateDir, 'token.json')
+  await fs.writeFile(tokenPath, JSON.stringify({ token: 'bot-token-1', accountId: 'bot-42', savedAt: '2026-10-10T00:00:00.000Z' }))
+  const { request } = await startServer(t, harness, { tokenPath })
+  const first = await request('/api/wechat/qr', { method: 'POST' })
+  assert.equal(first.body.status, 'connected')
+  await new Promise((resolve) => setImmediate(resolve))
+  const second = await request('/api/wechat/qr', { method: 'POST' })
+  assert.equal(second.body.status, 'connected')
+  assert.equal(harness.spawnCallsList.length, 2, 'failed spawn is retried on the next write')
+})
+
+test('confirmed write tightens a pre-existing loose-permission token file to 0600', async (t) => {
+  const harness = makeHarness({ remotePlan: { qrcodeStatus: 'confirmed' } })
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wechat-control-suite-'))
+  const tokenPath = path.join(stateDir, 'token.json')
+  await fs.writeFile(tokenPath, 'not-json', { mode: 0o644 })
+  const { request } = await startServer(t, harness, { tokenPath })
+  await request('/api/wechat/qr', { method: 'POST' })
+  const confirmed = await request('/api/wechat/qr', { method: 'POST' })
+  assert.equal(confirmed.body.status, 'connected')
+  const stat = await fs.stat(tokenPath)
+  assert.equal(stat.mode & 0o777, 0o600, 'pre-existing file is chmodded, not just created-time mode')
 })
 
 test('GET never spawns the bridge across the whole lifecycle', async (t) => {

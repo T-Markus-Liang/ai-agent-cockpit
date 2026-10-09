@@ -1,0 +1,12 @@
+PASS  goals health no-auth 200
+PASS  goals GET no-auth 401
+PASS  goals GET forged 401
+PASS  goals GET bridge-goals(operator) 200 — goalCount=5
+PASS  goals viewer POST pause-all 403 + zero change — paused=false unchanged
+PASS  memory health no-auth 200
+PASS  memory search no-auth 401
+PASS  memory search forged 401
+PASS  memory search bridge-memory(chief) 200 — results=0
+PASS  memory search ui-proxy-memory(viewer) 200
+PASS  memory viewer POST turns 403
+{"type":"S02LiveVerification","checks":11,"failed":0,"tokensExposed":0}
