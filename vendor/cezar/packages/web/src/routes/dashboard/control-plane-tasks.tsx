@@ -13,8 +13,13 @@ async function readTasks(): Promise<TasksResponse> {
   // the browser never sees 127.0.0.1:4324 or a credential.
   const response = await fetch('/api/v1/personal-ai-os/control-plane/tasks', { cache: 'no-store' })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const envelope = await response.json() as { available?: boolean; body?: TasksResponse }
+  const envelope = await response.json() as { available?: boolean; body?: TasksResponse; upstreamStatus?: number }
   if (envelope.available !== true) throw new Error('control-plane unavailable')
+  // An upstream error is still an error: surface the honest "unavailable" state
+  // instead of rendering an empty task list (independent review, Jules PR #2).
+  if (typeof envelope.upstreamStatus === 'number' && envelope.upstreamStatus >= 400) {
+    throw new Error(`upstream HTTP ${envelope.upstreamStatus}`)
+  }
   return envelope.body ?? {}
 }
 

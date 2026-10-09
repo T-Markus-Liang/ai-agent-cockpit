@@ -79,6 +79,18 @@ describe('Personal AI OS dashboard modules', () => {
     expect(requests.some((url) => url.includes('127.0.0.1:4324'))).toBe(false)
   })
 
+  it('renders the unavailable state when the upstream tasks read errors through the proxy', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/v1/personal-ai-os/control-plane/tasks')) {
+        return new Response(JSON.stringify({ available: true, upstreamStatus: 500, body: {} }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }))
+    renderWithQuery(<ControlPlaneTasks />)
+    expect(await screen.findByText('控制面暂不可用；不会影响 Cezar 原生任务')).toBeTruthy()
+  })
+
   it('renders live control-plane task state', async () => {
     renderWithQuery(<ControlPlaneTasks />)
     expect(await screen.findByText('修复控制面')).toBeTruthy()
