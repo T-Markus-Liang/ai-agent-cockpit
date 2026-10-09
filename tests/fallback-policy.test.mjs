@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createFallbackPolicy, FallbackError, MAX_AUTOMATIC_ATTEMPTS } from "../runtime/fallback-policy.mjs";
+import { createFallbackPolicy, FallbackError, MAX_AUTOMATIC_ATTEMPTS, classifyLaunchFailure } from "../runtime/fallback-policy.mjs";
 
 /** A fake secret used to prove no decision path ever carries a credential value. */
 const FAKE_SECRET = "sk-FALLBACK-TEST-DO-NOT-LEAK-0123456789abcdef";
@@ -470,4 +470,51 @@ test("18. buildFallbackContext deep-clones and deep-freezes the whole output; th
 	const fromNull = policy.buildFallbackContext({ originalContext: nullProto, fromRef: CHAIN[0].ref, toRef: CHAIN[1].ref, attempt: 1 });
 	assert.equal(fromNull.persona, "p");
 	assert.ok(Object.isFrozen(fromNull));
+});
+
+test("19. S03a launch gate: classifyLaunchFailure covers every branch (touched barrier dominates)", () => {
+	// POSITIVE — the three degradable launch kinds advance ONLY on the explicit
+	// clean proof (providerSessionTouched === false).
+	assert.deepEqual(classifyLaunchFailure({ kind: "spawn-not-found", providerSessionTouched: false }), { advance: true, reason: "spawn-not-found" });
+	assert.deepEqual(classifyLaunchFailure({ kind: "startup-exit", providerSessionTouched: false }), { advance: true, reason: "startup-exit-clean" });
+	assert.deepEqual(classifyLaunchFailure({ kind: "startup-timeout", providerSessionTouched: false }), { advance: true, reason: "startup-timeout-clean" });
+
+	// NEGATIVE — the unknown-launch-effect barrier runs FIRST for every kind,
+	// even a degradable one: true / undefined / missing / non-false all refuse.
+	for (const touched of [true, undefined, null, 0, 1, "false"]) {
+		assert.deepEqual(classifyLaunchFailure({ kind: "spawn-not-found", providerSessionTouched: touched }), { advance: false, reason: "unknown-launch-effect" });
+		assert.deepEqual(classifyLaunchFailure({ kind: "startup-exit", providerSessionTouched: touched }), { advance: false, reason: "unknown-launch-effect" });
+		assert.deepEqual(classifyLaunchFailure({ kind: "startup-timeout", providerSessionTouched: touched }), { advance: false, reason: "unknown-launch-effect" });
+		assert.deepEqual(classifyLaunchFailure({ kind: "aborted", providerSessionTouched: touched }), { advance: false, reason: "unknown-launch-effect" });
+	}
+	assert.deepEqual(classifyLaunchFailure({ kind: "spawn-not-found" }), { advance: false, reason: "unknown-launch-effect" });
+	assert.deepEqual(classifyLaunchFailure({}), { advance: false, reason: "unknown-launch-effect" });
+
+	// NEGATIVE — proven-clean stop kinds: a user abort, an auth failure, a
+	// permission error and an uncertain cleanup never advance (the remediation
+	// §5.3 rule: auth, unknown launch effect and permission errors are never
+	// retried on another harness "because no prompt was sent yet").
+	assert.deepEqual(classifyLaunchFailure({ kind: "aborted", providerSessionTouched: false }), { advance: false, reason: "launch-aborted" });
+	assert.deepEqual(classifyLaunchFailure({ kind: "auth_error", providerSessionTouched: false }), { advance: false, reason: "auth-failure" });
+	assert.deepEqual(classifyLaunchFailure({ kind: "spawn-permission", providerSessionTouched: false }), { advance: false, reason: "permission-denied" });
+	assert.deepEqual(classifyLaunchFailure({ kind: "cleanup-uncertain", providerSessionTouched: false }), { advance: false, reason: "cleanup-uncertain" });
+
+	// NEGATIVE — everything unrecognized stops fail-closed: launch-error,
+	// initialize/JSON-RPC failures, spawn-error, unknown strings, missing or
+	// non-string kinds (an unstructured plain Error carries no kind at all).
+	for (const kind of ["launch-error", "initialize-error", "spawn-error", "unknown", "startup_error", "timeout", "", "some_future_kind", undefined, null, 42, {}, true]) {
+		assert.deepEqual(classifyLaunchFailure({ kind, providerSessionTouched: false }), { advance: false, reason: "uncertain-side-effects" }, `kind=${String(kind)}`);
+	}
+
+	// NEGATIVE — malformed input (not a plain object) fails closed as an
+	// unknown launch effect.
+	for (const malformed of [undefined, null, 42, "kind", [], true]) {
+		assert.deepEqual(classifyLaunchFailure(malformed), { advance: false, reason: "unknown-launch-effect" });
+	}
+
+	// The verdict is frozen, and deciding never leaks a secret-bearing input.
+	const secretTouched = { kind: "spawn-not-found", providerSessionTouched: false, token: FAKE_SECRET };
+	const verdict = classifyLaunchFailure(secretTouched);
+	assert.ok(Object.isFrozen(verdict));
+	assert.equal(JSON.stringify(verdict).includes(FAKE_SECRET), false);
 });

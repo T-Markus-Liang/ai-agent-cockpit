@@ -22,7 +22,7 @@ import {
 } from "./agent-manager.js";
 import type { AgentCommandConfig, SessionResumePolicy } from "../config.js";
 import { trackEvent, trackException, hashUserId } from "../telemetry/index.js";
-import { decideFallback } from "./fallback-policy.js";
+import { classifyLaunchFailure, decideFallback } from "./fallback-policy.js";
 
 /**
  * Build a short, user-friendly notice for a turn that ended without the
@@ -121,6 +121,8 @@ export interface SessionManagerOpts {
   agentEnv?: Record<string, string>;
   agentPreset?: string;
   fallbackAgents?: AgentCommandConfig[];
+  /** Test seam: overrides the agent spawner (defaults to agent-manager spawnAgent). */
+  spawnAgent?: typeof spawnAgent;
   mcpServers?: acp.McpServer[];
   idleTimeoutMs: number;
   maxConcurrentUsers: number;
@@ -1058,7 +1060,7 @@ export class SessionManager {
           await this.opts.removePersistedSessionId?.(userId).catch(() => {});
         }
         try {
-          agentInfo = await spawnAgent({
+          agentInfo = await (this.opts.spawnAgent ?? spawnAgent)({
             command: candidate.command,
             args: candidate.args,
             cwd: this.opts.agentCwd,
@@ -1082,8 +1084,21 @@ export class SessionManager {
           break;
         } catch (err) {
           lastError = err;
-          this.opts.log(`[${userId}] ACP candidate ${candidate.command} failed: ${String(err)}`);
-          if (index === candidates.length - 1) throw err;
+          // S03a launch gate: a candidate failure may advance to the next
+          // candidate ONLY on an explicit proof that no provider session was
+          // requested (providerSessionTouched === false) plus a degradable
+          // launch kind. auth / permission / abort / unknown-launch-effect
+          // failures stop here and are never retried on another harness.
+          const gate = classifyLaunchFailure({
+            kind: (err as { kind?: unknown } | null)?.kind,
+            providerSessionTouched: (err as { providerSessionTouched?: unknown } | null)
+              ?.providerSessionTouched,
+          });
+          this.opts.log(
+            `[${userId}] ACP candidate ${candidate.command} failed: ${String(err)} ` +
+              `(launch gate: ${gate.advance ? "advance" : "stop"}/${gate.reason})`,
+          );
+          if (!gate.advance || index === candidates.length - 1) throw err;
         }
       }
       if (!agentInfo!) throw lastError ?? new Error("No ACP agent candidates configured");

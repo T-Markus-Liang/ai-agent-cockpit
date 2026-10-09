@@ -46,10 +46,11 @@ import assert from 'node:assert/strict';
 
 // Canonical authority (untyped pure ESM). Resolved only by the test runner (tsx);
 // the package build never sees this file (see the header note above).
-import { createFallbackPolicy, MAX_AUTOMATIC_ATTEMPTS } from '../../../runtime/fallback-policy.mjs';
+import { createFallbackPolicy, MAX_AUTOMATIC_ATTEMPTS, classifyLaunchFailure as rootClassifyLaunch } from '../../../runtime/fallback-policy.mjs';
 import {
   classifyFailure as vendorClassify,
   decideFallback as vendorDecide,
+  classifyLaunchFailure as vendorClassifyLaunch,
 } from '../src/acp/fallback-policy.js';
 
 type BoundState = 'fresh' | 'at-limit' | 'beyond-limit';
@@ -255,4 +256,85 @@ test('contract anchor: the decisive negatives and the positive hold on BOTH side
   assert.equal(rootClean.reason, 'startup-failure');
   assert.equal(vendorClean.allowed, true);
   assert.equal(vendorClean.reason, 'startup-failure');
+});
+
+// --------------------------------------------------------------------------
+// S03a launch gate: classifyLaunchFailure must agree on BOTH mirrors for every
+// kind x providerSessionTouched state. Same shape on both sides
+// ({ kind, providerSessionTouched } -> frozen { advance, reason }), so the
+// comparison is field-by-field.
+// --------------------------------------------------------------------------
+
+/** Every launch kind the gate names, plus near-misses and non-string kinds. */
+const LAUNCH_KINDS: unknown[] = [
+  'spawn-not-found',
+  'startup-exit',
+  'startup-timeout',
+  'aborted',
+  'auth_error',
+  'spawn-permission',
+  'cleanup-uncertain',
+  'launch-error',
+  'initialize-error',
+  'spawn-error',
+  'startup_error',
+  'timeout',
+  'unknown',
+  'some_future_kind',
+  '',
+  undefined,
+  null,
+  42,
+  {},
+  true,
+];
+
+/** providerSessionTouched ranges over the explicit clean proof and unknowns. */
+const TOUCH_STATES: unknown[] = [false, true, undefined, null, 0, 'false'];
+
+test('parity: launch gate agrees on advance + reason for every kind x touched state', () => {
+  const rows = LAUNCH_KINDS.length * TOUCH_STATES.length;
+  const divergences: string[] = [];
+  console.log(`[parity] launch matrix: ${LAUNCH_KINDS.length} kinds x ${TOUCH_STATES.length} touched states = ${rows} rows`);
+
+  for (const kind of LAUNCH_KINDS) {
+    for (const providerSessionTouched of TOUCH_STATES) {
+      const root = rootClassifyLaunch({ kind, providerSessionTouched });
+      const vendor = vendorClassifyLaunch({ kind, providerSessionTouched });
+      if (root.advance !== vendor.advance || root.reason !== vendor.reason) {
+        divergences.push(
+          `kind=${label(kind)} touched=${String(providerSessionTouched)}: ` +
+            `root=${JSON.stringify(root)} vendor=${JSON.stringify(vendor)}`,
+        );
+      }
+      // Both mirrors freeze the verdict.
+      if (!Object.isFrozen(root) || !Object.isFrozen(vendor)) {
+        divergences.push(`unfrozen verdict at kind=${label(kind)} touched=${String(providerSessionTouched)}`);
+      }
+    }
+  }
+  report('launch parity', rows, divergences);
+});
+
+test('parity: launch gate fails closed on malformed input and honors the decisive rows on BOTH sides', () => {
+  for (const malformed of [undefined, null, 42, 'kind', [], true]) {
+    assert.deepEqual(rootClassifyLaunch(malformed), { advance: false, reason: 'unknown-launch-effect' });
+    assert.deepEqual(vendorClassifyLaunch(malformed as never), { advance: false, reason: 'unknown-launch-effect' });
+  }
+  // NEGATIVE — the unknown-launch-effect barrier dominates every kind, even a
+  // degradable one, on both sides (missing touched flag included).
+  assert.deepEqual(rootClassifyLaunch({ kind: 'spawn-not-found', providerSessionTouched: true }), { advance: false, reason: 'unknown-launch-effect' });
+  assert.deepEqual(vendorClassifyLaunch({ kind: 'spawn-not-found', providerSessionTouched: true }), { advance: false, reason: 'unknown-launch-effect' });
+  assert.deepEqual(rootClassifyLaunch({ kind: 'startup-exit' }), { advance: false, reason: 'unknown-launch-effect' });
+  assert.deepEqual(vendorClassifyLaunch({ kind: 'startup-exit' }), { advance: false, reason: 'unknown-launch-effect' });
+  // NEGATIVE — auth, permission, abort and unstructured kinds never advance.
+  assert.deepEqual(rootClassifyLaunch({ kind: 'auth_error', providerSessionTouched: false }), { advance: false, reason: 'auth-failure' });
+  assert.deepEqual(vendorClassifyLaunch({ kind: 'auth_error', providerSessionTouched: false }), { advance: false, reason: 'auth-failure' });
+  assert.deepEqual(rootClassifyLaunch({ kind: 'spawn-permission', providerSessionTouched: false }), { advance: false, reason: 'permission-denied' });
+  assert.deepEqual(vendorClassifyLaunch({ kind: 'spawn-permission', providerSessionTouched: false }), { advance: false, reason: 'permission-denied' });
+  assert.deepEqual(rootClassifyLaunch({ kind: undefined, providerSessionTouched: false }), { advance: false, reason: 'uncertain-side-effects' });
+  assert.deepEqual(vendorClassifyLaunch({ kind: undefined, providerSessionTouched: false }), { advance: false, reason: 'uncertain-side-effects' });
+  // POSITIVE — a proven-clean spawn-not-found advances on both sides.
+  assert.deepEqual(rootClassifyLaunch({ kind: 'spawn-not-found', providerSessionTouched: false }), { advance: true, reason: 'spawn-not-found' });
+  assert.deepEqual(vendorClassifyLaunch({ kind: 'spawn-not-found', providerSessionTouched: false }), { advance: true, reason: 'spawn-not-found' });
 });

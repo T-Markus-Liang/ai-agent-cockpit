@@ -45,6 +45,15 @@
 // no environment access, no globals, no credentials. The caller's `chain` is
 // deep-frozen in place so a later decision can never mutate it.
 //
+// S03a: `classifyLaunchFailure` (exported standalone below) is the same
+// failure-policy philosophy projected onto the STARTUP window of the vendor
+// createSession candidate chain — `providerSessionTouched` plays the role of
+// the side-effect flags, and only an explicit `=== false` authorizes advancing
+// to the next candidate. It is mirrored in
+// `vendor/wechat-acp/src/acp/fallback-policy.ts` (which cannot import this
+// module under its tsconfig rootDir) and pinned equivalent by
+// `vendor/wechat-acp/tests/fallback-policy-parity.test.ts`.
+//
 // Contract — createFallbackPolicy({ chain, now }):
 //   chain: ordered candidate array `[{ ref, provider, modelId }]`.
 //          ref is a non-empty reference name; provider / modelId are non-empty
@@ -265,6 +274,57 @@ function classify(kind, hasProducedMessage, hasUsedTools) {
 		return { eligible: false, reason: kind === "timeout" ? "timeout-dirty" : "unclean-side-effects" };
 	}
 	return { eligible: true, reason: cleanReason };
+}
+
+/**
+ * Launch failures that MAY advance to the next candidate, mapped to the reason
+ * a PROVEN-CLEAN one reports. Advancing is only possible before session/new
+ * (or session/load) was sent — see the barrier in `classifyLaunchFailure`.
+ */
+const LAUNCH_ADVANCE_KINDS = new Map([
+	["spawn-not-found", "spawn-not-found"],
+	["startup-exit", "startup-exit-clean"],
+	["startup-timeout", "startup-timeout-clean"],
+]);
+
+/**
+ * S03a launch gate — the SAME failure-policy philosophy projected onto the
+ * startup window of the vendor createSession candidate chain (session.ts).
+ * Mirrors `vendor/wechat-acp/src/acp/fallback-policy.ts` `classifyLaunchFailure`;
+ * the vendor package cannot import this module (tsconfig rootDir), so the two
+ * are pinned semantically equivalent by
+ * `vendor/wechat-acp/tests/fallback-policy-parity.test.ts`.
+ *
+ * Whether a failed launch of one candidate may advance to the next candidate.
+ * The unknown-launch-effect barrier runs FIRST, for EVERY kind: only an
+ * explicit `providerSessionTouched === false` proves the provider was never
+ * asked for a session; a missing, undefined or otherwise non-`false` flag
+ * reads as unknown and is refused (`unknown-launch-effect`) — swapping
+ * harnesses after session/new may orphan a live provider session. Then:
+ *   aborted / auth_error / spawn-permission / cleanup-uncertain
+ *                                            -> stop  launch-aborted / auth-failure /
+ *                                                     permission-denied / cleanup-uncertain
+ *   spawn-not-found / startup-exit / startup-timeout, proven clean
+ *                                            -> advance  spawn-not-found /
+ *                                                     startup-exit-clean / startup-timeout-clean
+ *   anything else (launch-error, initialize/JSON-RPC failures, unknown or
+ *   missing kinds, unstructured errors)      -> stop  uncertain-side-effects
+ *
+ * Input must be a plain object `{ kind, providerSessionTouched }`; anything
+ * else fails closed as an unknown launch effect. The verdict is frozen.
+ */
+export function classifyLaunchFailure(input) {
+	const { kind, providerSessionTouched } = isPlainObject(input) ? input : {};
+	if (providerSessionTouched !== false) {
+		return Object.freeze({ advance: false, reason: "unknown-launch-effect" });
+	}
+	if (kind === "aborted") return Object.freeze({ advance: false, reason: "launch-aborted" });
+	if (kind === "auth_error") return Object.freeze({ advance: false, reason: "auth-failure" });
+	if (kind === "spawn-permission") return Object.freeze({ advance: false, reason: "permission-denied" });
+	if (kind === "cleanup-uncertain") return Object.freeze({ advance: false, reason: "cleanup-uncertain" });
+	const advanceReason = LAUNCH_ADVANCE_KINDS.get(kind);
+	if (advanceReason !== undefined) return Object.freeze({ advance: true, reason: advanceReason });
+	return Object.freeze({ advance: false, reason: "uncertain-side-effects" });
 }
 
 /**
