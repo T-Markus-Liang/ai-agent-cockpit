@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createQueryClient } from '@/api/query-client'
 import { LocaleProvider } from '@/components/locale-provider'
@@ -35,8 +35,7 @@ function stubFetch({ dStatus = 200, planStatus = 200, plan = planNotReady, execu
     if (url.includes('/api/v1/personal-ai-os/control-plane/tasks/') && url.includes('/completion-plan')) return new Response(JSON.stringify({ available: true, upstreamStatus: planStatus, body: planStatus < 400 ? plan : {} }), { status: 200 })
     if (/\/api\/v1\/personal-ai-os\/control-plane\/tasks\/[^/?]+$/.test(url)) return new Response(JSON.stringify({ available: true, upstreamStatus: dStatus, body: dStatus < 400 ? { ...detailBody, executions } : {} }), { status: 200 })
     if (url.includes('/api/v1/personal-ai-os/control-plane/tasks')) return new Response(JSON.stringify({ available: true, upstreamStatus: 200, body: listBody }), { status: 200 })
-    if (url.includes('/api/control-plane/approvals/') && init?.method === 'POST') return new Response(JSON.stringify({ approval: { decision: 'approved' } }), { status: 200 })
-    if (url.includes('/api/control-plane/approvals')) return new Response(JSON.stringify({ approvals: [{ id: 'approval_1', action: 'cezar.dispatch', target: 'execution_1', parametersDigest: 'sha256:test', decision: 'pending', createdAt: '2026-10-06T00:00:00Z' }] }), { status: 200 })
+    if (url.includes('/api/v1/personal-ai-os/control-plane/approvals')) return new Response(JSON.stringify({ available: true, upstreamStatus: 200, body: { approvals: [{ id: 'approval_1', action: 'cezar.dispatch', target: 'execution_1', parametersDigest: 'sha256:test', decision: 'pending', createdAt: '2026-10-06T00:00:00Z' }] } }), { status: 200 })
     return new Response('{}', { status: 404 })
   }))
   return { requests }
@@ -98,14 +97,13 @@ describe('Personal AI OS dashboard modules', () => {
     expect(screen.getByText(/1 次执行/)).toBeTruthy()
   })
 
-  it('renders pending approval and sends a decision through the API', async () => {
+  it('renders pending approvals read-only through the same-origin proxy', async () => {
+    const { requests } = stubFetch()
     renderWithQuery(<ControlPlaneApprovals />)
     expect(await screen.findByText('cezar.dispatch · execution_1')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /批准/ }))
-    await waitFor(() => {
-      const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
-      expect(calls.some(([, init]) => init?.method === 'POST' && String(init?.body).includes('approved'))).toBe(true)
-    })
+    expect(screen.getByText('只读：审批请通过微信或 operator 控制台完成，浏览器不执行决策。')).toBeTruthy()
+    expect(requests.some((url) => url.startsWith('/api/v1/personal-ai-os/control-plane/approvals?decision=pending&limit=20'))).toBe(true)
+    expect(requests.some((url) => url.includes('127.0.0.1:4324'))).toBe(false)
   })
 
   it('does not fetch the detail until a task is selected', async () => {
@@ -208,13 +206,13 @@ describe('Personal AI OS dashboard modules', () => {
     expect(screen.getAllByRole('button', { name: /重试/ }).length).toBe(2)
   })
 
-  // aria: the approval decision buttons name the action and target they decide on, rather than
-  // relying on the bare verb a screen-reader user hears repeated across rows.
-  it('labels each approval decision button with its action and target', async () => {
+  // AUI3-F003: the browser no longer carries an approval decision path. The card is
+  // read-only; buttons named 拒绝/批准 must not exist at all.
+  it('exposes no approval decision buttons — the card is browser read-only', async () => {
     renderWithQuery(<ControlPlaneApprovals />)
     expect(await screen.findByText('cezar.dispatch · execution_1')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '拒绝 cezar.dispatch · execution_1' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '批准 cezar.dispatch · execution_1' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '拒绝 cezar.dispatch · execution_1' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '批准 cezar.dispatch · execution_1' })).toBeNull()
   })
 
   // i18n en: every module renders the English source strings verbatim.
@@ -229,11 +227,12 @@ describe('Personal AI OS dashboard modules', () => {
     expect(screen.getByRole('button', { name: 'Show evidence for execution execution_1' })).toBeTruthy()
   })
 
-  it('labels approval buttons in English under locale=en', async () => {
+  it('shows the approvals card read-only under locale=en', async () => {
     window.localStorage.setItem('cez-locale', 'en')
     renderWithQuery(<ControlPlaneApprovals />)
     expect(await screen.findByText('cezar.dispatch · execution_1')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Reject cezar.dispatch · execution_1' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Approve cezar.dispatch · execution_1' })).toBeTruthy()
+    expect(screen.getByText('Read-only: decisions are made through WeChat or the operator console, not from the browser.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Reject cezar.dispatch · execution_1' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve cezar.dispatch · execution_1' })).toBeNull()
   })
 })

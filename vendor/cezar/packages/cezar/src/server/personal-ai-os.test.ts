@@ -188,4 +188,56 @@ describe('personal-ai-os same-origin read proxy', () => {
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
     expect(response.status).toBe(404);
   });
+
+  it('forwards only the bounded approvals query (decision + limit) to the upstream URL', async () => {
+    const seen: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ approvals: [] }), { status: 200 });
+    });
+    const app = bootApp({
+      personalAiOsAuthorityPath: writeAuthority({ controlPlane: 'cp-token' }),
+      personalAiOsFetch: fetchImpl as unknown as typeof fetch,
+    });
+    const response = await apiRequest(app, '/api/v1/personal-ai-os/control-plane/approvals?decision=pending&limit=20&ignored=drop-me');
+    expect(response.status).toBe(200);
+    expect(seen).toEqual(['http://127.0.0.1:4324/api/control-plane/approvals?decision=pending&limit=20']);
+  });
+
+  it('refuses out-of-contract approval query values before any upstream call', async () => {
+    const fetchImpl = vi.fn();
+    const app = bootApp({
+      personalAiOsAuthorityPath: writeAuthority({ controlPlane: 'cp-token' }),
+      personalAiOsFetch: fetchImpl as unknown as typeof fetch,
+    });
+    for (const query of ['decision=bogus', 'limit=0', 'limit=101', 'limit=abc']) {
+      const response = await apiRequest(app, `/api/v1/personal-ai-os/control-plane/approvals?${query}`);
+      expect(response.status).toBe(400);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('proxies the wechat status read without any authorization header', async () => {
+    const seen: Array<{ url: string; auth: string | null }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seen.push({ url: String(url), auth: new Headers(init?.headers).get('authorization') });
+      return new Response(JSON.stringify({ status: 'connected', botId: 'bot-42' }), { status: 200 });
+    });
+    // No authority file at all: the credential-free wechat upstream must not be gated on one.
+    const app = bootApp({ personalAiOsFetch: fetchImpl as unknown as typeof fetch });
+    const response = await apiRequest(app, '/api/v1/personal-ai-os/wechat/status');
+    expect(response.status).toBe(200);
+    const envelope = personalAiOsProxyResponseSchema.parse(await response.json());
+    expect(envelope.available).toBe(true);
+    expect(envelope.body).toEqual({ status: 'connected', botId: 'bot-42' });
+    expect(seen).toEqual([{ url: 'http://127.0.0.1:4322/api/wechat/status', auth: null }]);
+  });
+
+  it('degrades the wechat status read when the upstream is unreachable', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('fetch failed'); });
+    const app = bootApp({ personalAiOsFetch: fetchImpl as unknown as typeof fetch });
+    const response = await apiRequest(app, '/api/v1/personal-ai-os/wechat/status');
+    const envelope = personalAiOsProxyResponseSchema.parse(await response.json());
+    expect(envelope).toEqual({ available: false, reason: 'upstream-unreachable' });
+  });
 });

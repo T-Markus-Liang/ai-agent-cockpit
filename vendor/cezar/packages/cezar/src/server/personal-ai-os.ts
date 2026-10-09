@@ -5,7 +5,7 @@ import {
   personalAiOsControlPlaneSectionSchema,
   personalAiOsProxyResponseSchema,
 } from '@open-mercato/cezar-contract';
-import { paramZodValidator } from './validators.ts';
+import { paramZodValidator, queryZodValidator } from './validators.ts';
 
 /**
  * Same-origin read-only proxy into the Personal AI OS control services
@@ -28,6 +28,7 @@ const UPSTREAM_TIMEOUT_MS = 3_000;
 
 const CONTROL_PLANE_BASE = 'http://127.0.0.1:4324';
 const GOALS_BASE = 'http://127.0.0.1:4326';
+const WECHAT_BASE = 'http://127.0.0.1:4322';
 
 const authorityTokensSchema = z.object({
   controlPlane: z.string().min(1).optional(),
@@ -97,20 +98,31 @@ async function proxyEnvelope(
 /** Chained family (workspace-level, single-mount): every route is GET-only. */
 const controlPlaneIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,200}$/);
 
+// Bounded query forward surface: the approvals list card filters by decision and
+// limit, and nothing else. Zod strips unknown keys, so arbitrary query strings
+// cannot be smuggled toward the upstream (AUI-03: fixed paths, no open forwarder).
+const controlPlaneQuerySchema = z.object({
+  decision: z.enum(['pending', 'approved', 'rejected']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
 export function personalAiOsRoutes(deps: PersonalAiOsProxyDeps = {}) {
-  const controlPlaneEnvelope = (path: string) =>
-    proxyEnvelope(deps, (tokens) =>
-      tokens.controlPlane
-        ? { url: `${CONTROL_PLANE_BASE}/api/control-plane/${path}`, token: tokens.controlPlane }
-        : null,
-    );
+  const controlPlaneEnvelope = (path: string, query?: z.infer<typeof controlPlaneQuerySchema>) =>
+    proxyEnvelope(deps, (tokens) => {
+      if (!tokens.controlPlane) return null;
+      const upstream = new URL(`${CONTROL_PLANE_BASE}/api/control-plane/${path}`);
+      if (query?.decision) upstream.searchParams.set('decision', query.decision);
+      if (query?.limit !== undefined) upstream.searchParams.set('limit', String(query.limit));
+      return { url: upstream.toString(), token: tokens.controlPlane };
+    });
   return new Hono()
     .get(
       '/personal-ai-os/control-plane/:section',
       paramZodValidator(z.object({ section: personalAiOsControlPlaneSectionSchema }), {
         message: 'section must be one of tasks, executions, approvals, capabilities',
       }),
-      async (c) => c.json(await controlPlaneEnvelope(c.req.valid('param').section)),
+      queryZodValidator(controlPlaneQuerySchema),
+      async (c) => c.json(await controlPlaneEnvelope(c.req.valid('param').section, c.req.valid('query'))),
     )
     .get(
       '/personal-ai-os/control-plane/tasks/:taskId',
@@ -131,5 +143,19 @@ export function personalAiOsRoutes(deps: PersonalAiOsProxyDeps = {}) {
         tokens.goals ? { url: `${GOALS_BASE}/api/goals`, token: tokens.goals } : null,
       );
       return c.json(envelope);
+    })
+    .get('/personal-ai-os/wechat/status', async (c) => {
+      // The wechat-control upstream is loopback-only and authenticates nothing, so
+      // this route deliberately does NOT consult the authority file: gating a
+      // credential-free upstream on an unrelated credential file would falsely
+      // shrink the feature. It still answers the same honest envelope.
+      let response: Response;
+      try {
+        response = await forwardReadOnly(deps, `${WECHAT_BASE}/api/wechat/status`, undefined);
+      } catch {
+        return c.json({ available: false, reason: 'upstream-unreachable' });
+      }
+      const body = await response.json().catch(() => null);
+      return c.json({ available: true, upstreamStatus: response.status, body });
     });
 }
