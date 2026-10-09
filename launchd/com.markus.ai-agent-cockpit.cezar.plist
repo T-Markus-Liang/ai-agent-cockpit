@@ -13,6 +13,7 @@
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/Users/markus/.opencode/bin:/Users/markus/.local/bin:/usr/bin:/bin</string>
     <key>HOME</key><string>/Users/markus</string>
+    <key>CEZ_PAI_OS_AUTHORITY</key><string>/Users/markus/.local/state/personal-ai-os/ui-proxy-authority.json</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
