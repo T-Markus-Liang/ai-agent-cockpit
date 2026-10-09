@@ -1,0 +1,14 @@
+# Real-message verification through the restarted bridge — 2026-10-10
+
+owner 从微信发送测试消息 "hi"，主模型全程只读监控，逐环节核验：
+
+| 环节 | 证据 | 结果 |
+| --- | --- | --- |
+| 接收 | incoming-receipts/1749e2da…f08.json（receivedAt=1791589189805，本地 07:39:49） | ✅ 回执落盘 |
+| 处理 | wechat-bridge-launchd.log：thought 流 → `Agent done (end_turn), reply 62 chars` | ✅ 正常推理收敛 |
+| 出站 | reply-outbox/b6fdaca5…76.json：status=sent，attempts=1 | ✅ 一次投递成功，零重试 |
+| 记忆 | memory /health ingestion.done 113 → 115（pending=0） | ✅ 双向 turn 入记忆，bridge-memory 新 chief token 真实链路鉴权通过 |
+
+- 隐私边界：本证据只记 ID/时间戳/状态码/计数；消息与回复正文不落 repo（位于 ~/.wechat-acp/instances/cezar-codex/ 私有 700 目录）。
+- 结论：S02 重启后第一条真实微信消息收发记忆三段全绿；goals 命令链（/目标 系列）未有真实触发，仍归 S05。
+- 附带观察：memory-launchd.err.log 的 spaCy/BM25 报错为重启时既有环境噪音（模型未安装），与鉴权无关。
