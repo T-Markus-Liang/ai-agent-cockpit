@@ -1,0 +1,90 @@
+{
+  "head": "1e6ef85f6ae303d6af429ca257f2364896d3db86",
+  "scope": "r2 limited rework integrated over delivered WIP; not release manifest",
+  "files": [
+    {
+      "path": "control-plane/execution-grant.mjs",
+      "sha256": "ff857f346dbce8083b209f81f552d5422b2bbf7f842a9c07d7376fca50693990"
+    },
+    {
+      "path": "control-plane/store.mjs",
+      "sha256": "2f9af43459b7db46d80bc265123cdcc6f0e18d33057f3e27eac7f83a2ebc7485"
+    },
+    {
+      "path": "control-plane/dispatcher.mjs",
+      "sha256": "7c706ed73ea872b440eca237027a327ef87f692a6cf7fd6dfb72d02f7f61c8a3"
+    },
+    {
+      "path": "control-plane/native-acp-executor.mjs",
+      "sha256": "fabb5fa0049ea36c2ddb5d3d41e41cdd69bd374797ce564c710c61ab59f3c508"
+    },
+    {
+      "path": "control-plane/reviewer.mjs",
+      "sha256": "6e9893a992355c38e890b4e96db770294ac6e256c22fbf7d5dfd231f3acfa5d5"
+    },
+    {
+      "path": "control-plane/goal-runtime.mjs",
+      "sha256": "1d85b789e4620aa2e4e64a9b1af7b989428afda90de29613ff1d03ca39c07f5f"
+    },
+    {
+      "path": "gateway/control-plane.mjs",
+      "sha256": "a2d6cf856a3c5027863c9c39d0ebe56a4934b20c05bb8bd776335787bee12a9f"
+    },
+    {
+      "path": "interfaces/mcp/server.mjs",
+      "sha256": "a4a0d501be0acd5e7ea43920ac2717d2d7f88b94319e1aaeb4c10a232febb382"
+    },
+    {
+      "path": "scripts/control-plane.mjs",
+      "sha256": "a25df5be554818aeec8f7166000910ce1eb686d02e9fd7a0e0b94611cecf27aa"
+    },
+    {
+      "path": "runtime/chief-tools.mjs",
+      "sha256": "8d37f96a5cdfa281998f3f86b0b7f0d346a9bbcd172ba1205765d0cd7e5f9d7a"
+    },
+    {
+      "path": "tests/execution-grant.test.mjs",
+      "sha256": "cf9eddb796c5db7dca327499b355969184415509a3cad6375e490f1a952f74a8"
+    },
+    {
+      "path": "tests/execution-grant-regression.test.mjs",
+      "sha256": "bf030cd40aae4b2995aaa60ca7e6f6cfaa127b6c67ebc98ddb2c5639a009b4f1"
+    },
+    {
+      "path": "tests/reviewer-routing-invariant.test.mjs",
+      "sha256": "3acd0b225f45250025e484c2657fd5fb009012b2d6d65a093f9e119423240fa8"
+    },
+    {
+      "path": "control-plane/freeze-coordinator.mjs",
+      "sha256": "a21949855249a22b4d4c1cc6162c44248c058c440135920786668cc51ba22608"
+    },
+    {
+      "path": "control-plane/snapshot-orchestrator.mjs",
+      "sha256": "a27ff78c3a4f8d0038e413b319fb1568e39cd5c4c9a64fef45585d4b33efe288"
+    },
+    {
+      "path": "tests/freeze-coordinator.test.mjs",
+      "sha256": "640e1cdbea656a1e79e05d3a2c22c8506487aef86353bdd0731b40e8931bf68a"
+    },
+    {
+      "path": "tests/snapshot-orchestrator.test.mjs",
+      "sha256": "8733f5b71f0f7780fb241f2af508652b68a315dd587b5bf9a91c8250c24cbb3f"
+    },
+    {
+      "path": "services/memory/privacy_epoch.py",
+      "sha256": "d6683208db2672d25491b34120c43cceaa0bbc4aa147afe2332a2f429c883584"
+    },
+    {
+      "path": "services/memory/outbound_inventory.py",
+      "sha256": "696bee3c91a30ca44ce811109d020381d8cfe55012622229a1122d34a1d89a50"
+    },
+    {
+      "path": "tests/memory_privacy_epoch_test.py",
+      "sha256": "bb73a6ae8c370e5ac4be41a0c19aaa66c9212e152eebd07c149a1e59d1a3fbea"
+    },
+    {
+      "path": "tests/memory_outbound_inventory_test.py",
+      "sha256": "30e2238f403c173922077f6249db870d2ab743f73c3ac49f366e93328d5e62d2"
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "head": "1e6ef85f6ae303d6af429ca257f2364896d3db86",
+  "scope": "r1 uncommitted delivered implementation before rework integration",
+  "files": [
+    {
+      "path": "control-plane/dispatcher.mjs",
+      "sha256": "3332065b6aee62d3fb3adc09b908c496bb96eee53b45028fe8d726c73dbe81ef"
+    },
+    {
+      "path": "control-plane/goal-runtime.mjs",
+      "sha256": "217395a644f2a7adb859c3c3a156a2a8066d5ca864e361bc2f20224371a79202"
+    },
+    {
+      "path": "control-plane/native-acp-executor.mjs",
+      "sha256": "a30d3c20186a4ce2ce30c713c471216550183eef54cb7478d0fc33c85ac8afe6"
+    },
+    {
+      "path": "control-plane/reviewer.mjs",
+      "sha256": "3393b4cc180252bbe1bac97ec62106b333ec5972f1e2eb1663888cc7c96e2f35"
+    },
+    {
+      "path": "control-plane/store.mjs",
+      "sha256": "37c70466131ab00a0cfd31a7e944b8d6dc6e68bf785b54c003698968d8321988"
+    },
+    {
+      "path": "gateway/control-plane.mjs",
+      "sha256": "f9633c7b2f3be05cd59628d1092dca3af930185ebfc24a1b859459621379becb"
+    },
+    {
+      "path": "interfaces/mcp/server.mjs",
+      "sha256": "f7ade1bc1f0a38cfe3376a324a8368c77af348f30d84ee53ad65d338a875377a"
+    },
+    {
+      "path": "runtime/chief-tools.mjs",
+      "sha256": "025631a1d9ca2fa2f779ec8f0d7aa179650b0a8e5d149644044777c95f287202"
+    },
+    {
+      "path": "scripts/control-plane.mjs",
+      "sha256": "0c74f776c52086c14c37da95f5b817fdaa1fe24a64717bee036fb53416de3a4f"
+    },
+    {
+      "path": "services/memory/service.py",
+      "sha256": "e659db1a1923d24b9a17f16be96c625f043f63ef53c658021cdafad81416b76d"
+    },
+    {
+      "path": "tests/approval-authority.test.mjs",
+      "sha256": "446e27085a101cbd40836956d6a3636842861e2ef8e446acb89fcb323cccea2a"
+    },
+    {
+      "path": "tests/control-plane-http.test.mjs",
+      "sha256": "7bca3417a15dedbce1205584b74a8f2f76d7fe06559ee155d50a665446f2c381"
+    },
+    {
+      "path": "tests/control-plane.test.mjs",
+      "sha256": "5444d10c40802affd8ab7eaecc10d31332c577adb188cd94e89665dc1bc0e9f1"
+    },
+    {
+      "path": "tests/goal-core.test.mjs",
+      "sha256": "bdf4f20b0b50fa75558c9365f2b0c1fc3f5f71b56495f2ce1fd4337d00848298"
+    },
+    {
+      "path": "tests/native-acp-executor.test.mjs",
+      "sha256": "4ba389bffb74cc3829cf4d65577b2372b5bcd89a3d60f12959afd648380d59c1"
+    },
+    {
+      "path": "tests/runtime-tools.test.mjs",
+      "sha256": "1a37f7b1ddc48374135c92a74a44ce64ce1423aa7048649de77a2d9892edca7f"
+    },
+    {
+      "path": "control-plane/execution-grant.mjs",
+      "sha256": "aced1cf8d8d12a903ad2b3151a45be143b492db8977184eaa66cf5ea1a99bca7"
+    },
+    {
+      "path": "control-plane/freeze-coordinator.mjs",
+      "sha256": "4ad4bc6317012d8dcf062018342e2f148ebc9342cabe58150fb0745d8c1bcc21"
+    },
+    {
+      "path": "docs/handoffs/s03b-execution-grant-r1.md",
+      "sha256": "5e061ffc0c1bdd42c4a1fe00e4c104f906c40c3b336399792633eaf40cbd4d7a"
+    },
+    {
+      "path": "docs/handoffs/s04-freeze-rollback-r1.md",
+      "sha256": "6d540936fc0351bd43feaab0ccb2a0ea08726be4ab7de8c0a21fb2a7d35cd97d"
+    },
+    {
+      "path": "docs/handoffs/s04-privacy-outbound-r1.md",
+      "sha256": "086b5e03d99dbd72caaaf40610d444fa9fc18deec135ea9d2f19f265896624d6"
+    },
+    {
+      "path": "services/memory/outbound_inventory.py",
+      "sha256": "47d1a4dd4ca1da5c2be38a8555d8613731c2d5c3bc47863064a1c1f2bd7e6f9f"
+    },
+    {
+      "path": "services/memory/privacy_epoch.py",
+      "sha256": "0950f86cb189865b60dd9eb6c220107e521db22e4d2b6af581979b650decd496"
+    },
+    {
+      "path": "tests/execution-grant.test.mjs",
+      "sha256": "84d5d4a6747ebe40b3879188797c356ccc66a99a20679b6e068ea8636754f25e"
+    },
+    {
+      "path": "tests/freeze-coordinator.test.mjs",
+      "sha256": "0c0d6f94221102e8010af99586fbcec2b23fd7b62d8cc0983536b46fce45d754"
+    },
+    {
+      "path": "tests/helpers/execution-grant.mjs",
+      "sha256": "c640096487a94b3d45d572ca13aa6eb19c67cdcf14be9ea4c0dc55bde5e7aee4"
+    },
+    {
+      "path": "tests/memory_outbound_inventory_test.py",
+      "sha256": "614435c7b3a331770bdfcde2608aaf3c053f5700a18c486a33b3d23d255567c5"
+    },
+    {
+      "path": "tests/memory_privacy_epoch_test.py",
+      "sha256": "37ed4c85d9972e47c86bf9b06594efda8b915816404fdcc971f913709ea353f6"
+    }
+  ]
+}

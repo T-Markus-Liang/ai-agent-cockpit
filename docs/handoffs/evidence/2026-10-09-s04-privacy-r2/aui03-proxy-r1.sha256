@@ -1,0 +1,9 @@
+9492e41770a95b2e9c8bd26d590f7b6a0f23bf4794a331c2a8afe722f609d803  vendor/cezar/packages/contract/src/personal-ai-os.ts
+9af989db6158f02e5cca91335348408aab1f635f3df451ef05a6ac1ca7a18959  vendor/cezar/packages/contract/src/index.ts
+060527ca0b589b8b6bb6be022bd258a669ea4be0a62cb06b08239a2d316928e4  vendor/cezar/packages/cezar/src/server/personal-ai-os.ts
+f5321f76be0f9511985c770340901b29899b73f5068f4b2d92be76846fbed9ba  vendor/cezar/packages/cezar/src/server/personal-ai-os.test.ts
+4a7a6609e582a66efbf76a4e26874a792bf98b3c07e44f8b1888c15a8fac8dad  vendor/cezar/packages/cezar/src/server/server.ts
+c6230d1ccd9e1a09c90bd73b8343bb8be56409e92efab631e32a676a3ee38e5c  vendor/cezar/packages/web/src/routes/dashboard/control-plane-tasks.tsx
+4f6d5e18d35012e15b0be55f9fc7922c981ab041ece9db61c839531072b7cc88  vendor/cezar/packages/web/src/routes/dashboard/control-plane-dashboard.test.tsx
+f5ec15e334212f4f27bfb7e635b140e9fdd04799c26f4fb144a866331c7804f2  vendor/cezar/BACKWARD_COMPATIBILITY.md
+f534434327f9f97bb85bfacb4712ba1026ebde09565939b3b8ccee030a7b8c64  vendor/cezar/.env.example
