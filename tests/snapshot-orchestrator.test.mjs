@@ -6,9 +6,11 @@
 // never use the network, credentials, a model or WeChat, and never invoke git.
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -19,11 +21,16 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import { createSnapshotOrchestrator, SnapshotOrchestratorError } from "../control-plane/snapshot-orchestrator.mjs";
+import {
+	createSnapshotOrchestrator,
+	inspectRun,
+	recoverRun,
+	SnapshotOrchestratorError,
+} from "../control-plane/snapshot-orchestrator.mjs";
 
 const createdRoots = [];
 
@@ -55,6 +62,22 @@ function combinedDigest(files) {
 
 function readManifest(runDir) {
 	return JSON.parse(readFileSync(join(runDir, "manifest.json"), "utf8"));
+}
+
+function readJournal(runDir) {
+	return JSON.parse(readFileSync(join(runDir, "journal.json"), "utf8"));
+}
+
+/** Every byte persisted under `dir`, concatenated (for secret/canary sweeps). */
+function readTreeText(dir) {
+	let text = "";
+	for (const name of readdirSync(dir).sort()) {
+		const child = join(dir, name);
+		const stats = lstatSync(child);
+		if (stats.isDirectory()) text += readTreeText(child);
+		else if (stats.isFile()) text += readFileSync(child).toString("latin1");
+	}
+	return text;
 }
 
 function byName(manifest) {
@@ -117,12 +140,25 @@ test("happy path: sqlite (WAL) + filedir snapshot to a fresh run dir with verifi
 
 	const manifest = readManifest(result.dir);
 	assert.equal(manifest.status, "success");
-	assert.equal(manifest.schemaVersion, 1);
+	assert.equal(manifest.schemaVersion, 2);
 	assert.equal(manifest.orchestratorVersion, "snapshot-orchestrator-v1");
 	assert.equal(manifest.network_calls, 0);
 	assert.equal(manifest.stores.length, 2);
 	assert.deepEqual(manifest.quiesceOrder, ["mem0", "goals"]);
 	assert.deepEqual(manifest.resumeOrder, ["goals", "mem0"]);
+
+	// The intent journal closes out as a fully confirmed, completed run.
+	const journal = readJournal(result.dir);
+	assert.equal(journal.journalVersion, 1);
+	assert.equal(journal.state, "completed");
+	assert.equal(typeof journal.owner, "string");
+	assert.equal(typeof journal.fence.token, "string");
+	assert.ok(journal.fence.expiresAt > journal.fence.issuedAt);
+	for (const state of journal.stores) {
+		assert.equal(state.quiesce, "confirmed");
+		assert.equal(state.snapshot, "ok");
+		assert.equal(state.resume, "confirmed");
+	}
 
 	// WAL content survived: the snapshot holds both rows.
 	const snapshot = new DatabaseSync(join(result.dir, "mem0", "snapshot.sqlite"), { readOnly: true });
@@ -190,13 +226,21 @@ test("a snapshot failure is never a success; quiesced stores still resume in rev
 
 	const manifest = readManifest(result.dir);
 	assert.equal(manifest.status, "failed");
-	assert.match(manifest.error.reason, /boom-bad/);
+	assert.deepEqual(manifest.error, { code: "adapter-failed", stage: "snapshot", store: "bad" });
 	const stores = byName(manifest);
 	assert.equal(stores.a.status, "ok");
 	assert.equal(stores.bad.status, "failed");
-	assert.match(stores.bad.error, /boom-bad/);
-	assert.equal(stores.c.status, "skipped");
+	assert.deepEqual(stores.bad.error, { code: "adapter-failed", stage: "snapshot", store: "bad" });
+	assert.equal(stores.c.status, "not-run");
 	assert.equal(stores.c.sha256, undefined, "an unattempted store carries no evidence");
+
+	// The journal confirms the failing snapshot and that every quiesced store
+	// was resumed (confirmed) during cleanup.
+	const journal = readJournal(result.dir);
+	assert.equal(journal.state, "aborted");
+	for (const state of journal.stores) assert.equal(state.resume, "confirmed");
+	assert.equal(journal.stores.find((state) => state.name === "bad").snapshot, "failed");
+	assert.equal(journal.stores.find((state) => state.name === "c").snapshot, "not-attempted");
 });
 
 test("a resume failure is recorded and does not abort the cleanup chain; run is not a success", async () => {
@@ -216,14 +260,18 @@ test("a resume failure is recorded and does not abort the cleanup chain; run is 
 		"resume:c", "resume:b", "resume:a",
 	]);
 	assert.equal(result.resumeErrors.length, 1);
-	assert.equal(result.resumeErrors[0].name, "b");
-	assert.match(result.resumeErrors[0].error, /resume-fail-b/);
+	assert.deepEqual(result.resumeErrors[0], { code: "adapter-failed", stage: "resume", store: "b" });
 
 	// All snapshots themselves succeeded.
 	const manifest = readManifest(result.dir);
 	assert.equal(manifest.status, "failed");
-	assert.equal(manifest.resumeErrors.length, 1);
+	assert.deepEqual(manifest.resumeErrors, [{ code: "adapter-failed", stage: "resume", store: "b" }]);
 	assert.ok(manifest.stores.every((store) => store.status === "ok"));
+
+	// The journal honestly records the failed resume next to the confirmed ones.
+	const journal = readJournal(result.dir);
+	assert.equal(journal.stores.find((state) => state.name === "b").resume, "failed");
+	assert.equal(journal.stores.filter((state) => state.resume === "confirmed").length, 2);
 });
 
 test("refuses a symlinked store path (file and directory) without touching the tree", async () => {
@@ -301,7 +349,7 @@ test("requires an explicit absolute allowRoot, refused before any filesystem acc
 	);
 });
 
-test("refuses an existing run directory and leaves it byte- and entry-identical", async () => {
+test("refuses an existing run directory and leaves it byte-, inode-, mode- and entry-identical", async () => {
 	const ws = makeWorkspace();
 	const runId = "run-fixed";
 	const existing = join(ws.rootDir, runId);
@@ -309,6 +357,8 @@ test("refuses an existing run directory and leaves it byte- and entry-identical"
 	writeFileSync(join(existing, "keep.txt"), "keep");
 	const entriesBefore = readdirSync(existing).sort();
 	const bytesBefore = readFileSync(join(existing, "keep.txt"), "utf8");
+	const statBefore = lstatSync(existing);
+	const fileStatBefore = lstatSync(join(existing, "keep.txt"));
 
 	const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
 	orchestrator.registerStore({ name: "a", kind: "spy", adapter: recordingAdapter("a", []) });
@@ -317,8 +367,14 @@ test("refuses an existing run directory and leaves it byte- and entry-identical"
 		() => orchestrator.run({ runId }),
 		(error) => error instanceof SnapshotOrchestratorError && error.code === "target-exists",
 	);
+	const statAfter = lstatSync(existing);
+	const fileStatAfter = lstatSync(join(existing, "keep.txt"));
 	assert.deepEqual(readdirSync(existing).sort(), entriesBefore);
 	assert.equal(readFileSync(join(existing, "keep.txt"), "utf8"), bytesBefore);
+	assert.equal(statAfter.ino, statBefore.ino);
+	assert.equal(statAfter.mode, statBefore.mode);
+	assert.equal(fileStatAfter.ino, fileStatBefore.ino);
+	assert.equal(fileStatAfter.mode, fileStatBefore.mode);
 });
 
 test("refuses an unknown store kind at registration", () => {
@@ -416,4 +472,633 @@ test("accepts an injected clock and records it in the run id and timestamps", as
 	assert.equal(result.startedAt, 4242);
 	assert.equal(result.finishedAt, 4242);
 	assert.match(result.runId, /^run-4242-\d+$/);
+});
+
+// --- SN-F002: name / target guards -------------------------------------------
+
+test("registerStore refuses unsafe store names before anything touches the filesystem", () => {
+	const ws = makeWorkspace();
+	// The classic SN-F002 victim: a directory a "../victim" store would escape to.
+	const victim = join(ws.base, "victim");
+	mkdirSync(victim, { mode: 0o700 });
+	writeFileSync(join(victim, "keep.txt"), "keep");
+	const victimStatBefore = lstatSync(victim);
+	const rootEntriesBefore = readdirSync(ws.rootDir).sort();
+
+	const badNames = [
+		"../victim",
+		"a/b",
+		".",
+		"..",
+		"a\\b",
+		"a\0b",
+		"manifest.json",
+		"manifest.json.tmp",
+		"journal.json",
+		"journal.json.tmp",
+		"x.stage",
+		"x".repeat(256),
+	];
+	for (const name of badNames) {
+		const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+		assert.throws(
+			() => orchestrator.registerStore({ name, kind: "spy", adapter: recordingAdapter("spy", []) }),
+			(error) => error instanceof SnapshotOrchestratorError && error.code === "invalid-store",
+			`expected invalid-store for ${JSON.stringify(name)}`,
+		);
+	}
+
+	// Refusal is total: the victim and the snapshot root are untouched.
+	const victimStatAfter = lstatSync(victim);
+	assert.equal(victimStatAfter.ino, victimStatBefore.ino);
+	assert.equal(victimStatAfter.mode, victimStatBefore.mode);
+	assert.equal(readFileSync(join(victim, "keep.txt"), "utf8"), "keep");
+	assert.deepEqual(readdirSync(ws.rootDir).sort(), rootEntriesBefore);
+});
+
+test("run() refuses an unsafe or reserved runId before any write", async () => {
+	const ws = makeWorkspace();
+	const rootEntriesBefore = readdirSync(ws.rootDir).sort();
+	const badRunIds = [
+		"../victim",
+		"a/b",
+		".",
+		"..",
+		"a\\b",
+		"a\0b",
+		"manifest.json",
+		"manifest.json.tmp",
+		"journal.json",
+		"journal.json.tmp",
+		"x.stage",
+		"y".repeat(256),
+	];
+	for (const runId of badRunIds) {
+		const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+		orchestrator.registerStore({ name: "a", kind: "spy", adapter: recordingAdapter("a", []) });
+		await assert.rejects(
+			() => orchestrator.run({ runId }),
+			(error) => error instanceof SnapshotOrchestratorError && error.code === "invalid-run-id",
+			`expected invalid-run-id for ${JSON.stringify(runId)}`,
+		);
+	}
+	assert.deepEqual(readdirSync(ws.rootDir).sort(), rootEntriesBefore);
+});
+
+test("an in-run target collision fails closed (target-exists) and never overwrites the rival", async () => {
+	const ws = makeWorkspace();
+	// Store "b" is an honest filedir store; store "a" is clumsy/hostile and
+	// occupies b's target directory from inside its own snapshotTo.
+	const bSource = join(ws.base, "b-source");
+	mkdirSync(bSource, { mode: 0o700 });
+	writeFileSync(join(bSource, "data.txt"), "b-data");
+	const bSourceStatBefore = lstatSync(bSource);
+
+	const runId = "run-race";
+	const runDir = join(ws.rootDir, runId);
+	let plantedStat = null;
+	const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+	orchestrator.registerStore({
+		name: "a",
+		kind: "spy",
+		adapter: {
+			async quiesce() {},
+			async snapshotTo(targetDir) {
+				mkdirSync(targetDir, { mode: 0o700 });
+				writeFileSync(join(targetDir, "a.txt"), "a");
+				const rival = join(dirname(targetDir), "b");
+				mkdirSync(rival, { mode: 0o700 });
+				plantedStat = lstatSync(rival);
+				return { files: ["a.txt"] };
+			},
+			async resume() {},
+		},
+	});
+	orchestrator.registerStore({ name: "b", kind: "filedir", path: bSource });
+
+	const result = await orchestrator.run({ runId });
+	assert.equal(result.status, "failed");
+	assert.deepEqual(result.error, { code: "target-exists", stage: "snapshot", store: "b" });
+
+	// The planted directory survives: same inode, same mode, still empty, and
+	// the losing adapter's staging directory was cleaned up.
+	const planted = join(runDir, "b");
+	const plantedAfter = lstatSync(planted);
+	assert.equal(plantedAfter.ino, plantedStat.ino, "the planted directory was not replaced");
+	assert.equal(plantedAfter.mode, plantedStat.mode);
+	assert.deepEqual(readdirSync(planted), [], "the planted directory was not overwritten");
+	assert.ok(!existsSync(`${planted}.stage`), "the losing adapter cleaned its staging dir");
+	// The rival's source is untouched too.
+	assert.equal(lstatSync(bSource).ino, bSourceStatBefore.ino);
+	assert.equal(readFileSync(join(bSource, "data.txt"), "utf8"), "b-data");
+
+	const manifest = readManifest(runDir);
+	const stores = byName(manifest);
+	assert.equal(stores.a.status, "ok");
+	assert.equal(stores.b.status, "failed");
+	assert.deepEqual(stores.b.error, { code: "target-exists", stage: "snapshot", store: "b" });
+});
+
+// --- SN-F001: quiesce intent journal, owner/fence and recovery ---------------
+
+test("quiesce that pauses then throws: needs-review, journal unknown, cleanup resume still fires", async () => {
+	const ws = makeWorkspace();
+	const calls = [];
+	const bad = { paused: false, resumeCalls: 0 };
+	const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+	orchestrator.registerStore({ name: "a", kind: "spy", adapter: recordingAdapter("a", calls) });
+	orchestrator.registerStore({
+		name: "bad",
+		kind: "spy",
+		adapter: {
+			async quiesce() {
+				bad.paused = true; // the side effect lands first...
+				calls.push("quiesce:bad");
+				throw new Error("quiesce blew up after pausing"); // ...then the call fails
+			},
+			async snapshotTo() {
+				throw new Error("snapshotTo must never run after a failed quiesce");
+			},
+			async resume() {
+				calls.push("resume:bad");
+				bad.resumeCalls += 1;
+				bad.paused = false;
+			},
+		},
+	});
+	orchestrator.registerStore({ name: "c", kind: "spy", adapter: recordingAdapter("c", calls) });
+
+	const result = await orchestrator.run({ runId: "run-quiesce-throw" });
+	assert.equal(result.status, "needs-review");
+	assert.deepEqual(
+		calls,
+		["quiesce:a", "quiesce:bad", "resume:bad", "resume:a"],
+		"no snapshot after a failed quiesce; every issued store resumes in reverse",
+	);
+	assert.equal(bad.resumeCalls, 1);
+	assert.equal(bad.paused, false, "the idempotent cleanup resume unpaused the store");
+
+	const manifest = readManifest(result.dir);
+	assert.equal(manifest.status, "needs-review");
+	const stores = byName(manifest);
+	assert.equal(stores.bad.quiesce, "unknown");
+	assert.equal(stores.bad.snapshot, "not-attempted");
+	assert.equal(stores.bad.resume, "confirmed");
+	assert.equal(stores.bad.status, "not-run");
+	assert.equal(stores.a.quiesce, "confirmed");
+	assert.equal(stores.a.snapshot, "not-attempted");
+	assert.equal(stores.a.resume, "confirmed");
+	assert.equal(stores.c.quiesce, "not-attempted", "quiesce never reached store c");
+	assert.equal(stores.c.resume, "not-attempted");
+	assert.deepEqual(manifest.quiesceOrder, ["a", "bad"]);
+	assert.deepEqual(manifest.resumeOrder, ["bad", "a"]);
+	assert.deepEqual(manifest.error, { code: "adapter-failed", stage: "quiesce", store: "bad" });
+
+	const journal = readJournal(result.dir);
+	assert.equal(journal.state, "aborted");
+	assert.equal(journal.stores.find((state) => state.name === "bad").quiesce, "unknown");
+	assert.equal(journal.stores.find((state) => state.name === "a").quiesce, "confirmed");
+});
+
+test("quiesce that throws before any side effect is still honestly unknown + needs-review", async () => {
+	const ws = makeWorkspace();
+	const bad = { resumeCalls: 0 };
+	const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+	orchestrator.registerStore({
+		name: "bad",
+		kind: "spy",
+		adapter: {
+			async quiesce() {
+				throw new Error("quiesce failed cleanly, before touching anything");
+			},
+			async snapshotTo() {
+				throw new Error("snapshotTo must never run");
+			},
+			async resume() {
+				bad.resumeCalls += 1; // idempotent no-op: there was nothing to undo
+			},
+		},
+	});
+
+	const result = await orchestrator.run({ runId: "run-quiesce-clean-throw" });
+	// The caller cannot prove the pause never applied from the throw alone, so
+	// the journal says `unknown` and the run needs review even here.
+	assert.equal(result.status, "needs-review");
+	assert.equal(bad.resumeCalls, 1, "resume is still issued (it must be idempotent)");
+	const journal = readJournal(result.dir);
+	assert.equal(journal.stores[0].quiesce, "unknown");
+	assert.equal(journal.stores[0].resume, "confirmed");
+	const manifest = readManifest(result.dir);
+	assert.equal(byName(manifest).bad.status, "not-run");
+});
+
+test("inspectRun is a read-only honest view: needsReview, resumable, journal-missing", async () => {
+	const ws = makeWorkspace();
+	const bad = { paused: false };
+	const orchestrator = createSnapshotOrchestrator({
+		rootDir: ws.rootDir,
+		allowRoot: ws.allowRoot,
+		owner: "owner-inspect",
+	});
+	orchestrator.registerStore({
+		name: "bad",
+		kind: "spy",
+		adapter: {
+			async quiesce() {
+				bad.paused = true;
+				throw new Error("pause state unknowable from here");
+			},
+			async snapshotTo() {
+				throw new Error("snapshotTo must never run");
+			},
+			async resume() {
+				bad.paused = false;
+			},
+		},
+	});
+	const result = await orchestrator.run({ runId: "run-inspect" });
+	assert.equal(result.status, "needs-review");
+
+	const view = inspectRun({ rootDir: ws.rootDir, allowRoot: ws.allowRoot, runId: "run-inspect" });
+	assert.equal(view.runId, "run-inspect");
+	assert.equal(view.owner, "owner-inspect");
+	assert.equal(view.state, "aborted");
+	assert.deepEqual(view.needsReview, ["bad"], "the unknown quiesce stays flagged for review");
+	assert.deepEqual(view.resumable, [], "cleanup already resumed the store");
+
+	assert.throws(
+		() => inspectRun({ rootDir: ws.rootDir, allowRoot: ws.allowRoot, runId: "run-nope" }),
+		(error) => error instanceof SnapshotOrchestratorError && error.code === "journal-missing",
+	);
+});
+
+/** A run whose resume fails, leaving the store paused for recovery tests. */
+async function makePausedRun(ws, { owner, fenceTtlMs } = {}) {
+	const state = { paused: false, runResumeCalls: 0 };
+	const orchestrator = createSnapshotOrchestrator({
+		rootDir: ws.rootDir,
+		allowRoot: ws.allowRoot,
+		now: () => 1000,
+		owner,
+		fenceTtlMs,
+	});
+	orchestrator.registerStore({
+		name: "s",
+		kind: "spy",
+		adapter: {
+			async quiesce() {
+				state.paused = true;
+			},
+			async snapshotTo(targetDir) {
+				mkdirSync(targetDir, { mode: 0o700 });
+				writeFileSync(join(targetDir, "d"), "d");
+				return { files: ["d"] };
+			},
+			async resume() {
+				state.runResumeCalls += 1;
+				throw new Error("resume exploded; the store stays paused");
+			},
+		},
+	});
+	const result = await orchestrator.run({ runId: "run-recover" });
+	return { state, result };
+}
+
+/** A recovery adapter whose resume records its ctx and unpauses the store. */
+function recoveryAdapter(state, recovery) {
+	return {
+		async quiesce() {},
+		async snapshotTo() {
+			throw new Error("recoverRun must never re-run a snapshot");
+		},
+		async resume(ctx) {
+			recovery.ctxs.push(ctx);
+			state.paused = false;
+		},
+	};
+}
+
+test("recoverRun resumes the paused store for the owner inside the fence, replaying the same ids", async () => {
+	const ws = makeWorkspace();
+	const { state, result } = await makePausedRun(ws, { owner: "owner-1" });
+	assert.equal(result.status, "failed");
+	assert.equal(state.paused, true, "the failed resume left the store paused");
+	const journalBefore = readJournal(result.dir);
+	assert.equal(journalBefore.stores[0].resume, "failed");
+
+	const recovery = { ctxs: [] };
+	const outcome = await recoverRun({
+		rootDir: ws.rootDir,
+		allowRoot: ws.allowRoot,
+		runId: "run-recover",
+		owner: "owner-1",
+		now: () => 1500,
+		stores: [{ name: "s", adapter: recoveryAdapter(state, recovery) }],
+	});
+	assert.deepEqual(outcome, { runId: "run-recover", resumed: ["s"], failed: [] });
+	assert.equal(state.paused, false);
+	assert.equal(recovery.ctxs.length, 1);
+	assert.equal(recovery.ctxs[0].runId, "run-recover");
+	assert.equal(recovery.ctxs[0].owner, "owner-1");
+	assert.equal(recovery.ctxs[0].fence, journalBefore.fence.token, "recovery replays the journal's fence token");
+	assert.equal(
+		recovery.ctxs[0].operationId,
+		"run-recover:s:resume",
+		"recovery replays the same deterministic operation id the original run used",
+	);
+
+	const journalAfter = readJournal(result.dir);
+	assert.equal(journalAfter.stores[0].resume, "confirmed");
+	assert.equal(journalAfter.state, "recovered");
+});
+
+test("recoverRun with the wrong owner is refused before any store is touched", async () => {
+	const ws = makeWorkspace();
+	const { state, result } = await makePausedRun(ws, { owner: "owner-1" });
+	const recovery = { ctxs: [] };
+
+	await assert.rejects(
+		() =>
+			recoverRun({
+				rootDir: ws.rootDir,
+				allowRoot: ws.allowRoot,
+				runId: "run-recover",
+				owner: "intruder",
+				now: () => 1500,
+				stores: [{ name: "s", adapter: recoveryAdapter(state, recovery) }],
+			}),
+		(error) => error instanceof SnapshotOrchestratorError && error.code === "recovery-not-authorized",
+	);
+	assert.equal(recovery.ctxs.length, 0, "resume was never called");
+	assert.equal(state.paused, true, "the store is still paused");
+	assert.equal(readJournal(result.dir).stores[0].resume, "failed", "the journal is untouched");
+});
+
+test("recoverRun refuses an expired fence without resuming anything", async () => {
+	const ws = makeWorkspace();
+	// Clock is fixed at 1000 and the fence lives 1000ms -> expiresAt 2000.
+	const { state } = await makePausedRun(ws, { owner: "owner-1", fenceTtlMs: 1000 });
+	const recovery = { ctxs: [] };
+
+	await assert.rejects(
+		() =>
+			recoverRun({
+				rootDir: ws.rootDir,
+				allowRoot: ws.allowRoot,
+				runId: "run-recover",
+				owner: "owner-1",
+				now: () => 2001, // injected clock past the fence
+				stores: [{ name: "s", adapter: recoveryAdapter(state, recovery) }],
+			}),
+		(error) => error instanceof SnapshotOrchestratorError && error.code === "fence-expired",
+	);
+	assert.equal(recovery.ctxs.length, 0, "resume was never called");
+	assert.equal(state.paused, true, "the store is still paused");
+});
+
+test("recoverRun requires an adapter for every resumable store before resuming any", async () => {
+	const ws = makeWorkspace();
+	const { state } = await makePausedRun(ws, { owner: "owner-1" });
+
+	await assert.rejects(
+		() =>
+			recoverRun({
+				rootDir: ws.rootDir,
+				allowRoot: ws.allowRoot,
+				runId: "run-recover",
+				owner: "owner-1",
+				now: () => 1500,
+				stores: [],
+			}),
+		(error) => error instanceof SnapshotOrchestratorError && error.code === "invalid-store",
+	);
+	assert.equal(state.paused, true, "the store is still paused");
+});
+
+test("SIGKILL mid-run: the journal survives, inspectRun shows the gap, recoverRun closes it", async () => {
+	const ws = makeWorkspace();
+	const owner = "owner-sigkill";
+	const runId = "run-sigkill";
+	const orchestratorUrl = new URL("../control-plane/snapshot-orchestrator.mjs", import.meta.url).href;
+	// The child registers a store whose snapshotTo hangs forever, then starts a
+	// run. Its owner and all paths arrive via argv (no environment, no network).
+	const childScript = `
+		const [owner, rootDir, allowRoot, runId, url] = process.argv.slice(1);
+		const { createSnapshotOrchestrator } = await import(url);
+		const orchestrator = createSnapshotOrchestrator({ rootDir, allowRoot, owner });
+		orchestrator.registerStore({
+			name: "hang",
+			kind: "spy",
+			adapter: {
+				async quiesce() {},
+				async snapshotTo() { await new Promise(() => {}); },
+				async resume() {},
+			},
+		});
+		// Keep the event loop busy so Node's unsettled-top-level-await watchdog
+		// cannot exit the process: only our SIGKILL may end this run.
+		setInterval(() => {}, 60000);
+		await orchestrator.run({ runId });
+	`;
+	const child = spawn(
+		process.execPath,
+		["--input-type=module", "-e", childScript, owner, ws.rootDir, ws.allowRoot, runId, orchestratorUrl],
+		{ stdio: ["ignore", "pipe", "pipe"] },
+	);
+	let childStderr = "";
+	child.stderr.on("data", (chunk) => {
+		childStderr += chunk;
+	});
+	const childExit = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+
+	// Wait until the journal proves the quiesce was confirmed — the child is
+	// then hanging inside snapshotTo with the store logically paused.
+	const runDir = join(ws.rootDir, runId);
+	const deadline = Date.now() + 15000;
+	let confirmedJournal = null;
+	while (Date.now() < deadline) {
+		try {
+			const parsed = JSON.parse(readFileSync(join(runDir, "journal.json"), "utf8"));
+			if (parsed.stores?.[0]?.quiesce === "confirmed") {
+				confirmedJournal = parsed;
+				break;
+			}
+		} catch {
+			// journal not written yet
+		}
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	assert.ok(confirmedJournal !== null, `child never journaled a confirmed quiesce; stderr: ${childStderr}`);
+
+	child.kill("SIGKILL");
+	const exit = await childExit;
+	assert.equal(exit.signal, "SIGKILL", "the child died by our signal, not on its own");
+
+	// The crash left an honest, inspectable record: quiesce confirmed, never resumed.
+	const crashed = readJournal(runDir);
+	assert.equal(crashed.state, "running");
+	assert.equal(crashed.stores[0].quiesce, "confirmed");
+	assert.equal(crashed.stores[0].resume, "not-attempted");
+	const view = inspectRun({ rootDir: ws.rootDir, allowRoot: ws.allowRoot, runId });
+	assert.deepEqual(view.resumable, ["hang"]);
+	assert.deepEqual(view.needsReview, []);
+
+	// The same owner recovers the run; the replayed ctx matches the journal.
+	const recovery = { ctxs: [] };
+	const outcome = await recoverRun({
+		rootDir: ws.rootDir,
+		allowRoot: ws.allowRoot,
+		runId,
+		owner,
+		stores: [
+			{
+				name: "hang",
+				adapter: {
+					async quiesce() {},
+					async snapshotTo() {
+						throw new Error("recoverRun must never re-run a snapshot");
+					},
+					async resume(ctx) {
+						recovery.ctxs.push(ctx);
+					},
+				},
+			},
+		],
+	});
+	assert.deepEqual(outcome.resumed, ["hang"]);
+	assert.deepEqual(outcome.failed, []);
+	assert.equal(recovery.ctxs.length, 1);
+	assert.equal(recovery.ctxs[0].owner, owner);
+	assert.equal(recovery.ctxs[0].fence, crashed.fence.token);
+	assert.equal(recovery.ctxs[0].operationId, `${runId}:hang:resume`);
+	const recovered = readJournal(runDir);
+	assert.equal(recovered.stores[0].resume, "confirmed");
+	assert.equal(recovered.state, "recovered");
+});
+
+test("adapters receive { runId, owner, fence, operationId } ctx matching the journal", async () => {
+	const ws = makeWorkspace();
+	const ctxs = { quiesce: [], snapshot: [], resume: [] };
+	const orchestrator = createSnapshotOrchestrator({
+		rootDir: ws.rootDir,
+		allowRoot: ws.allowRoot,
+		owner: "owner-ctx",
+	});
+	orchestrator.registerStore({
+		name: "s",
+		kind: "spy",
+		adapter: {
+			async quiesce(ctx) {
+				ctxs.quiesce.push(ctx);
+			},
+			async snapshotTo(targetDir, ctx) {
+				ctxs.snapshot.push(ctx);
+				mkdirSync(targetDir, { mode: 0o700 });
+				writeFileSync(join(targetDir, "d"), "d");
+				return { files: ["d"] };
+			},
+			async resume(ctx) {
+				ctxs.resume.push(ctx);
+			},
+		},
+	});
+	const result = await orchestrator.run({ runId: "run-ctx" });
+	assert.equal(result.status, "success");
+	const journal = readJournal(result.dir);
+	for (const [operation, list] of Object.entries(ctxs)) {
+		assert.equal(list.length, 1, `${operation} ctx was delivered exactly once`);
+		assert.equal(list[0].runId, "run-ctx");
+		assert.equal(list[0].owner, "owner-ctx");
+		assert.equal(list[0].owner, journal.owner);
+		assert.equal(list[0].fence, journal.fence.token);
+		assert.equal(list[0].operationId, `run-ctx:s:${operation}`);
+	}
+});
+
+// --- SN-F003: error sanitization (canary sweep) -------------------------------
+
+test("adapter canary secrets never reach the manifest, the journal, the disk or the run DTO", async () => {
+	for (const stage of ["quiesce", "snapshot", "resume"]) {
+		const ws = makeWorkspace();
+		const canary = `canary-${stage}-sk_test_SYNTHETIC_SECRET_123`;
+		const makeCanaryError = () => {
+			const error = new Error(`adapter blew up: ${canary}`);
+			error.name = `Canary${stage}Error`;
+			error.cause = new Error(`nested cause ${canary}`);
+			return error; // the stack carries the canary too (it embeds the message)
+		};
+		const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+		orchestrator.registerStore({ name: "a", kind: "spy", adapter: recordingAdapter("a", []) });
+		orchestrator.registerStore({
+			name: "bad",
+			kind: "spy",
+			adapter: {
+				async quiesce() {
+					if (stage === "quiesce") throw makeCanaryError();
+				},
+				async snapshotTo(targetDir) {
+					if (stage === "snapshot") throw makeCanaryError();
+					mkdirSync(targetDir, { mode: 0o700 });
+					writeFileSync(join(targetDir, "d"), "d");
+					return { files: ["d"] };
+				},
+				async resume() {
+					if (stage === "resume") throw makeCanaryError();
+				},
+			},
+		});
+
+		const result = await orchestrator.run({ runId: `run-canary-${stage}` });
+		assert.equal(result.status, stage === "quiesce" ? "needs-review" : "failed");
+		assert.deepEqual(result.error, { code: "adapter-failed", stage, store: "bad" });
+
+		// Sweep every persisted byte (manifest, journal, leftover tmp files,
+		// store evidence) plus the returned DTO for any canary substring.
+		const diskText = readTreeText(result.dir);
+		assert.ok(!diskText.includes(canary), `canary leaked to disk at stage ${stage}`);
+		assert.ok(!diskText.includes(`Canary${stage}Error`), `custom error name leaked to disk at stage ${stage}`);
+		assert.ok(!JSON.stringify(result).includes(canary), `canary leaked into the run DTO at stage ${stage}`);
+	}
+});
+
+test("a failed manifest write is a fixed-code failure — no system error text or paths leak", async () => {
+	const ws = makeWorkspace();
+	const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+	orchestrator.registerStore({
+		name: "saboteur",
+		kind: "spy",
+		adapter: {
+			async quiesce() {},
+			async snapshotTo(targetDir) {
+				mkdirSync(targetDir, { mode: 0o700 });
+				writeFileSync(join(targetDir, "d"), "d");
+				// Occupy the manifest's final path with a directory (runDir is the
+				// target's parent) so the atomic rename fails with a raw fs error.
+				mkdirSync(join(dirname(targetDir), "manifest.json"), { mode: 0o700 });
+				return { files: ["d"] };
+			},
+			async resume() {},
+		},
+	});
+
+	const result = await orchestrator.run({ runId: "run-manifest-fail" });
+	assert.equal(result.status, "failed");
+	assert.deepEqual(result.error, { code: "manifest-write-failed", stage: "manifest-write" });
+	assert.equal(result.manifestPath, null);
+	// The occupying directory is still there and still empty (never replaced).
+	assert.deepEqual(readdirSync(join(result.dir, "manifest.json")), []);
+
+	const diskText = readTreeText(result.dir);
+	const dtoText = JSON.stringify({
+		error: result.error,
+		stores: result.stores,
+		resumeErrors: result.resumeErrors,
+		manifest: result.manifest,
+	});
+	for (const needle of ["EACCES", "ENOTEMPTY", "EEXIST", "EISDIR", "EPERM"]) {
+		assert.ok(!diskText.includes(needle), `system error text ${needle} leaked to disk`);
+		assert.ok(!dtoText.includes(needle), `system error text ${needle} leaked into the DTO`);
+	}
+	assert.ok(!diskText.includes(ws.rootDir), "an absolute path leaked to disk");
+	assert.ok(!dtoText.includes(ws.rootDir), "an absolute path leaked into the DTO");
 });
