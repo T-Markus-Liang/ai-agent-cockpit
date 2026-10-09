@@ -9,9 +9,13 @@ type Task = { id: string; goal: string; status: string; updatedAt: string; execu
 type TasksResponse = { tasks?: Task[] }
 
 async function readTasks(): Promise<TasksResponse> {
-  const response = await fetch('http://127.0.0.1:4324/api/control-plane/tasks', { cache: 'no-store' })
+  // Same-origin read proxy (AUI-03): the server holds the control-plane token;
+  // the browser never sees 127.0.0.1:4324 or a credential.
+  const response = await fetch('/api/v1/personal-ai-os/control-plane/tasks', { cache: 'no-store' })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json() as Promise<TasksResponse>
+  const envelope = await response.json() as { available?: boolean; body?: TasksResponse }
+  if (envelope.available !== true) throw new Error('control-plane unavailable')
+  return envelope.body ?? {}
 }
 
 // ENGLISH source strings, translated at render via `t` — an unknown status falls through to its

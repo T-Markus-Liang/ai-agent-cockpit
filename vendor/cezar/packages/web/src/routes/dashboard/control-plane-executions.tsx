@@ -40,19 +40,29 @@ type Evidence = {
 }
 type TaskDetail = { task?: { id: string; goal: string; status: string }; executions?: Execution[]; evidence?: Evidence[] }
 type CompletionPlan = { action?: string; target?: string; ready?: boolean; reasons?: string[]; parametersDigest?: string }
+type ProxyEnvelope<T> = { available?: boolean; body?: T }
 
-const API = 'http://127.0.0.1:4324/api/control-plane'
+// Same-origin read proxy (AUI-03): the server holds the control-plane token;
+// the browser never sees 127.0.0.1:4324 or a credential.
+async function readProxied<T>(path: string): Promise<T> {
+  const response = await fetch(`/api/v1/personal-ai-os/control-plane/${path}`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const envelope = await response.json() as ProxyEnvelope<T> & { upstreamStatus?: number }
+  if (envelope.available !== true) throw new Error('control-plane unavailable')
+  // An upstream error is still an error: surface the card's honest
+  // "unreachable + retry" state instead of rendering an empty body.
+  if (typeof envelope.upstreamStatus === 'number' && envelope.upstreamStatus >= 400) {
+    throw new Error(`upstream HTTP ${envelope.upstreamStatus}`)
+  }
+  return (envelope.body ?? {}) as T
+}
 
 async function readTaskDetail(taskId: string): Promise<TaskDetail> {
-  const response = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}`, { cache: 'no-store' })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json() as Promise<TaskDetail>
+  return readProxied(`tasks/${encodeURIComponent(taskId)}`)
 }
 
 async function readCompletionPlan(taskId: string): Promise<CompletionPlan> {
-  const response = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}/completion-plan`, { cache: 'no-store' })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json() as Promise<CompletionPlan>
+  return readProxied(`tasks/${encodeURIComponent(taskId)}/completion-plan`)
 }
 
 /* The eight Execution states (control-plane/contracts.mjs EXECUTION_STATUSES). The word is

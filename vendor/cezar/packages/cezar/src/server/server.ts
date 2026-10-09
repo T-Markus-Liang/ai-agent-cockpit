@@ -3,6 +3,7 @@ import {
   trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope,
   trackerCredentialsSchema, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
 } from '@open-mercato/cezar-contract';
+import { personalAiOsRoutes } from './personal-ai-os.ts';
 import { createTrackerService } from './tracker/index.ts';
 import { TrackerWatches } from './tracker/watch.ts';
 import { readTrackerAssociation, writeTrackerAssociation, clearTrackerAssociation } from '../tracker-association.ts';
@@ -324,6 +325,13 @@ export interface ServerDeps {
   hostSampler?: HostSampler;
   /** Re-arm the workspace automation timer after definition mutations. */
   automationsChanged?: () => void;
+  /** Fetch implementation for the Personal AI OS read-only proxy (AUI-03);
+   *  tests inject a fake. Defaults to global fetch. */
+  personalAiOsFetch?: typeof fetch;
+  /** Authority-file path for the Personal AI OS proxy; defaults to
+   *  `process.env.CEZ_PAI_OS_AUTHORITY` (unset => proxy answers the degraded
+   *  `available:false` envelope). Tests inject a tmp file. */
+  personalAiOsAuthorityPath?: string;
 }
 
 // ---- project-scoped routing (multi-project spec, step 2.2) -----------------
@@ -6435,6 +6443,10 @@ export function createApp(deps: ServerDeps) {
     .route('/', starCountRoutes)
     .route('/', workspaceConfigRoutes)
     .route('/', fsBrowseRoutes)
+    .route('/', personalAiOsRoutes({
+      fetchImpl: deps.personalAiOsFetch,
+      authorityPath: deps.personalAiOsAuthorityPath,
+    }))
     .route('/', automationChecksRoutes)
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))

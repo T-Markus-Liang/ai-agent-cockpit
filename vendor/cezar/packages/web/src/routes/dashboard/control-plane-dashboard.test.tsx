@@ -32,11 +32,11 @@ function stubFetch({ dStatus = 200, planStatus = 200, plan = planNotReady, execu
   const requests: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input); requests.push(url)
-    if (url.includes('/completion-plan')) return new Response(JSON.stringify(plan), { status: planStatus })
-    if (/\/api\/control-plane\/tasks\/[^/?]+$/.test(url)) return new Response(JSON.stringify({ ...detailBody, executions }), { status: dStatus })
+    if (url.includes('/api/v1/personal-ai-os/control-plane/tasks/') && url.includes('/completion-plan')) return new Response(JSON.stringify({ available: true, upstreamStatus: planStatus, body: planStatus < 400 ? plan : {} }), { status: 200 })
+    if (/\/api\/v1\/personal-ai-os\/control-plane\/tasks\/[^/?]+$/.test(url)) return new Response(JSON.stringify({ available: true, upstreamStatus: dStatus, body: dStatus < 400 ? { ...detailBody, executions } : {} }), { status: 200 })
+    if (url.includes('/api/v1/personal-ai-os/control-plane/tasks')) return new Response(JSON.stringify({ available: true, upstreamStatus: 200, body: listBody }), { status: 200 })
     if (url.includes('/api/control-plane/approvals/') && init?.method === 'POST') return new Response(JSON.stringify({ approval: { decision: 'approved' } }), { status: 200 })
     if (url.includes('/api/control-plane/approvals')) return new Response(JSON.stringify({ approvals: [{ id: 'approval_1', action: 'cezar.dispatch', target: 'execution_1', parametersDigest: 'sha256:test', decision: 'pending', createdAt: '2026-10-06T00:00:00Z' }] }), { status: 200 })
-    if (url.includes('/api/control-plane/tasks')) return new Response(JSON.stringify(listBody), { status: 200 })
     return new Response('{}', { status: 404 })
   }))
   return { requests }
@@ -63,6 +63,21 @@ afterEach(() => {
 
 describe('Personal AI OS dashboard modules', () => {
   beforeEach(() => { stubFetch() })
+
+  it('renders the unavailable state when the same-origin proxy degrades', async () => {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); requests.push(url)
+      if (url.includes('/api/v1/personal-ai-os/control-plane/tasks')) {
+        return new Response(JSON.stringify({ available: false, reason: 'authority-unavailable' }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }))
+    renderWithQuery(<ControlPlaneTasks />)
+    expect(await screen.findByText('控制面暂不可用；不会影响 Cezar 原生任务')).toBeTruthy()
+    expect(requests.some((url) => url.startsWith('/api/v1/personal-ai-os/'))).toBe(true)
+    expect(requests.some((url) => url.includes('127.0.0.1:4324'))).toBe(false)
+  })
 
   it('renders live control-plane task state', async () => {
     renderWithQuery(<ControlPlaneTasks />)
