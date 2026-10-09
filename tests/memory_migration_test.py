@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.memory import lifecycle, migration, quality  # noqa: E402
+from services.memory import lifecycle, migration, privacy_epoch, quality  # noqa: E402
 from services.memory.migration import (  # noqa: E402
     MigrationError, convert, reverify, snapshot, verify_conservation)
 from services.memory.service import (  # noqa: E402
@@ -1455,6 +1455,120 @@ class StoreRetryPlanReuseTests(MigrationFixture):
         self.assertEqual(len(evaluator.calls), before_calls)
         self.assertNotEqual(
             read_row(self.copy_db, "e1")["validation_status"], "validated")
+
+
+# --- 18. PE-F003 privacy-epoch races during revalidation --------------------
+class EpochDuringReverifyTests(MigrationFixture):
+    """A privacy reset committing mid-reverify never yields done/validated.
+
+    Mirrors the forget-race harness: the engine's prepare/store are wrapped
+    to bump the epoch (or destroy the state file) mid-flight. Every case
+    must settle needs_review with error_kind=privacy_epoch_changed and must
+    never record a stale-era validated receipt.
+    """
+
+    def _prepare(self, text="我喜欢用中文回复"):
+        make_db(self.source)
+        conn = self.connect(self.source_db)
+        insert_original(conn, "e1", "u1", "user", text)
+        conn.commit()
+        conn.close()
+        convert(self.source, self.copy)
+
+    def _engine(self, memory=None, evaluator=None):
+        return Mem0Engine(memory=memory if memory is not None else FakeMem0(),
+                          evaluator=evaluator if evaluator is not None else FakeEvaluator(),
+                          quality_config=make_config(), version="synthetic-only")
+
+    def test_reset_during_prepare_holds_row_before_store(self):
+        self._prepare()
+        memory = FakeMem0()
+        engine = self._engine(memory=memory)
+        real_prepare = engine.prepare
+
+        def prepare_then_reset(turn):
+            plan = real_prepare(turn)
+            privacy_epoch.bump_epoch(self.copy, "u1")  # era 0 -> 1 mid-prepare
+            return plan
+
+        engine.prepare = prepare_then_reset
+        counts = reverify(self.copy, engine)
+        self.assertEqual(counts["validated"], 0)
+        self.assertEqual(counts["needs_review"], 1)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["status"], "needs_review")
+        self.assertEqual(row["validation_status"], "needs_review")
+        self.assertEqual(row["error_kind"], "privacy_epoch_changed")
+        self.assertEqual(memory.rows, [])  # the store never started
+
+    def test_reset_during_store_compensates_and_holds(self):
+        self._prepare()
+        memory = FakeMem0()
+        engine = self._engine(memory=memory)
+        real_store = engine.store
+
+        def store_then_reset(turn, plan):
+            result = real_store(turn, plan)
+            privacy_epoch.bump_epoch(self.copy, "u1")  # commits mid-store
+            return result
+
+        engine.store = store_then_reset
+        counts = reverify(self.copy, engine)
+        self.assertEqual(counts["validated"], 0)
+        self.assertEqual(counts["needs_review"], 1)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["status"], "needs_review")
+        self.assertEqual(row["validation_status"], "needs_review")
+        self.assertEqual(row["error_kind"], "privacy_epoch_changed")
+        self.assertEqual(memory.rows, [])  # the effect was compensated away
+
+    def test_epoch_file_loss_during_store_holds_row(self):
+        # Established user (marker on disk) whose state file is destroyed
+        # mid-store: reads go EPOCH_UNKNOWN and the row must be held.
+        self._prepare()
+        privacy_epoch.initialize_user(self.copy, "u1")
+        memory = FakeMem0()
+        engine = self._engine(memory=memory)
+        real_store = engine.store
+        epoch_path = Path(self.copy) / "privacy-epochs" / "u1.json"
+
+        def store_then_lose_file(turn, plan):
+            result = real_store(turn, plan)
+            epoch_path.unlink()
+            return result
+
+        engine.store = store_then_lose_file
+        counts = reverify(self.copy, engine)
+        self.assertEqual(counts["validated"], 0)
+        self.assertEqual(counts["needs_review"], 1)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["error_kind"], "privacy_epoch_changed")
+        self.assertEqual(memory.rows, [])  # compensated
+
+    def test_reset_before_reverify_validates_under_new_era(self):
+        # Negative control: a reset that committed BEFORE the pipeline starts
+        # is legal; the row validates and stamps the new era.
+        self._prepare()
+        privacy_epoch.bump_epoch(self.copy, "u1")  # era 1 before reverify
+        memory = FakeMem0()
+        counts = reverify(self.copy, self._engine(memory=memory))
+        self.assertEqual(counts["validated"], 1)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["status"], "done")
+        self.assertEqual(row["validation_status"], "validated")
+        self.assertEqual(row["privacy_epoch"], 1)
+        self.assertEqual(len(memory.rows), 1)
+
+    def test_no_reset_validates_under_initial_era(self):
+        # Negative control: no race at all keeps the pre-S04 outcome.
+        self._prepare()
+        memory = FakeMem0()
+        counts = reverify(self.copy, self._engine(memory=memory))
+        self.assertEqual(counts["validated"], 1)
+        row = read_row(self.copy_db, "e1")
+        self.assertEqual(row["status"], "done")
+        self.assertEqual(row["privacy_epoch"], 0)
+        self.assertEqual(len(memory.rows), 1)
 
 
 # --- CLI smoke tests --------------------------------------------------------

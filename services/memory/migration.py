@@ -940,7 +940,9 @@ def _write_receipt(copy_path: str, event_id: str, *, status: str,
 
 
 def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig,
-                  forget_store, persisted_plan, current_epoch: int) -> str:
+                  forget_store, persisted_plan, current_epoch: int,
+                  state_dir) -> str:
+    from . import privacy_epoch  # lazy: same policy as reverify()
     if persisted_plan is None:
         try:
             plan = engine.prepare(turn)
@@ -1015,6 +1017,19 @@ def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig,
     # later store failure is recovered from the *same* plan (zero re-extraction).
     _persist_plan(copy_path, turn.event_id, plan)
 
+    # PE-F003 fence (mirrors service.py's pre-store check): the era bound at
+    # prepare time must still be current. A privacy reset that commits between
+    # prepare and store invalidates the era; hold the row instead of writing
+    # facts into a dead era.
+    epoch_now = privacy_epoch.get_epoch(state_dir, turn.user_id)
+    if epoch_now == privacy_epoch.EPOCH_UNKNOWN or epoch_now != current_epoch:
+        _write_receipt(
+            copy_path, turn.event_id, status="needs_review",
+            validation_status="needs_review", plan=plan,
+            error_kind="privacy_epoch_changed",
+            stored_ids={"stored": [], "reused": []})
+        return "needs_review"
+
     try:
         result = engine.store(turn, plan)
     except Exception as error:  # noqa: BLE001 - sanitized into a stable kind
@@ -1052,6 +1067,21 @@ def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig,
             copy_path, turn.event_id, status="needs_review",
             validation_status="needs_review", plan=plan,
             error_kind="store_incomplete", stored_ids={"stored": [], "reused": []})
+        return "needs_review"
+
+    # PE-F003 fence (mirrors service.py's post-store check): a reset that
+    # committed while the store was in flight means the facts just written
+    # belong to an era that has already ended. Compensate the effects
+    # (best effort, exactly like the forget fence) and hold the row; never
+    # settle done/validated under a stale era stamp.
+    epoch_final = privacy_epoch.get_epoch(state_dir, turn.user_id)
+    if epoch_final == privacy_epoch.EPOCH_UNKNOWN or epoch_final != current_epoch:
+        _delete_effects(engine, stored)
+        _write_receipt(
+            copy_path, turn.event_id, status="needs_review",
+            validation_status="needs_review", plan=plan,
+            error_kind="privacy_epoch_changed",
+            stored_ids={"stored": [], "reused": []})
         return "needs_review"
 
     # Privacy fence C: the settlement UPDATE carries a ``forgotten=0`` guard and
@@ -1126,7 +1156,7 @@ def reverify(copy_dir, engine) -> dict:
             counts["needs_review"] += 1
             continue
         outcome = _reverify_one(copy_path, engine, turn, config, forget_store,
-                                persisted, current_epoch)
+                                persisted, current_epoch, copy_dir)
         counts[outcome] = counts.get(outcome, 0) + 1
     return counts
 

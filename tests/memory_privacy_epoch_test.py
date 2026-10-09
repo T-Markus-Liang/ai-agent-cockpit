@@ -286,10 +286,22 @@ class EpochCorruptionTests(unittest.TestCase):
         self._corrupt()
         with self.assertRaises(PrivacyEpochError):
             bump_epoch(self.state, USER)
-        # Operator removes the corrupt file; the reset entry works again and
-        # does not resurrect any old value.
+        # Deleting the corrupt file is NOT a reconcile: the user is
+        # established (durable marker), so a bump must refuse to restart the
+        # counter from zero — that could resurrect a past era (audit P1-2).
         epoch_file(self.state).unlink()
-        self.assertEqual(bump_epoch(self.state, USER), 1)
+        with self.assertRaises(PrivacyEpochError) as ctx:
+            bump_epoch(self.state, USER)
+        self.assertEqual(ctx.exception.code, "epoch-state-missing")
+        self.assertEqual(get_epoch(self.state, USER), EPOCH_UNKNOWN)
+        # Operator reconcile = restore a VALID state file carrying the last
+        # known era; only then does the reset entry work again, continuing
+        # from the restored value instead of restarting at zero.
+        epoch_file(self.state).write_bytes(json.dumps(
+            {"version": 1, "user_id": USER, "epoch": 1,
+             "updated_at": time.time()}).encode())
+        os.chmod(epoch_file(self.state), 0o600)
+        self.assertEqual(bump_epoch(self.state, USER), 2)
 
     def test_unsafe_file_types_links_modes_and_owner_are_refused(self):
         target = epoch_file(self.state)
@@ -709,10 +721,67 @@ class MarkerEstablishedUserTests(unittest.TestCase):
         self.assertTrue(self.marker_file().exists())
         self.assertTrue(epoch_file(self.state).exists())
 
-    def test_initialize_is_idempotent_for_same_user(self):
+    def test_initialize_twice_fails_closed(self):
+        # PE-F002 hardening (audit 2026-10-09 P1-1): re-initializing an
+        # established user would silently reset its era; it must refuse.
         privacy_epoch.initialize_user(self.state, USER)
-        self.assertEqual(privacy_epoch.initialize_user(self.state, USER), 0)
+        with self.assertRaises(PrivacyEpochError):
+            privacy_epoch.initialize_user(self.state, USER)
         self.assertEqual(get_epoch(self.state, USER), 0)
+
+    def test_initialize_after_bumps_fails_closed_and_keeps_epoch(self):
+        # The audit repro: established at epoch 3, initialize_user() would
+        # reset the epoch to 0. It must raise and leave 3 untouched.
+        privacy_epoch.initialize_user(self.state, USER)
+        for _ in range(3):
+            bump_epoch(self.state, USER)
+        with self.assertRaises(PrivacyEpochError) as ctx:
+            privacy_epoch.initialize_user(self.state, USER)
+        self.assertEqual(ctx.exception.code, "already-established")
+        self.assertEqual(get_epoch(self.state, USER), 3)
+
+    def test_initialize_with_explicit_epoch_on_established_user_fails(self):
+        privacy_epoch.initialize_user(self.state, USER, initial_epoch=5)
+        with self.assertRaises(PrivacyEpochError):
+            privacy_epoch.initialize_user(self.state, USER, initial_epoch=7)
+        self.assertEqual(get_epoch(self.state, USER), 5)
+
+    def test_initialize_with_marker_but_lost_file_fails_closed(self):
+        # Established (marker) + epoch state file lost: get_epoch is
+        # EPOCH_UNKNOWN and initialize_user must NOT restart the user at 0.
+        bump_epoch(self.state, USER)
+        epoch_file(self.state).unlink()
+        with self.assertRaises(PrivacyEpochError) as ctx:
+            privacy_epoch.initialize_user(self.state, USER)
+        self.assertEqual(ctx.exception.code, "epoch-state-missing")
+        self.assertEqual(get_epoch(self.state, USER), EPOCH_UNKNOWN)
+        self.assertTrue(privacy_epoch.is_user_established(self.state, USER))
+
+    def test_bump_after_file_loss_fails_closed_never_resurrects(self):
+        # Audit P1-2 repro: epoch 3, state file deleted, bump would restart
+        # the counter at 0+1=1 and make era-1 facts retrievable again.
+        for _ in range(3):
+            bump_epoch(self.state, USER)
+        epoch_file(self.state).unlink()
+        with self.assertRaises(PrivacyEpochError) as ctx:
+            bump_epoch(self.state, USER)
+        self.assertEqual(ctx.exception.code, "epoch-state-missing")
+        self.assertEqual(get_epoch(self.state, USER), EPOCH_UNKNOWN)
+        # Repeated attempts keep failing closed; no resurrection to 1.
+        with self.assertRaises(PrivacyEpochError):
+            bump_epoch(self.state, USER)
+        self.assertEqual(get_epoch(self.state, USER), EPOCH_UNKNOWN)
+
+    def test_bump_after_epoch_directory_loss_fails_closed(self):
+        import shutil
+        bump_epoch(self.state, USER)
+        bump_epoch(self.state, USER)
+        shutil.rmtree(self.state / "privacy-epochs")
+        with self.assertRaises(PrivacyEpochError) as ctx:
+            bump_epoch(self.state, USER)
+        self.assertEqual(ctx.exception.code, "epoch-state-missing")
+        self.assertTrue(self.marker_file().exists())
+        self.assertEqual(get_epoch(self.state, USER), EPOCH_UNKNOWN)
 
     def test_established_user_losing_file_is_unknown_not_zero(self):
         privacy_epoch.initialize_user(self.state, USER)

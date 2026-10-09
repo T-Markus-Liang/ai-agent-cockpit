@@ -34,6 +34,9 @@ Bump semantics:
 * ``bump_epoch`` advances the epoch in ``privacy-epochs/<user_id>.json`` and
   guarantees the durable marker exists in ``privacy-markers/<user_id>.marker``.
   Raises :class:`PrivacyEpochError` on corruption or write failure.
+* An established user whose epoch state file (or its parent directory) has
+  been lost raises ``epoch-state-missing`` instead of restarting at 0+1: a
+  resurrected era number could make a past era's facts retrievable again.
 
 
 Internal-session rebuild: once the epoch is KNOWN, an internal conversation may
@@ -317,14 +320,35 @@ def initialize_user(state_dir, user_id: str, initial_epoch: int = 0) -> int:
     Writes the durable marker in ``<state_dir>/privacy-markers/<user_id>.marker``
     and the initial epoch state file in ``<state_dir>/privacy-epochs/<user_id>.json``.
     Returns the initial epoch (defaults to 0).
+
+    Fails closed on ANY establishment trace: an existing epoch state file
+    (``already-established``) or a durable marker with the state file lost
+    (``epoch-state-missing``) raises :class:`PrivacyEpochError` and nothing
+    is written. Re-initializing an established user would silently reset its
+    era (e.g. epoch 3 back to 0) and could re-expose a past era's facts.
+    Only a user with no trace at all may be initialized.
     """
     if isinstance(initial_epoch, bool) or not isinstance(initial_epoch, int) or initial_epoch < 0:
         raise PrivacyEpochError("invalid-epoch", "initial_epoch must be a non-negative integer")
     path = _epoch_path(state_dir, user_id)
-    _ensure_marker(state_dir, user_id)
     try:
         with _directory(path, create=True) as directory_fd:
             with _locked(directory_fd, path.stem + ".lock"):
+                try:
+                    st = os.stat(path.name, dir_fd=directory_fd,
+                                 follow_symlinks=False)
+                except FileNotFoundError:
+                    st = None
+                if st is not None:
+                    _validate(st)  # unsafe existing state is refused too
+                    raise PrivacyEpochError(
+                        "already-established",
+                        "user already has an epoch state file; refusing to re-initialize")
+                if is_user_established(state_dir, user_id):
+                    raise PrivacyEpochError(
+                        "epoch-state-missing",
+                        "user is established but the epoch state file is lost; "
+                        "refusing to re-initialize from scratch")
                 doc = {
                     "version": _VERSION,
                     "user_id": user_id,
@@ -333,6 +357,7 @@ def initialize_user(state_dir, user_id: str, initial_epoch: int = 0) -> int:
                 }
                 serialized = json.dumps(doc, separators=(",", ":")).encode("utf-8")
                 _atomic_write(directory_fd, path.name, serialized)
+                _ensure_marker(state_dir, user_id)
                 return initial_epoch
     except (OSError, ValueError):
         raise PrivacyEpochError("epoch-state-unwritable") from None
@@ -462,15 +487,33 @@ def bump_epoch(state_dir, user_id: str) -> int:
 
     Fails closed: an unsafe ``user_id``, a corrupt existing file (never
     silently reset over unreadable state), or any write failure raises
-    :class:`PrivacyEpochError`. A failure after replace (directory fsync) may
-    already have advanced the epoch; it is never rolled back. Callers must
-    reconcile that uncertain outcome before retrying.
+    :class:`PrivacyEpochError`. An ESTABLISHED user whose epoch state file
+    has been lost raises ``epoch-state-missing``: the bump must never
+    restart the counter from 0, because that could resurrect a past era's
+    number and re-expose its facts (reads already return
+    :data:`EPOCH_UNKNOWN` for that state). A failure after replace
+    (directory fsync) may already have advanced the epoch; it is never
+    rolled back. Callers must reconcile that uncertain outcome before
+    retrying.
     """
     path = _epoch_path(state_dir, user_id)
     try:
         with _directory(path, create=True) as directory_fd:
             with _locked(directory_fd, path.stem + ".lock"):
-                current = _read_current(path, directory_fd)
+                try:
+                    os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+                    file_missing = False
+                except FileNotFoundError:
+                    file_missing = True
+                if file_missing:
+                    if is_user_established(state_dir, user_id):
+                        raise PrivacyEpochError(
+                            "epoch-state-missing",
+                            "established user has no epoch state file; "
+                            "refusing to bump from zero")
+                    current = 0
+                else:
+                    current = _read_current(path, directory_fd)
                 new_epoch = current + 1
                 doc = {"version": _VERSION, "user_id": user_id, "epoch": new_epoch,
                        "updated_at": time.time()}
