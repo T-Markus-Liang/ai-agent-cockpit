@@ -38,7 +38,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, StrictStr
 
-from . import lifecycle, quality
+from . import lifecycle, outbound_inventory, privacy_epoch, quality
 from .authority import AuthorityError, LiveAuthority
 from .reconcile import reconcile
 
@@ -81,7 +81,16 @@ class StatusQuery(BaseModel):
 class Mem0Engine:
     def __init__(self, state_dir: Path | None = None, *, memory=None, extractor=None,
                  evaluator=None, quality_config: quality.QualityConfig | None = None,
-                 version: str | None = None):
+                 version: str | None = None,
+                 epoch_reader=None, outbound_screen=None):
+        # ``epoch_reader`` (user_id -> int, EPOCH_UNKNOWN allowed) and
+        # ``outbound_screen`` (payload -> list[str] hit categories) are the S04
+        # privacy gates. They are explicit seams: test/injected engines leave
+        # them None (no gate), while the production assembly in ``create_app``
+        # wires the real state-dir-backed implementations. When None, NO gate
+        # runs — behavior is exactly the pre-S04 contract.
+        self._epoch_reader = epoch_reader
+        self._outbound_screen = outbound_screen
         self.quality = quality_config or quality.QualityConfig.from_env()
         self.evaluator = evaluator if evaluator is not None else quality.JevEvaluator(
             timeout=self.quality.jev_timeout)
@@ -174,6 +183,17 @@ class Mem0Engine:
         # Oversized input is retained as needs_review, never silently truncated.
         if len(text) > self.quality.max_text_chars:
             return self._plan(turn, "needs_review", [], error_kind="bounds_exceeded")
+        # S04 privacy gates, wired only by the production assembly (create_app):
+        # an unknown privacy epoch holds the turn, and the outbound secret
+        # screen runs on the FULL text that would be sent to the evaluator
+        # (the evaluator state carries complete user_text) BEFORE any call. A
+        # held turn is retained as needs_review; nothing is sent.
+        if self._epoch_reader is not None:
+            if self._epoch_reader(turn.user_id) == privacy_epoch.EPOCH_UNKNOWN:
+                return self._plan(turn, "needs_review", [], error_kind="privacy_epoch_unknown")
+        if self._outbound_screen is not None:
+            if self._outbound_screen(text):
+                return self._plan(turn, "needs_review", [], error_kind="outbound_screen_hit")
         if self.extractor is not None:
             return self._prepare_from_proposals(turn)
         return self._prepare_from_source_spans(turn)
@@ -336,6 +356,7 @@ class Mem0Engine:
                 "span_key": span_key,
                 "extraction_version": plan["extraction_version"],
                 "validation_status": "validated",
+                "privacy_epoch": plan.get("privacy_epoch"),
             }
             result = self.memory.add(
                 [{"role": "user", "content": fact.quote}],
@@ -415,6 +436,7 @@ class MemoryService:
             ("quality", "TEXT"),
             ("stored_ids", "TEXT"),
             ("forgotten", "INTEGER NOT NULL DEFAULT 0"),
+            ("privacy_epoch", "INTEGER"),
         )
         for name, ddl in additions:
             if name not in columns:
@@ -492,11 +514,12 @@ class MemoryService:
         with self.connect() as db:
             db.execute(
                 "UPDATE turns SET status=?,error_kind=?,validation_status=?,extraction_version=?,"
-                "quality=?,plan=?,stored_ids=? WHERE event_id=? AND forgotten=0",
+                "quality=?,plan=?,stored_ids=?,privacy_epoch=? WHERE event_id=? AND forgotten=0",
                 (status, error_kind, plan.get("validation_status"), plan.get("extraction_version"),
                  json.dumps(plan.get("quality") or {}, ensure_ascii=False),
                  json.dumps(plan, ensure_ascii=False),
-                 json.dumps({"stored": stored_ids or [], "reused": reused or []}), event_id))
+                 json.dumps({"stored": stored_ids or [], "reused": reused or []}),
+                 plan.get("privacy_epoch"), event_id))
 
     @classmethod
     def _safe_kind(cls, error: Exception) -> str:
@@ -555,6 +578,16 @@ class MemoryService:
             # source, is suppressed before any preparation or vector effect.
             if self._suppress_if_forgotten(event_id, turn):
                 return True
+            # S04 §6-1 generation/delivery boundary: for user turns the privacy
+            # epoch must be KNOWN before any preparation. An unknown epoch is a
+            # bounded retry that settles as needs_review with the original
+            # payload retained — never a silent drop, never stale-context use.
+            privacy_before = None
+            if turn.role == "user":
+                privacy_before = privacy_epoch.get_epoch(self.state_dir, turn.user_id)
+                if privacy_before == privacy_epoch.EPOCH_UNKNOWN:
+                    return self._fail(event_id, attempts,
+                                      quality.QualityError("privacy_epoch_unknown"))
             if plan_json:
                 # Preparation already persisted: reuse the same quotes instead of
                 # re-inferring, which keeps retries idempotent across restarts.
@@ -564,6 +597,19 @@ class MemoryService:
                     return self._fail(event_id, attempts, quality.QualityError("invalid_plan"))
                 if not isinstance(plan, dict):
                     return self._fail(event_id, attempts, quality.QualityError("invalid_plan"))
+                # S04 §6-1 (PE-F003): a persisted plan belongs to the privacy
+                # era it was prepared under. Retrying it under a DIFFERENT
+                # epoch (or an unstamped legacy plan that cannot be proven to
+                # belong to the current era) settles terminal needs_review:
+                # no replay, no silent delete, original payload + plan kept.
+                if turn.role == "user":
+                    plan_epoch = plan.get("privacy_epoch")
+                    if (isinstance(plan_epoch, bool) or not isinstance(plan_epoch, int)
+                            or plan_epoch != privacy_before):
+                        held_plan = dict(plan)
+                        held_plan["error_kind"] = "privacy_epoch_changed"
+                        self._finish(event_id, "needs_review", held_plan)
+                        return True
             else:
                 try:
                     plan = self.engine.prepare(turn)
@@ -571,6 +617,11 @@ class MemoryService:
                     return self._fail(event_id, attempts, error)
                 if not isinstance(plan, dict):
                     return self._fail(event_id, attempts, quality.QualityError("invalid_plan"))
+                # Bind the plan to the era it was prepared under BEFORE any
+                # vector effect; the binding is re-verified at store and at
+                # final settlement.
+                if turn.role == "user":
+                    plan["privacy_epoch"] = privacy_before
                 # Forget may have committed while preparation was in flight.
                 if self._suppress_if_forgotten(event_id, turn):
                     return True
@@ -591,6 +642,24 @@ class MemoryService:
             # Re-check immediately before the vector effect.
             if self._suppress_if_forgotten(event_id, turn):
                 return True
+            # S04 §6-1 delivery-boundary recheck. An unreadable epoch state is
+            # retryable: it may recover, so it goes through the bounded-retry
+            # channel and settles as needs_review with the payload retained.
+            if turn.role == "user":
+                privacy_now = privacy_epoch.get_epoch(self.state_dir, turn.user_id)
+                if privacy_now == privacy_epoch.EPOCH_UNKNOWN:
+                    return self._fail(event_id, attempts,
+                                      quality.QualityError("privacy_epoch_unknown"))
+            # A reset committed while preparation was in flight DISCARDS this
+            # batch result: the receipt settles terminal needs_review (via the
+            # existing _finish channel, error_kind recorded) and the original
+            # payload + persisted plan are retained, never deleted. The
+            # in-flight task was not killed; it is settled honestly here.
+            if turn.role == "user" and privacy_now != privacy_before:
+                held_plan = dict(plan)
+                held_plan["error_kind"] = "privacy_epoch_changed"
+                self._finish(event_id, "needs_review", held_plan)
+                return True
             try:
                 result = self.engine.store(turn, plan)
             except Exception as error:
@@ -609,6 +678,19 @@ class MemoryService:
             if (planned == 0 or len(stored_ids) + len(reused_ids) != planned
                     or not Mem0Engine._valid_ids(stored_ids + reused_ids)):
                 return self._fail(event_id, attempts, quality.QualityError("store_incomplete"))
+            # S04 §6-1 (PE-F003) final settlement privacy re-check. A privacy
+            # reset committed while the vector effect was in flight means the
+            # just-stored facts belong to a stale era: settle terminal
+            # needs_review (the physical vectors are never promoted to a
+            # trusted/done receipt), never report done.
+            if turn.role == "user":
+                privacy_final = privacy_epoch.get_epoch(self.state_dir, turn.user_id)
+                if (privacy_final == privacy_epoch.EPOCH_UNKNOWN
+                        or privacy_final != privacy_before):
+                    held_plan = dict(plan)
+                    held_plan["error_kind"] = "privacy_epoch_changed"
+                    self._finish(event_id, "needs_review", held_plan)
+                    return True
             self._finish(event_id, "done", plan, stored_ids, reused_ids)
             return True
 
@@ -633,21 +715,31 @@ class MemoryService:
                 db.execute("UPDATE turns SET forgotten=1 WHERE event_id=?", (event_id,))
         return True
 
-    def _trusted_receipts(self, user_id: str) -> dict:
+    def _trusted_receipts(self, user_id: str, current_epoch: int) -> dict:
         """Map vector IDs to validated receipts owned by ``user_id``.
 
         A receipt only counts when it is terminal ``done`` with a ``validated``
-        plan that still passes full plan revalidation. Pending, needs_review,
-        legacy and other users' receipts are excluded.
+        plan that still passes full plan revalidation, AND its write-time
+        ``privacy_epoch`` EQUALS ``current_epoch`` (PE-F003 era binding).
+        Rows with a missing/invalid epoch marker cannot be proven to belong
+        to the requested privacy era, so they are excluded (fail closed):
+        a privacy reset must make prior-era facts unrecallable. Pending,
+        needs_review, legacy and other users' receipts are excluded.
         """
         config = getattr(self.engine, "quality", None) or quality.QualityConfig()
         receipts = {}
         with self.connect() as db:
             rows = db.execute(
-                "SELECT event_id,payload,plan,stored_ids FROM turns "
+                "SELECT event_id,payload,plan,stored_ids,privacy_epoch FROM turns "
                 "WHERE status='done' AND validation_status='validated' "
                 "AND forgotten=0").fetchall()
-        for event_id, payload, plan_json, stored_json in rows:
+        for event_id, payload, plan_json, stored_json, row_epoch in rows:
+            # PE-F003 era binding: a done receipt only counts for the CURRENT
+            # privacy era. Unstamped (legacy NULL) or other-era rows are never
+            # recalled, so a reset makes prior-era facts unreachable.
+            if (isinstance(row_epoch, bool) or not isinstance(row_epoch, int)
+                    or row_epoch != current_epoch):
+                continue
             try:
                 payload_obj = json.loads(payload)
                 plan = json.loads(plan_json) if plan_json else None
@@ -771,12 +863,20 @@ class MemoryService:
         honestly instead of being masked as an empty result set.
         """
         epoch_before = self.forget_store.epoch(query.user_id)
+        # S04 §6-1 recall boundary: the privacy epoch must be KNOWN before any
+        # context is assembled. An unknown epoch raises (the endpoint renders
+        # it 503): no old context may be generated from or delivered.
+        privacy_before = privacy_epoch.get_epoch(self.state_dir, query.user_id)
+        if privacy_before == privacy_epoch.EPOCH_UNKNOWN:
+            raise privacy_epoch.PrivacyEpochError(
+                "privacy-epoch-unknown",
+                "privacy epoch is unknown; recall is held, never served from stale context")
         candidates = self.engine.search(query)
         if isinstance(candidates, dict):
             candidates = candidates.get("results", [])
         if not isinstance(candidates, list):
             return {"results": [], "conflicts": []}
-        receipts = self._trusted_receipts(query.user_id)
+        receipts = self._trusted_receipts(query.user_id, privacy_before)
         reconcile_receipts, event_index = self._reconcile_receipts(query.user_id)
         reconciled = reconcile(reconcile_receipts)
         current_ids = {item["event_id"] for item in reconciled["current"]}
@@ -805,6 +905,14 @@ class MemoryService:
         # End-of-search epoch recheck: a forget committed while vectors/receipts
         # were being read must drop this now-stale result set.
         if self.forget_store.epoch(query.user_id) != epoch_before:
+            return {"results": [], "conflicts": []}
+        # S04 §6-1 end-of-search privacy recheck: a privacy reset committed
+        # while the recall set was being assembled drops it (no stale-era
+        # context), and a state that became unreadable fails closed the same
+        # way.
+        privacy_after = privacy_epoch.get_epoch(self.state_dir, query.user_id)
+        if (privacy_after == privacy_epoch.EPOCH_UNKNOWN
+                or privacy_after != privacy_before):
             return {"results": [], "conflicts": []}
         return {"results": results, "conflicts": conflicts}
 
@@ -909,7 +1017,17 @@ def create_app(service=None, *, run_worker=True):
             root = Path(os.environ.get("MEM0_STATE_DIR", str(DEFAULT_STATE_DIR)))
             root.mkdir(parents=True, exist_ok=True, mode=0o700)
             root.chmod(0o700)
-            app.state.memory = MemoryService(root, Mem0Engine(root))
+            # S04 §6 privacy wiring (production assembly only): the engine
+            # consults the per-user privacy epoch before preparing a user turn
+            # and screens the FULL outbound text (the evaluator state carries
+            # complete user_text) through outbound_inventory.secret_screen
+            # BEFORE any evaluator call. Screen hits and unknown epochs are
+            # retained as needs_review; nothing is sent. Injected test
+            # services construct their own engine and are not gated here.
+            app.state.memory = MemoryService(root, Mem0Engine(
+                root,
+                epoch_reader=lambda uid: privacy_epoch.get_epoch(root, uid),
+                outbound_screen=outbound_inventory.secret_screen))
         else:
             app.state.memory = service
         # Per-client principal authentication (0.3.0 G4 consistency close-out).

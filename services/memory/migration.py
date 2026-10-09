@@ -66,6 +66,7 @@ _QUALITY_ADDITIONS = (
     ("quality", "TEXT"),
     ("stored_ids", "TEXT"),
     ("forgotten", "INTEGER NOT NULL DEFAULT 0"),
+    ("privacy_epoch", "INTEGER"),
 )
 
 # The baseline columns a legacy memory database always has.  A non-empty
@@ -917,7 +918,7 @@ def _persist_plan(copy_path: str, event_id: str, plan: dict) -> None:
 
 def _write_receipt(copy_path: str, event_id: str, *, status: str,
                    validation_status, plan: dict, error_kind, stored_ids,
-                   require=None) -> None:
+                   require=None, privacy_epoch=None) -> None:
     # A receipt never overwrites a row a forget has since tombstoned: the
     # ``forgotten=0`` guard makes the settlement fence race-proof.
     if require is None:
@@ -930,11 +931,16 @@ def _write_receipt(copy_path: str, event_id: str, *, status: str,
         "quality": json.dumps(plan.get("quality") or {}, ensure_ascii=False),
         "plan": json.dumps(plan, ensure_ascii=False),
         "stored_ids": json.dumps(stored_ids, ensure_ascii=False),
+        # PE-F003: stamp the era the receipt settles under. Callers pass the
+        # bound era explicitly; unsettled review receipts fall back to the
+        # plan's own binding when present.
+        "privacy_epoch": (privacy_epoch if privacy_epoch is not None
+                          else plan.get("privacy_epoch")),
     }, require=require)
 
 
 def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig,
-                  forget_store, persisted_plan) -> str:
+                  forget_store, persisted_plan, current_epoch: int) -> str:
     if persisted_plan is None:
         try:
             plan = engine.prepare(turn)
@@ -948,10 +954,25 @@ def _reverify_one(copy_path: str, engine, turn, config: quality.QualityConfig,
                 "status": "needs_review", "validation_status": "needs_review",
                 "error_kind": "invalid_plan"})
             return "errors"
+        # PE-F003: bind the freshly prepared plan to the era it was prepared
+        # under BEFORE any vector effect.
+        plan["privacy_epoch"] = current_epoch
     else:
         # A persisted plan is reused verbatim (F004); it is never replaced by a
         # fresh extraction, so a tampered/drifted plan fails closed below.
+        # PE-F003: it must also belong to the CURRENT era — retrying an
+        # unstamped or prior-era plan under a new epoch settles needs_review
+        # instead of writing stale-era facts.
         plan = persisted_plan
+        plan_epoch = plan.get("privacy_epoch")
+        if (isinstance(plan_epoch, bool) or not isinstance(plan_epoch, int)
+                or plan_epoch != current_epoch):
+            _write_receipt(
+                copy_path, turn.event_id, status="needs_review",
+                validation_status="needs_review", plan=plan,
+                error_kind="privacy_epoch_changed",
+                stored_ids={"stored": [], "reused": []})
+            return "needs_review"
 
     status = plan.get("validation_status")
     if status in ("needs_review", "rejected"):
@@ -1057,7 +1078,7 @@ def reverify(copy_dir, engine) -> dict:
     store already failed is retried from its persisted plan (no re-extraction),
     and a forget committed at any point in the pipeline suppresses the row.
     """
-    from . import lifecycle  # lazy: keeps the read-only CLI import light
+    from . import lifecycle, privacy_epoch  # lazy: keeps the read-only CLI import light
     from .service import Turn
 
     copy_path = _db_path(copy_dir)
@@ -1093,7 +1114,19 @@ def reverify(copy_dir, engine) -> dict:
                 "error_kind": "invalid_plan"}, require={"forgotten": 0})
             counts["needs_review"] += 1
             continue
-        outcome = _reverify_one(copy_path, engine, turn, config, forget_store, persisted)
+        # S04 §6-1 (PE-F003): a revalidated record enters the CURRENT privacy
+        # era of the copy. An unknown epoch holds the row (fail closed); the
+        # per-row era is bound inside _reverify_one exactly like the live
+        # process_one pipeline.
+        current_epoch = privacy_epoch.get_epoch(copy_dir, turn.user_id)
+        if current_epoch == privacy_epoch.EPOCH_UNKNOWN:
+            _write_columns(copy_path, event_id, {
+                "status": "needs_review", "validation_status": "needs_review",
+                "error_kind": "privacy_epoch_unknown"}, require={"forgotten": 0})
+            counts["needs_review"] += 1
+            continue
+        outcome = _reverify_one(copy_path, engine, turn, config, forget_store,
+                                persisted, current_epoch)
         counts[outcome] = counts.get(outcome, 0) + 1
     return counts
 

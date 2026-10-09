@@ -64,6 +64,7 @@ def plan_dict(turn, status, facts=(), error_kind=None):
         "validation_status": status, "source_digest": digest_of(turn.text),
         "text_chars": len(turn.text), "facts": fact_dicts,
         "error_kind": error_kind,
+        "privacy_epoch": 0,
         "quality": {"semantic": semantic_evidence(len(fact_dicts), status == "no_facts"),
                     "fact_count": len(fact_dicts),
                     "no_durable_facts": status == "no_facts"},
