@@ -1,6 +1,7 @@
 import { GoalAI } from './goal-ai.mjs'
 import { workspaceState, runChecks } from './goal-workspace.mjs'
 import { createGoalAccessBroker } from './goal-access-broker.mjs'
+import { createAdmittedExecution } from './dispatcher.mjs'
 import crypto from 'node:crypto'
 
 /** Persistent scheduler. Agents propose; this process owns file and evidence writes. */
@@ -87,7 +88,14 @@ export class GoalRuntime {
       await this.goals.checkpoint(goal.id, token, { taskId })
       const plan = restoring ? { result: { instruction: '接续已保存且范围匹配的提案，不再次派发 Worker' } } : await call('planner', common)
       if (typeof plan.result.instruction !== 'string' || !plan.result.instruction.trim()) throw new Error('chief returned no usable next step')
-      const { execution } = await this.tasks.createExecution(taskId, { workerId: restoring ? 'checkpoint-recovery/controller' : 'deepseek-official/deepseek-flash', artifactRef: before.artifactRef }, { idempotencyKey: key('worker') })
+      // (S03b) host-issued admission Grant at enqueue. The goal grant's own
+      // expiry is the authorizing artifact's deadline, so it participates in
+      // the effective minimum (authorizerExpiresAt): an iteration can never
+      // out-admit the material authority it runs under. A goal grant that has
+      // already expired refuses the enqueue fail-closed instead of admitting
+      // work past its authority.
+      const workerFields = { workerId: restoring ? 'checkpoint-recovery/controller' : 'deepseek-official/deepseek-flash', artifactRef: before.artifactRef }
+      const { execution } = await createAdmittedExecution({ store: this.tasks, taskId, input: workerFields, owner: goal.owner, scope: ['goal-runtime.execution'], authorizerExpiresAt: goal.grant.expiresAt, idempotencyKey: key('worker') })
       workerId = execution.id
       await this.tasks.updateExecutionStatus(workerId, { status: 'running' }, { idempotencyKey: key('working') })
       const proposal = restoring ? { result: saved.proposal, identity: saved.writerIdentity } : await call('worker', { ...common, instruction: plan.result.instruction })
@@ -114,7 +122,8 @@ export class GoalRuntime {
         await this.goals.settle(goal.id, token, { outcome: 'retry', summary: '真实验收未通过，下一轮由 Agent 依据失败记录调整方案。', artifactRef: checked.artifactRef, checks, progress: checked.artifactRef !== before.artifactRef, taskId })
         return
       }
-      const reviewer = await this.tasks.createExecution(taskId, { workerId: 'kimi/reviewer', parentExecutionId: workerId, artifactRef: after.artifactRef }, { idempotencyKey: key('reviewer') })
+      const reviewerFields = { workerId: 'kimi/reviewer', parentExecutionId: workerId, artifactRef: after.artifactRef }
+      const reviewer = await createAdmittedExecution({ store: this.tasks, taskId, input: reviewerFields, owner: goal.owner, scope: ['goal-runtime.execution'], authorizerExpiresAt: goal.grant.expiresAt, idempotencyKey: key('reviewer') })
       reviewId = reviewer.execution.id
       await this.tasks.updateExecutionStatus(reviewId, { status: 'running' }, { idempotencyKey: key('reviewing-agent') })
       const review = await call('reviewer', { objective: goal.spec.objective, files: checked.files, artifactRef: after.artifactRef, checks, writerIdentity: proposal.identity })

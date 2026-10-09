@@ -8,8 +8,8 @@
 //   1. the goal scheduler's reviewer is a GoalAI chat completion with NO tool
 //      or filesystem surface — it stays on the loopback endpoint, never reads
 //      a credential file and can only return a JSON verdict;
-//   2. the Cezar dispatcher (control-plane/dispatcher.mjs) carries no reviewer
-//      routing at all;
+//   2. the Cezar dispatcher rejects reviewers before any engine call, even
+//      when their grant and Approval cover cezar.dispatch;
 //   3. a source tripwire: any control-plane module that mentions a reviewer
 //      must be one of the already-adjudicated files, so a NEW reviewer
 //      dispatch surface fails this test until it is proven read-only.
@@ -20,6 +20,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { GoalAI } from '../control-plane/goal-ai.mjs'
+import { ControlPlaneStore } from '../control-plane/store.mjs'
+import { createAdmittedExecution, cezarDispatchPlan, dispatchCezar } from '../control-plane/dispatcher.mjs'
+import os from 'node:os'
 
 const CONTROL_PLANE = fileURLToPath(new URL('../control-plane/', import.meta.url))
 
@@ -30,6 +33,7 @@ const CONTROL_PLANE = fileURLToPath(new URL('../control-plane/', import.meta.url
 // to GoalAI. Anything ELSE mentioning a reviewer is an unproven surface.
 const ADJUDICATED_REVIEWER_FILES = new Set([
   'contracts.mjs',
+  'dispatcher.mjs', // Denial-only reviewer gate, behavior pinned below.
   'goal-access-broker.mjs',
   'goal-ai.mjs',
   'goal-runtime.mjs',
@@ -61,9 +65,25 @@ test('the goal reviewer is a tool-less loopback completion that never reads cred
   assert.equal(payload.model, 'kimi-k3')
 })
 
-test('the Cezar dispatcher carries no reviewer routing', async () => {
-  const source = await fs.readFile(path.join(CONTROL_PLANE, 'dispatcher.mjs'), 'utf8')
-  assert.equal(/reviewer/i.test(source), false, 'dispatcher.mjs must not route a reviewer until that path proves read-only')
+test('the Cezar dispatcher refuses reviewers even with Cezar scope and matching Approval', async t => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reviewer-dispatch-denial-'))
+  t.after(() => fs.rm(stateDir, { recursive: true, force: true }))
+  const store = new ControlPlaneStore({ stateDir })
+  const { task } = await store.createTask({ goal: 'synthetic review' }, { idempotencyKey: 'task' })
+  const { execution } = await createAdmittedExecution({ store, taskId: task.id,
+    input: { workerId: 'synthetic', role: 'reviewer' }, owner: 'synthetic',
+    scope: ['cezar.dispatch'], idempotencyKey: 'execution' })
+  const plan = cezarDispatchPlan({ taskId: task.id, executionId: execution.id })
+  const { approval } = await store.createApproval(plan, { idempotencyKey: 'approval' })
+  await store.decideApproval(approval.id, { decision: 'approved', approvedBy: 'synthetic' }, { idempotencyKey: 'decision' })
+  let starts = 0
+  await assert.rejects(() => dispatchCezar({ store, taskId: task.id, executionId: execution.id,
+    approvalId: approval.id, adapter: { start: async () => { starts++; return { id: 'unexpected' } } },
+    idempotencyKey: 'dispatch' }), error => error.code === 'REVIEWER_READONLY_REQUIRED')
+  assert.equal(starts, 0, 'Cezar must never start a reviewer without enforced read-only')
+  assert.equal((await store.getApproval(approval.id)).usedAt, undefined)
+  assert.equal((await store.getExecution(execution.id)).status, 'blocked')
+  assert.equal((await store.getExecution(execution.id)).engineRef, undefined)
 })
 
 test('every control-plane reviewer mention is an already-adjudicated file', async () => {

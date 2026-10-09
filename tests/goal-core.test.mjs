@@ -6,6 +6,7 @@ import path from 'node:path'
 import { GoalStore, validateGoalSpec } from '../control-plane/goal-store.mjs'
 import { GoalRuntime } from '../control-plane/goal-runtime.mjs'
 import { ControlPlaneStore } from '../control-plane/store.mjs'
+import { verifyGrant } from '../control-plane/execution-grant.mjs'
 import { prepareWorkspace, applyProposal, runChecks, workspaceState } from '../control-plane/goal-workspace.mjs'
 
 const spec = (changes = {}) => ({ title: 'test goal', objective: 'repair add, preserve acceptance tests', sourceDir: path.resolve('tests/fixtures/goal-pilot'),
@@ -150,6 +151,17 @@ test('runtime executes real checks and completes only with independent review', 
   assert.equal(goal.status, 'complete', goal.summary)
   assert.equal((await ctx.tasks.getTask(goal.history[0].taskId)).task.status, 'completed')
   assert.equal(goal.history[0].review.identity, 'kimi/reviewer')
+  // (S03b) the goal-runtime entry issues every iteration execution's admission
+  // Grant at enqueue; the goal grant's expiry participates as the authorizing
+  // artifact's deadline (authorizerExpiresAt), and the 30-minute lifetime cap
+  // still bounds the window.
+  for (const execution of (await ctx.tasks.getTask(goal.history[0].taskId)).executions) {
+    const admitted = verifyGrant(execution.grant, { taskId: goal.history[0].taskId, executionId: execution.id, parametersDigest: execution.parametersDigest, now: Date.now })
+    assert.deepEqual(admitted.scope, ['goal-runtime.execution'])
+    assert.ok(typeof admitted.owner === 'string' && admitted.owner.length > 0, 'the grant owner is a non-empty identity string')
+    assert.ok(admitted.effectiveDeadlineAt - admitted.issuedAt <= 30 * 60_000, 'the lifetime cap participates in the effective deadline')
+    assert.ok(admitted.effectiveDeadlineAt <= Date.parse(goal.grant.expiresAt), 'the goal grant expiry participates in the effective deadline')
+  }
 })
 test('failed iteration automatically returns and repairs on a second iteration', { skip: process.platform !== 'darwin' }, async t => {
   const ctx = await setup(t); await grant(ctx)

@@ -9,12 +9,23 @@ import { createReviewerExecution } from '../control-plane/reviewer.mjs'
 import { probeFeatureMap } from '../control-plane/feature-map.mjs'
 import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { CezarAdapter } from '../adapters/engines/cezar.mjs'
-import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution, watchCezarExecution } from '../control-plane/dispatcher.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution, watchCezarExecution, createAdmittedExecution } from '../control-plane/dispatcher.mjs'
 import { handleMcpRequest } from '../interfaces/mcp/server.mjs'
 import { AuthorityError, authorizeHttpRequest, createLiveRequestAuthority, nativeRemoteInput, trustedApprovalDecision } from '../control-plane/request-authority.mjs'
 
 const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 4324)
 const TRUSTED_ORIGINS = new Set(['http://127.0.0.1:4321', 'http://localhost:4321'])
+// Operator configuration of the single-execution admission lifetime cap
+// (S03b). Unset -> execution-grant's DEFAULT_MAX_EXECUTION_LIFETIME_MS. A set
+// but unusable value crashes startup loudly (fail-closed), never silently
+// falling back to a window the operator did not ask for.
+function parseLifetimeConfig(raw) {
+  if (raw === undefined) return undefined
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value <= 0) throw new Error('PERSONAL_AI_OS_MAX_EXECUTION_LIFETIME_MS must be a positive integer (epoch ms duration)')
+  return value
+}
+const MAX_EXECUTION_LIFETIME_MS = parseLifetimeConfig(process.env.PERSONAL_AI_OS_MAX_EXECUTION_LIFETIME_MS)
 // Revalidated on every request (M02 ID-E001): rotation/revocation/expiry of the
 // on-disk authority file take effect without restarting the gateway. The loader
 // is synchronous, so no top-level await is needed here.
@@ -166,7 +177,27 @@ const server = http.createServer(async (req, res) => {
     }
     const executionTaskId = segment(url.pathname, '/api/control-plane/tasks/', '/executions')
     if (executionTaskId && req.method === 'POST') {
-      const result = await store.createExecution(executionTaskId, await body(req), { idempotencyKey: idempotencyKey(req) })
+      const input = await body(req)
+      // (S03b) Every execution enqueued through this entry carries a formal
+      // admission Grant, issued by the HOST before the record is queued and
+      // persisted with it. Caller-supplied grant/parametersDigest material is
+      // stripped and re-issued (a client must never supply its own admission
+      // artifact); a caller-chosen execution id and an explicit request-level
+      // expiresAt are honored — the id is what the grant binds, and expiresAt
+      // can only narrow the window (the operator-configured lifetime cap
+      // still participates in the minimum). An illegal expiresAt is refused
+      // with GRANT_INVALID (400) and nothing is enqueued.
+      const { expiresAt: requestedExpiresAt, owner: requestedOwner, grant: _callerGrant, parametersDigest: _callerDigest, ...fields } = input
+      const result = await createAdmittedExecution({
+        store,
+        taskId: executionTaskId,
+        input: fields,
+        owner: principal?.authenticated === true ? principal.id : (typeof requestedOwner === 'string' && requestedOwner.trim() ? requestedOwner : fields.workerId),
+        scope: ['cezar.dispatch', 'native.session.prompt'],
+        expiresAt: requestedExpiresAt,
+        idempotencyKey: idempotencyKey(req),
+        ...(MAX_EXECUTION_LIFETIME_MS === undefined ? {} : { maxLifetimeMs: MAX_EXECUTION_LIFETIME_MS }),
+      })
       return send(res, result.replay ? 200 : 201, result)
     }
     const reviewTaskId = segment(url.pathname, '/api/control-plane/tasks/', '/reviews')

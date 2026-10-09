@@ -9,6 +9,7 @@
 // evidence lives in tests/native-sandbox.test.mjs and is not duplicated here.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -35,6 +36,7 @@ import {
   runNativeAcpPrompt,
 } from '../control-plane/native-acp-executor.mjs'
 import { ControlPlaneStore, parametersDigest } from '../control-plane/store.mjs'
+import { executionGrantFixture } from './helpers/execution-grant.mjs'
 
 const MAC = { skip: process.platform !== 'darwin' }
 
@@ -256,8 +258,8 @@ async function launchFixture({ decision = 'approved', expiresAt, promptCwd = '/t
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-launch-'))
   const store = new ControlPlaneStore({ stateDir })
   const task = await store.createTask({ goal: 'launch intent guard' }, { idempotencyKey: 'li-task' })
-  const created = await store.createExecution(task.task.id, { workerId: 'fake:native', ...(role === undefined ? {} : { role }), sessionRefId: executionSessionRefId }, { idempotencyKey: 'li-exec' })
-  const executionId = created.execution.id
+  const executionId = `execution_li_${crypto.randomUUID()}`
+  const created = await store.createExecution(task.task.id, { id: executionId, workerId: 'fake:native', ...(role === undefined ? {} : { role }), sessionRefId: executionSessionRefId, ...executionGrantFixture({ taskId: task.task.id, executionId, scope: ['native.session.prompt'] }) }, { idempotencyKey: 'li-exec' })
   const plan = nativePromptPlan({ taskId: task.task.id, executionId, source: 'fake', nativeSessionId: 'native-1', sessionRefId, cwd: planCwd, prompt: '继续' })
   const approval = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest, ...(expiresAt ? { expiresAt } : {}) }, { idempotencyKey: 'li-approval' })
   await store.decideApproval(approval.approval.id, { decision, approvedBy: 'tester' }, { idempotencyKey: 'li-decide' })
@@ -516,8 +518,8 @@ async function cancelFixture({ nativeSessionId = 'native-1' } = {}) {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-cancel-'))
   const store = new ControlPlaneStore({ stateDir })
   const task = await store.createTask({ goal: 'native cancel' }, { idempotencyKey: 'nc-task' })
-  const created = await store.createExecution(task.task.id, { workerId: 'fake:native', sessionRefId: `session:fake:${nativeSessionId}` }, { idempotencyKey: 'nc-exec' })
-  const executionId = created.execution.id
+  const executionId = `execution_nc_${crypto.randomUUID()}`
+  const created = await store.createExecution(task.task.id, { id: executionId, workerId: 'fake:native', sessionRefId: `session:fake:${nativeSessionId}`, ...executionGrantFixture({ taskId: task.task.id, executionId, scope: ['native.session.prompt'] }) }, { idempotencyKey: 'nc-exec' })
   const promptPlan = nativePromptPlan({ taskId: task.task.id, executionId, source: 'fake', nativeSessionId, sessionRefId: `session:fake:${nativeSessionId}`, cwd: '/tmp', prompt: '继续' })
   const promptApproval = await store.createApproval({ action: promptPlan.action, target: promptPlan.target, parametersDigest: promptPlan.parametersDigest }, { idempotencyKey: 'nc-prompt-approval' })
   await store.decideApproval(promptApproval.approval.id, { decision: 'approved', approvedBy: 'tester' }, { idempotencyKey: 'nc-prompt-decide' })

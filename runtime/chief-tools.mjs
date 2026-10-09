@@ -6,6 +6,7 @@ import { Type } from '@earendil-works/pi-ai';
 import { createRegistry, defineExtension, defineTool } from '@earendil-works/pi-durable';
 import { parametersDigest } from '../control-plane/store.mjs';
 import { nativePromptPlan } from '../control-plane/native-acp-executor.mjs';
+import { createAdmittedExecution } from '../control-plane/dispatcher.mjs';
 
 const ISSUED = new WeakMap();
 const VERSION = 1;
@@ -72,9 +73,15 @@ export function createChiefToolSuite({ store, binding: input, workerIds: inputWo
       const args = checkedArgs(raw, ['workerId', 'sessionRefId'], ['workerId']);
       if (!workers.includes(args.workerId) || args.sessionRefId !== undefined && (typeof args.sessionRefId !== 'string' || !args.sessionRefId.trim())) deny();
       await currentTask(); if (context.abortSignal?.aborted) deny();
-      const result = await store.createExecution(binding.productTaskId, { workerId: args.workerId, parentExecutionId: binding.executionId, ...(args.sessionRefId === undefined ? {} : { sessionRefId: args.sessionRefId }) },
-        { idempotencyKey: `pi-chief:${descriptor.digest}:${api.taskId}:${api.callId}`,
-          executionGuard: { taskId: binding.productTaskId, executionId: binding.executionId } });
+      // (S03b) the host issues the child execution's admission Grant at
+      // enqueue: the bound ownerId is the owner, the digest covers exactly the
+      // admitted fields. Any admission denial lands in the tool's honest
+      // isError path below — nothing is enqueued.
+      const fields = { workerId: args.workerId, parentExecutionId: binding.executionId, ...(args.sessionRefId === undefined ? {} : { sessionRefId: args.sessionRefId }) };
+      const result = await createAdmittedExecution({ store, taskId: binding.productTaskId, input: fields,
+        owner: binding.ownerId, scope: ['native.session.prompt'],
+        idempotencyKey: `pi-chief:${descriptor.digest}:${api.taskId}:${api.callId}`,
+        executionGuard: { taskId: binding.productTaskId, executionId: binding.executionId } });
       return { executionId: result.execution.id, status: result.execution.status, replay: result.replay, dispatched: false };
     }),
     tool(TOOL_NAMES[2], 'Plan a prompt for a queued child native session; approval and native identity verification are still required. No load/prompt.',

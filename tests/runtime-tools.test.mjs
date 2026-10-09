@@ -8,6 +8,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { Harness } from '@earendil-works/pi-durable';
 import { ControlPlaneStore } from '../control-plane/store.mjs';
+import { verifyGrant } from '../control-plane/execution-grant.mjs';
 import { openOwnedSqliteStorage } from '../runtime/owner-sqlite.mjs';
 import { AdmissionDoc, PiRuntimeAdapter } from '../runtime/pi-adapter.mjs';
 import { createChiefToolSuite, getChiefToolSuiteDescriptor } from '../runtime/chief-tools.mjs';
@@ -69,8 +70,15 @@ test('actual Pi tool round reads bound task, creates a queued child and plans wi
   assert.ok(toolMessages.some(text => text.includes('requiresApproval')));
   const aggregate = await ctx.store.getTask(ctx.binding.productTaskId);
   assert.notEqual(aggregate.task.status, 'completed'); assert.equal(aggregate.evidence.length, 0);
-  assert.equal(aggregate.executions.find(exec => exec.id === childId).status, 'queued');
-  assert.equal(aggregate.executions.find(exec => exec.id === childId).engineRef, undefined);
+  const child = aggregate.executions.find(exec => exec.id === childId);
+  assert.equal(child.status, 'queued');
+  assert.equal(child.engineRef, undefined);
+  // (S03b) the chief-tools entry issues the child execution's admission Grant
+  // at enqueue: bound to this task/execution/digest, owned by the binding's
+  // ownerId, scoped to the native prompt family the child is planned for.
+  const childGrant = verifyGrant(child.grant, { taskId: ctx.binding.productTaskId, executionId: childId, parametersDigest: child.parametersDigest, now: Date.now });
+  assert.equal(childGrant.owner, 'synthetic-owner');
+  assert.deepEqual(childGrant.scope, ['native.session.prompt']);
   const duplicate = await adapter.submit(ctx.request); await adapter.wait(duplicate.submissionId);
   assert.equal(duplicate.submissionId, submitted.submissionId); assert.equal(ctx.faux.state.callCount, 4);
   await adapter.close(); adapter = await ctx.open();

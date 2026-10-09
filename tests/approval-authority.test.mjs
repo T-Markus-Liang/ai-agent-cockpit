@@ -1,11 +1,13 @@
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ControlPlaneStore, StoreError } from '../control-plane/store.mjs'
 import { callTool, handleMcpRequest } from '../interfaces/mcp/server.mjs'
 import { cezarDispatchPlan, dispatchCezar } from '../control-plane/dispatcher.mjs'
 import { nativePromptPlan, executeNativeSessionPrompt } from '../control-plane/native-acp-executor.mjs'
+import { executionGrantFixture } from './helpers/execution-grant.mjs'
 
 const GIT_A = `git:${'a'.repeat(40)}`
 const ROOT = process.cwd()
@@ -188,7 +190,8 @@ test('accessors/non-JSON arguments are rejected without executing code or creati
 
 test('strict Cezar dispatch rejects legacy-looking approvals before calling the engine', async () => {
   const store = await newStore(), task = await store.createTask({ goal: 'strict dispatch' }, { idempotencyKey: key() })
-  const exec = await store.createExecution(task.task.id, { workerId: 'synthetic' }, { idempotencyKey: key() })
+  const cezarExecutionId = `execution_strict_cezar_${crypto.randomUUID()}`
+  const exec = await store.createExecution(task.task.id, { id: cezarExecutionId, workerId: 'synthetic', ...executionGrantFixture({ taskId: task.task.id, executionId: cezarExecutionId, scope: ['cezar.dispatch'] }) }, { idempotencyKey: key() })
   const input = { taskId: task.task.id, executionId: exec.execution.id }
   const plan = cezarDispatchPlan(input)
   const created = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest, expiresAt: new Date(Date.now() + 60000).toISOString() }, { idempotencyKey: key() })
@@ -204,7 +207,8 @@ test('strict Cezar dispatch rejects legacy-looking approvals before calling the 
 
 test('strict native prompt rejects an unverified approval before any process starts', async () => {
   const store = await newStore(), task = await store.createTask({ goal: 'strict native' }, { idempotencyKey: key() })
-  const exec = await store.createExecution(task.task.id, { workerId: 'synthetic', sessionRefId: 'session:codex:synthetic' }, { idempotencyKey: key() })
+  const nativeExecutionId = `execution_strict_native_${crypto.randomUUID()}`
+  const exec = await store.createExecution(task.task.id, { id: nativeExecutionId, workerId: 'synthetic', sessionRefId: 'session:codex:synthetic', ...executionGrantFixture({ taskId: task.task.id, executionId: nativeExecutionId, scope: ['native.session.prompt'] }) }, { idempotencyKey: key() })
   const input = { taskId: task.task.id, executionId: exec.execution.id, source: 'codex', nativeSessionId: 'synthetic', sessionRefId: 'session:codex:synthetic', cwd: ROOT, prompt: 'synthetic' }
   const plan = nativePromptPlan(input)
   const created = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest, expiresAt: new Date(Date.now() + 60000).toISOString() }, { idempotencyKey: key() })

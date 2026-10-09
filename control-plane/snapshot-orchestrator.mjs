@@ -154,12 +154,26 @@ const RESERVED_SEGMENTS = new Set([
 /** Built-in kinds; any other kind must be accompanied by a caller adapter. */
 const BUILTIN_KINDS = new Set(["sqlite", "filedir"]);
 
+const ERROR_CODES = new Set([
+	"invalid-config", "invalid-store", "invalid-run-id", "duplicate-store", "unknown-kind",
+	"root-missing", "root-outside-allow-root", "store-missing", "unsafe-store-path",
+	"store-type-mismatch", "target-exists", "snapshot-in-progress", "snapshot-integrity",
+	"journal-missing", "recovery-not-authorized", "fence-expired", "adapter-failed",
+	"quiesce-failed", "snapshot-failed", "resume-failed", "journal-write-failed", "manifest-write-failed",
+]);
+const ADAPTER_CODES = {
+	quiesce: new Set(["quiesce-failed"]),
+	snapshot: new Set(["snapshot-failed", "snapshot-integrity", "target-exists", "unsafe-store-path", "store-type-mismatch"]),
+	resume: new Set(["resume-failed"]),
+};
+
 /** A redacted orchestrator failure. Never carries store content. */
 export class SnapshotOrchestratorError extends Error {
 	constructor(code, message) {
-		super(message ?? code);
+		const safeCode = ERROR_CODES.has(code) ? code : "adapter-failed";
+		super(message ?? safeCode);
 		this.name = "SnapshotOrchestratorError";
-		this.code = code;
+		this.code = safeCode;
 	}
 }
 
@@ -266,11 +280,12 @@ function assertSafeSegment(value, code, what) {
  * resume list and the run DTO. It reads ONLY the error's identity — never its
  * name, message, stack or cause — so an adapter error can never smuggle a secret
  * (a leaked credential in a message, say) into a persisted file. Our own
- * SnapshotOrchestratorError keeps its fixed error-code enum; every other error
- * collapses to the single `adapter-failed` code.
+ * SnapshotOrchestratorError is checked against a stage-specific code allowlist;
+ * every unknown error collapses to the fixed `<stage>-failed` code.
  */
 function errorRecord(error, stage, store) {
-	const code = error instanceof SnapshotOrchestratorError ? error.code : "adapter-failed";
+	const candidate = error instanceof SnapshotOrchestratorError ? error.code : null;
+	const code = ADAPTER_CODES[stage]?.has(candidate) ? candidate : `${stage}-failed`;
 	const record = { code, stage };
 	if (store !== undefined) record.store = store;
 	return record;
@@ -697,7 +712,23 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 					resume: "not-attempted",
 				})),
 			};
-			writeJournalSync(runDir, journal);
+			// Initial intent must be durable before any adapter is called.
+			try {
+				writeJournalSync(runDir, journal);
+			} catch {
+				throw new SnapshotOrchestratorError("journal-write-failed", "journal persistence failed");
+			}
+			let journalFailed = false;
+			function recordJournal() {
+				try {
+					writeJournalSync(runDir, journal);
+					return true;
+				} catch {
+					journalFailed = true;
+					return false;
+				}
+			}
+			const issued = new Set();
 
 			const evidence = new Array(stores.length).fill(null);
 			const elapsed = new Array(stores.length).fill(null);
@@ -714,19 +745,23 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 				const store = stores[index];
 				const state = journal.stores[index];
 				state.quiesce = "intent";
+				if (!recordJournal()) {
+					state.quiesce = "not-attempted";
+					break;
+				}
 				quiesceOrder.push(store.name);
-				writeJournalSync(runDir, journal);
+				issued.add(index);
 				try {
 					await store.adapter.quiesce(
 						makeOperationContext({ runId, owner: runOwner, fenceToken: fence.token, storeName: store.name, operation: "quiesce" }),
 					);
 					state.quiesce = "confirmed";
-					writeJournalSync(runDir, journal);
+					if (!recordJournal()) break;
 				} catch (error) {
 					// The store was mutated (or may have been) before it threw; only the
 					// journal can say so honestly now. Abort the run without snapshotting.
 					state.quiesce = "unknown";
-					writeJournalSync(runDir, journal);
+					recordJournal();
 					failure = errorRecord(error, "quiesce", store.name);
 					break;
 				}
@@ -734,7 +769,7 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 
 			// 4. Snapshot each store into its own fresh directory — only if every
 			//    quiesce succeeded.
-			if (failure === null) {
+			if (failure === null && !journalFailed) {
 				for (let index = 0; index < stores.length; index += 1) {
 					const store = stores[index];
 					const state = journal.stores[index];
@@ -748,13 +783,13 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 						evidence[index] = collectEvidence(targetDir);
 						elapsed[index] = clock() - t0;
 						state.snapshot = "ok";
-						writeJournalSync(runDir, journal);
+						if (!recordJournal()) break;
 					} catch (error) {
 						elapsed[index] = clock() - t0;
 						storeErrors[index] = errorRecord(error, "snapshot", store.name);
 						state.snapshot = "failed";
-						writeJournalSync(runDir, journal);
-						failure = errorRecord(error, "snapshot", store.name);
+						recordJournal();
+						failure = storeErrors[index];
 						break;
 					}
 				}
@@ -767,7 +802,7 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 			for (let index = stores.length - 1; index >= 0; index -= 1) {
 				const store = stores[index];
 				const state = journal.stores[index];
-				if (state.quiesce !== "confirmed" && state.quiesce !== "unknown" && state.quiesce !== "intent") {
+				if (!issued.has(index)) {
 					continue;
 				}
 				resumeOrder.push(store.name);
@@ -780,19 +815,21 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 					state.resume = "failed";
 					resumeErrors.push(errorRecord(error, "resume", store.name));
 				}
-				writeJournalSync(runDir, journal);
+				recordJournal();
 			}
 
-			// 6. Terminal status: a hard failure wins; otherwise an unprovable pause
-			//    window is `needs-review`; otherwise success.
+			// 6. Failed persistence leaves recovery uncertain regardless of cleanup.
+			//    Otherwise hard failures win, then unprovable pause windows.
 			const anySnapshotFailed = journal.stores.some((state) => state.snapshot === "failed");
 			const anyUnknown = journal.stores.some((state) => state.quiesce === "unknown");
 			const hardFailure = resumeErrors.length > 0 || anySnapshotFailed;
 			let status = "success";
 			if (hardFailure) status = "failed";
 			else if (anyUnknown) status = "needs-review";
+			if (journalFailed) status = "needs-review";
 
-			const topError = failure ?? (resumeErrors.length > 0 ? resumeErrors[0] : null);
+			const topError = journalFailed ? { code: "journal-write-failed", stage: "journal-write" }
+				: failure ?? (resumeErrors.length > 0 ? resumeErrors[0] : null);
 			const finishedAt = clock();
 			const manifestStores = stores.map((store, index) => {
 				const state = journal.stores[index];
@@ -826,9 +863,17 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 				resumeOrder,
 				resumeErrors,
 				error: topError,
+				journalPersistence: journalFailed ? "uncertain" : "confirmed",
 				network_calls: 0,
 			};
 
+			journal.state = status === "success" ? "completed" : "aborted";
+			if (!recordJournal()) {
+				status = "needs-review";
+				manifest.status = status;
+				manifest.error = { code: "journal-write-failed", stage: "journal-write" };
+				manifest.journalPersistence = "uncertain";
+			}
 			let manifestPath = null;
 			try {
 				manifestPath = writeManifestSync(runDir, manifest);
@@ -840,8 +885,15 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 				manifest.error = { code: "manifest-write-failed", stage: "manifest-write" };
 			}
 
-			journal.state = status === "success" ? "completed" : "aborted";
-			writeJournalSync(runDir, journal);
+			// Manifest failure still updates the journal, without blocking cleanup.
+			if (manifestPath === null) {
+				journal.state = "aborted";
+				if (!recordJournal()) {
+					status = "needs-review";
+					manifest.status = status;
+					manifest.journalPersistence = "uncertain";
+				}
+			}
 
 			return {
 				status,
@@ -852,6 +904,7 @@ export function createSnapshotOrchestrator({ rootDir, allowRoot, now, owner, fen
 				finishedAt,
 				stores: manifestStores,
 				resumeErrors,
+				journalPersistence: manifest.journalPersistence,
 				error: manifest.error,
 				manifest,
 			};
@@ -875,7 +928,8 @@ function basenameOf(path) {
  * allowRoot containment as createSnapshotOrchestrator (nothing is written).
  * Returns the journal's honest state plus the derived views a caller needs to
  * decide whether to recover:
- *   * needsReview — stores whose quiesce is `unknown` (pause window unprovable)
+ *   * needsReview — stores whose quiesce is `unknown` or `intent`
+ *                   (pause window unprovable)
  *   * resumable   — stores whose quiesce was issued and whose resume is not yet
  *                   confirmed (the set recoverRun would act on)
  *
@@ -897,7 +951,7 @@ export function inspectRun({ rootDir, allowRoot, runId } = {}) {
 	}
 	const journal = JSON.parse(readFileSync(journalPath, "utf8"));
 	const stores = Array.isArray(journal.stores) ? journal.stores : [];
-	const needsReview = stores.filter((state) => state.quiesce === "unknown").map((state) => state.name);
+	const needsReview = stores.filter((state) => state.quiesce === "unknown" || state.quiesce === "intent").map((state) => state.name);
 	const resumable = stores
 		.filter(
 			(state) =>
@@ -924,8 +978,9 @@ export function inspectRun({ rootDir, allowRoot, runId } = {}) {
  * validated for ALL stores before any resume is attempted); `resume(ctx)` is
  * replayed with the SAME fence token and the SAME deterministic operationId the
  * original run used, so an idempotent adapter is safe to replay. Each outcome is
- * written back to the journal (confirmed/failed) and the run is finally marked
- * `recovered`.
+ * written back to the journal (confirmed/failed). Persistence failure never
+ * interrupts the remaining resumes; it returns needs-review with uncertain
+ * journal persistence, rather than claiming recovery was recorded.
  *
  * @param {object} options
  * @param {string} options.rootDir
@@ -979,6 +1034,14 @@ export async function recoverRun({ rootDir, allowRoot, runId, owner, stores, now
 
 	const resumed = [];
 	const failed = [];
+	let journalFailed = false;
+	function recordRecovery() {
+		try {
+			writeJournalSync(runDir, journal);
+		} catch {
+			journalFailed = true;
+		}
+	}
 	for (const state of resumable) {
 		const adapter = adapters.get(state.name);
 		try {
@@ -997,10 +1060,14 @@ export async function recoverRun({ rootDir, allowRoot, runId, owner, stores, now
 			state.resume = "failed";
 			failed.push(state.name);
 		}
-		writeJournalSync(runDir, journal);
+		recordRecovery();
 	}
 
-	journal.state = "recovered";
-	writeJournalSync(runDir, journal);
+	journal.state = failed.length === 0 ? "recovered" : "aborted";
+	recordRecovery();
+	if (journalFailed) return {
+		runId: journal.runId, resumed, failed, status: "needs-review", journalPersistence: "uncertain",
+		error: { code: "journal-write-failed", stage: "journal-write" },
+	};
 	return { runId: journal.runId, resumed, failed };
 }

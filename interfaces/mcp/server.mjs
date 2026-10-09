@@ -5,7 +5,7 @@ import { listNativeAcpSessions } from '../../control-plane/native-acp.mjs'
 import { executeNativeSessionPrompt, cancelNativeExecution, nativePromptPlan } from '../../control-plane/native-acp-executor.mjs'
 import { buildRoutePlan } from '../../control-plane/router.mjs'
 import { createReviewerExecution } from '../../control-plane/reviewer.mjs'
-import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution } from '../../control-plane/dispatcher.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution, createAdmittedExecution } from '../../control-plane/dispatcher.mjs'
 import { CezarAdapter } from '../../adapters/engines/cezar.mjs'
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
@@ -228,7 +228,19 @@ export async function callTool(name, args = {}, { store, principal, requireOpera
   if (name === 'plan_task_completion') return store.completionPlan(args.taskId)
   if (name === 'complete_task') return store.completeTask(args.taskId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'list_audit_events') return store.listEvents(args)
-  if (name === 'create_execution') return store.createExecution(args.taskId, args, { idempotencyKey: args.idempotencyKey })
+  if (name === 'create_execution') {
+    // (S03b) the host issues the admission Grant at enqueue; the tool schema
+    // allowlist already prevents a caller from supplying grant/digest fields,
+    // so the entry only needs to mint, bind and persist them with the record.
+    const { idempotencyKey, ...fields } = args
+    return createAdmittedExecution({
+      store, input: fields,
+      taskId: args.taskId,
+      owner: principal?.authenticated === true ? principal.id : args.workerId,
+      scope: ['cezar.dispatch', 'native.session.prompt'],
+      idempotencyKey,
+    })
+  }
   if (name === 'create_review_execution') return createReviewerExecution({ ...args, store })
   if (name === 'update_execution_status') return store.updateExecutionStatus(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'plan_native_prompt') return nativePromptPlan(args)

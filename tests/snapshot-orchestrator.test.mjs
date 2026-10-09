@@ -6,6 +6,8 @@
 // never use the network, credentials, a model or WeChat, and never invoke git.
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -22,7 +24,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { after, test } from "node:test";
+import { after, mock, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -226,11 +228,11 @@ test("a snapshot failure is never a success; quiesced stores still resume in rev
 
 	const manifest = readManifest(result.dir);
 	assert.equal(manifest.status, "failed");
-	assert.deepEqual(manifest.error, { code: "adapter-failed", stage: "snapshot", store: "bad" });
+	assert.deepEqual(manifest.error, { code: "snapshot-failed", stage: "snapshot", store: "bad" });
 	const stores = byName(manifest);
 	assert.equal(stores.a.status, "ok");
 	assert.equal(stores.bad.status, "failed");
-	assert.deepEqual(stores.bad.error, { code: "adapter-failed", stage: "snapshot", store: "bad" });
+	assert.deepEqual(stores.bad.error, { code: "snapshot-failed", stage: "snapshot", store: "bad" });
 	assert.equal(stores.c.status, "not-run");
 	assert.equal(stores.c.sha256, undefined, "an unattempted store carries no evidence");
 
@@ -260,12 +262,12 @@ test("a resume failure is recorded and does not abort the cleanup chain; run is 
 		"resume:c", "resume:b", "resume:a",
 	]);
 	assert.equal(result.resumeErrors.length, 1);
-	assert.deepEqual(result.resumeErrors[0], { code: "adapter-failed", stage: "resume", store: "b" });
+	assert.deepEqual(result.resumeErrors[0], { code: "resume-failed", stage: "resume", store: "b" });
 
 	// All snapshots themselves succeeded.
 	const manifest = readManifest(result.dir);
 	assert.equal(manifest.status, "failed");
-	assert.deepEqual(manifest.resumeErrors, [{ code: "adapter-failed", stage: "resume", store: "b" }]);
+	assert.deepEqual(manifest.resumeErrors, [{ code: "resume-failed", stage: "resume", store: "b" }]);
 	assert.ok(manifest.stores.every((store) => store.status === "ok"));
 
 	// The journal honestly records the failed resume next to the confirmed ones.
@@ -652,7 +654,7 @@ test("quiesce that pauses then throws: needs-review, journal unknown, cleanup re
 	assert.equal(stores.c.resume, "not-attempted");
 	assert.deepEqual(manifest.quiesceOrder, ["a", "bad"]);
 	assert.deepEqual(manifest.resumeOrder, ["bad", "a"]);
-	assert.deepEqual(manifest.error, { code: "adapter-failed", stage: "quiesce", store: "bad" });
+	assert.deepEqual(manifest.error, { code: "quiesce-failed", stage: "quiesce", store: "bad" });
 
 	const journal = readJournal(result.dir);
 	assert.equal(journal.state, "aborted");
@@ -1050,7 +1052,7 @@ test("adapter canary secrets never reach the manifest, the journal, the disk or 
 
 		const result = await orchestrator.run({ runId: `run-canary-${stage}` });
 		assert.equal(result.status, stage === "quiesce" ? "needs-review" : "failed");
-		assert.deepEqual(result.error, { code: "adapter-failed", stage, store: "bad" });
+		assert.deepEqual(result.error, { code: `${stage}-failed`, stage, store: "bad" });
 
 		// Sweep every persisted byte (manifest, journal, leftover tmp files,
 		// store evidence) plus the returned DTO for any canary substring.
@@ -1101,4 +1103,177 @@ test("a failed manifest write is a fixed-code failure — no system error text o
 	}
 	assert.ok(!diskText.includes(ws.rootDir), "an absolute path leaked to disk");
 	assert.ok(!dtoText.includes(ws.rootDir), "an absolute path leaked into the DTO");
+});
+
+test("persistent journal write failure after quiesce cannot skip required cleanup or expose filesystem errors", async () => {
+	for (const stage of ["quiesce", "quiesce-throw", "next-intent", "snapshot", "snapshot-throw", "resume", "terminal"]) {
+		const ws = makeWorkspace();
+		const calls = [];
+		const paused = new Set();
+		let poison = false;
+		const originalWrite = fs.writeFileSync;
+		const injected = mock.method(fs, "writeFileSync", (path, data, ...args) => {
+			if (String(path).endsWith("journal.json.tmp") && (poison ||
+				(stage === "terminal" && JSON.parse(String(data)).state === "completed") ||
+				(stage === "next-intent" && JSON.parse(String(data)).stores[1].quiesce === "intent"))) {
+				const error = new Error("EIO /private/secret-storage-path");
+				error.code = "EIO";
+				error.path = "/private/secret-storage-path";
+				throw error;
+			}
+			return originalWrite(path, data, ...args);
+		});
+		syncBuiltinESMExports();
+		try {
+			const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot, owner: "journal-owner" });
+			for (const name of ["a", "b", "c"]) orchestrator.registerStore({ name, kind: "synthetic", adapter: {
+				async quiesce() {
+					calls.push(`quiesce:${name}`);
+					paused.add(name);
+					if (name === "b" && stage.startsWith("quiesce")) {
+						poison = true;
+						if (stage.endsWith("throw")) throw new Error("pause acknowledgement lost");
+					}
+				},
+				async snapshotTo(target) {
+					calls.push(`snapshot:${name}`);
+					if (name === "b" && stage.startsWith("snapshot")) {
+						poison = true;
+						if (stage.endsWith("throw")) throw new Error("copy acknowledgement lost");
+					}
+					mkdirSync(target);
+					writeFileSync(join(target, "payload"), name);
+				},
+				async resume() {
+					calls.push(`resume:${name}`);
+					if (name === "c" && stage === "resume") {
+						poison = true;
+						throw new Error("resume uncertain");
+					}
+					paused.delete(name);
+				},
+			} });
+			const result = await orchestrator.run({ runId: "journal-fault" });
+			assert.equal(result.status, "needs-review", stage);
+			assert.equal(result.journalPersistence, "uncertain");
+			assert.deepEqual(result.error, { code: "journal-write-failed", stage: "journal-write" });
+			const cleanup = calls.filter((call) => call.startsWith("resume:"));
+			assert.deepEqual(cleanup, stage === "next-intent" ? ["resume:a"] : stage.startsWith("quiesce")
+				? ["resume:b", "resume:a"] : ["resume:c", "resume:b", "resume:a"]);
+			assert.deepEqual([...paused], stage === "resume" ? ["c"] : []);
+			if (stage.startsWith("quiesce")) assert.ok(!calls.some((call) => call.startsWith("snapshot:")));
+			if (stage === "next-intent") assert.deepEqual(calls, ["quiesce:a", "resume:a"]);
+			if (stage.startsWith("snapshot")) assert.ok(!calls.includes("snapshot:c"));
+			assert.equal(result.resumeErrors.length, stage === "resume" ? 1 : 0);
+			assert.equal(readManifest(result.dir).journalPersistence, "uncertain");
+			const dto = JSON.stringify({ error: result.error, stores: result.stores, resumeErrors: result.resumeErrors, manifest: result.manifest });
+			for (const text of [dto, readTreeText(result.dir)]) {
+				assert.ok(!text.includes("EIO"));
+				assert.ok(!text.includes("/private/secret-storage-path"));
+			}
+			const view = inspectRun({ rootDir: ws.rootDir, allowRoot: ws.allowRoot, runId: result.runId });
+			assert.notEqual(view.state, "completed", "stale journal must not claim completion");
+		} finally {
+			injected.mock.restore();
+			syncBuiltinESMExports();
+		}
+	}
+});
+
+test("persistent recovery journal failure still attempts every required resume and reports uncertainty", async () => {
+	const ws = makeWorkspace();
+	const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot,
+		owner: "recover-owner", now: () => 1000 });
+	for (const name of ["a", "b"]) orchestrator.registerStore({ name, kind: "synthetic",
+		adapter: recordingAdapter(name, [], { resumeThrows: true }) });
+	const run = await orchestrator.run({ runId: "recovery-write-fault" });
+	assert.equal(run.status, "failed");
+	const originalWrite = fs.writeFileSync;
+	const injected = mock.method(fs, "writeFileSync", (path, ...args) => {
+		if (String(path).endsWith("journal.json.tmp")) throw new Error("EIO /private/recovery-secret");
+		return originalWrite(path, ...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		const resumed = [];
+		const recovery = await recoverRun({ rootDir: ws.rootDir, allowRoot: ws.allowRoot, runId: run.runId,
+			owner: "recover-owner", now: () => 1001, stores: ["a", "b"].map((name) => ({ name,
+				adapter: { async resume() { resumed.push(name); } } })) });
+		assert.deepEqual(resumed, ["a", "b"]);
+		assert.equal(recovery.status, "needs-review");
+		assert.equal(recovery.journalPersistence, "uncertain");
+		assert.deepEqual(recovery.error, { code: "journal-write-failed", stage: "journal-write" });
+		assert.ok(!JSON.stringify(recovery).includes("EIO"));
+		assert.ok(!JSON.stringify(recovery).includes("/private/recovery-secret"));
+		assert.equal(readJournal(run.dir).state, "aborted", "durable journal still requires review");
+	} finally {
+		injected.mock.restore();
+		syncBuiltinESMExports();
+	}
+});
+
+test("failed initial journal write is redacted and invokes no adapter", async () => {
+	const ws = makeWorkspace();
+	const calls = [];
+	const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+	orchestrator.registerStore({ name: "a", kind: "synthetic", adapter: recordingAdapter("a", calls) });
+	const originalWrite = fs.writeFileSync;
+	const injected = mock.method(fs, "writeFileSync", (path, ...args) => {
+		if (String(path).endsWith("journal.json.tmp")) throw new Error("EIO /private/secret");
+		return originalWrite(path, ...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		await assert.rejects(() => orchestrator.run({ runId: "initial-fault" }), (error) => {
+			assert.equal(error.code, "journal-write-failed");
+			assert.ok(!error.message.includes("EIO"));
+			assert.ok(!error.message.includes("/private/secret"));
+			return true;
+		});
+		assert.deepEqual(calls, []);
+	} finally {
+		injected.mock.restore();
+		syncBuiltinESMExports();
+	}
+});
+
+test("exported snapshot Error subclass enforces stage allowlists even when code is modified", async () => {
+	for (const stage of ["quiesce", "snapshot", "resume"]) {
+		for (const supplied of ["secret-code-/private/credential", "invalid-config", "target-exists"]) {
+			for (const mutate of [false, true]) {
+				const ws = makeWorkspace();
+				const calls = [];
+				const adapter = recordingAdapter("a", calls);
+				const error = new SnapshotOrchestratorError(supplied);
+				if (supplied.startsWith("secret")) assert.equal(error.code, "adapter-failed");
+				if (mutate) error.code = supplied;
+				adapter[stage === "snapshot" ? "snapshotTo" : stage] = async () => { throw error; };
+				const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+				orchestrator.registerStore({ name: "a", kind: "synthetic", adapter });
+				const result = await orchestrator.run({ runId: "subclass-code" });
+				assert.equal(result.error.code, stage === "snapshot" && supplied === "target-exists" ? supplied : `${stage}-failed`);
+				assert.notEqual(result.status, "success");
+				assert.ok(!JSON.stringify(result).includes("secret-code-/private/credential"));
+				assert.ok(!readTreeText(result.dir).includes("secret-code-/private/credential"));
+			}
+		}
+	}
+});
+
+test("adapter error code is captured once so a changing subclass getter cannot bypass redaction", async () => {
+	const ws = makeWorkspace();
+	const error = new SnapshotOrchestratorError("target-exists");
+	let reads = 0;
+	Object.defineProperty(error, "code", { get() { return ++reads === 1 ? "target-exists" : "secret-changing-code"; } });
+	const adapter = recordingAdapter("a", []);
+	adapter.snapshotTo = async () => { throw error; };
+	const orchestrator = createSnapshotOrchestrator({ rootDir: ws.rootDir, allowRoot: ws.allowRoot });
+	orchestrator.registerStore({ name: "a", kind: "synthetic", adapter });
+	const result = await orchestrator.run({ runId: "changing-code" });
+	assert.equal(result.status, "failed");
+	assert.equal(result.stores[0].error.code, "target-exists");
+	assert.equal(result.error.code, "target-exists");
+	assert.equal(reads, 1, "the same captured failure is used in both DTO positions");
+	assert.ok(!JSON.stringify(result).includes("secret-changing-code"));
+	assert.ok(!readTreeText(result.dir).includes("secret-changing-code"));
 });

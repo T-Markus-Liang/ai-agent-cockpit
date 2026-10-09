@@ -375,14 +375,30 @@ export class ControlPlaneStore {
     return execution
   }
 
-  async createExecution(taskId, input, { idempotencyKey, executionGuard } = {}) {
-    if (input?.status !== undefined && input.status !== 'queued') throw new StoreError('INVALID_INITIAL_STATUS', 'new executions must start queued', 400)
+  async createExecution(taskId, requestedInput, { idempotencyKey, executionGuard, admissionIntent, admissionFactory } = {}) {
+    if (requestedInput?.status !== undefined && requestedInput.status !== 'queued') throw new StoreError('INVALID_INITIAL_STATUS', 'new executions must start queued', 400)
+    if (admissionFactory !== undefined && (typeof admissionFactory !== 'function' || !admissionIntent || typeof admissionIntent !== 'object')) {
+      throw new StoreError('INVALID_ADMISSION', 'host admission requires a factory and explicit intent', 400)
+    }
     return this.#mutate(async (state) => {
       this.#pruneLocks(state)
-      const request = { taskId, input, operation: 'execution.create', ...(executionGuard === undefined ? {} : { executionGuard }) }
+      // The host-issued admission grant/digest are EXCLUDED from the
+      // idempotency fingerprint: they are derived artifacts whose clock
+      // fields (issuedAt/expiresAt/effectiveDeadlineAt) necessarily differ
+      // between a request and its retry, and a retry must read as a replay,
+      // never as an IDEMPOTENCY_CONFLICT. Callers cannot smuggle semantics
+      // through this exclusion — host entries strip caller-supplied grant
+      // material before issuing their own (see gateway/MCP/CLI entries), and
+      // every caller-affecting field and explicit admission intent (including
+      // requested expiresAt) still participates. Host entry factories run
+      // only after this fingerprint misses, so expired retries never re-sign.
+      // The grant is still validated and persisted by the mutator below.
+      const { grant: _admissionGrant, parametersDigest: _admissionDigest, ...fingerprintInput } = requestedInput ?? {}
+      const request = { taskId, input: fingerprintInput, operation: 'execution.create', ...(executionGuard === undefined ? {} : { executionGuard }), ...(admissionIntent === undefined ? {} : { admissionIntent }) }
       const result = this.#idempotent(state, idempotencyKey, request, 'execution.create', () => {
         const task = state.tasks[taskId]
         if (!task) throw new StoreError('TASK_NOT_FOUND', `task ${taskId} was not found`, 404)
+        const input = { ...requestedInput, ...(admissionFactory === undefined ? {} : admissionFactory()) }
         if (executionGuard !== undefined) {
           // Recheck under the same durable write lock as creation. A prior
           // getTask() is advisory and cannot fence cancellation between reads.
@@ -396,6 +412,32 @@ export class ControlPlaneStore {
         }
         const execution = createExecution({ ...input, taskId, status: input?.status ?? 'queued' })
         if (state.executions[execution.id]) throw new StoreError('EXECUTION_EXISTS', `execution ${execution.id} already exists`, 409)
+        // S03b execution Grant (remediation §5): an OPTIONAL formal admission
+        // artifact, persisted verbatim with the record it is bound to (the
+        // whole execution record is the durable JSON unit, so no separate
+        // table/format is needed). The store performs only the cheap binding
+        // check here — the grant must name THIS task and THIS execution — so a
+        // misbound grant can never even be persisted; full structural, clock
+        // and expiry validation happens fail-closed at dispatch admission
+        // (verifyGrant in control-plane/dispatcher.mjs). Records created
+        // BEFORE this upgrade (or by callers that do not issue grants) simply
+        // carry no grant field; dispatch refuses them with GRANT_MISSING (see
+        // docs/handoffs/s03b-execution-grant-r1.md for the legacy semantics).
+        if (input?.grant !== undefined) {
+          const grant = input.grant
+          if (typeof grant !== 'object' || grant === null || Array.isArray(grant)) throw new StoreError('INVALID_GRANT', 'grant must be a plain object issued by control-plane/execution-grant.mjs', 400)
+          if (grant.taskId !== taskId || grant.executionId !== execution.id) {
+            throw new StoreError('GRANT_BINDING_MISMATCH', 'grant is bound to a different task/execution than the record being created', 400)
+          }
+          execution.grant = grant
+        }
+        // The digest of the admitted parameter set the grant binds to. It is
+        // carried on the record (never recomputed at dispatch) so the
+        // anti-portability check compares two STORED values.
+        if (input?.parametersDigest !== undefined) {
+          if (typeof input.parametersDigest !== 'string' || input.parametersDigest.trim() === '') throw new StoreError('INVALID_PARAMETERS_DIGEST', 'parametersDigest must be a non-empty string', 400)
+          execution.parametersDigest = input.parametersDigest
+        }
         if (execution.sessionRefId) {
           const locked = state.locks[execution.sessionRefId]
           if (locked && Date.parse(locked.expiresAt) > Date.now() && input?.sessionLockToken !== locked.token) {

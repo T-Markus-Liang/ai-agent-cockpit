@@ -5,6 +5,7 @@ import readline from 'node:readline'
 import { nativeAcpCommand } from './native-acp.mjs'
 import { wrapWithSandbox } from './native-sandbox.mjs'
 import { parametersDigest, StoreError } from './store.mjs'
+import { assertDispatchGrant } from './dispatcher.mjs'
 
 // Fixed denial codes for inbound client-side tool calls. These are stable,
 // machine-readable identifiers surfaced in the JSON-RPC error the agent sees;
@@ -519,7 +520,7 @@ export async function runNativeAcpPrompt({ source = 'codex', cwd, nativeSessionI
 // second attach is intentionally dropped, so there is a single idempotency-
 // keyed attach step. Each store step keeps its own `${idempotencyKey ?? executionId}:<step>`
 // key, so replaying one step never collides with another.
-export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, sessionRefId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false, cancelGraceMs, occupancyProbe } = {}) {
+export async function executeNativeSessionPrompt({ store, taskId, executionId, approvalId, source, nativeSessionId, sessionRefId, cwd, prompt, accountId, profileId, command, args, sandbox, sandboxGrant, permissionBroker, idempotencyKey, requireOperator = false, cancelGraceMs, occupancyProbe, now } = {}) {
   if (!store) throw new StoreError('STORE_REQUIRED', 'control-plane store is required', 500)
   const aggregate = await store.getTask(taskId)
   const execution = aggregate.executions.find((candidate) => candidate.id === executionId)
@@ -544,6 +545,16 @@ export async function executeNativeSessionPrompt({ store, taskId, executionId, a
   // refusal has confirmed zero side effects.
   assertSessionRefMatches(sessionRefId, { source, nativeSessionId })
   if (!approvalId) throw new StoreError('APPROVAL_REQUIRED', 'native session prompt requires an approved approval id', 403)
+
+  // (S03b) Grant admission gate: BEFORE the durable launch intent (step 2)
+  // and therefore before any store write, approval consumption or spawn. The
+  // grant is read from the STORED execution record (authoritative — the same
+  // anti-laundering precedent as the reviewer role) and verified against this
+  // task/execution/parametersDigest under the injected clock. A refusal
+  // settles the queued record as blocked with an honest outcome naming the
+  // grant code; an expired grant stops this NEW dispatch but never
+  // retroactively cancels work already in flight.
+  await assertDispatchGrant({ store, execution, taskId, executionId, requiredScope: 'native.session.prompt', now, idempotencyKey: `${idempotencyKey ?? executionId}:grant-refused` })
 
   const step = (name) => `${idempotencyKey ?? executionId}:${name}`
   // The single launch scope is shared by the engine ref and the execution guard,
