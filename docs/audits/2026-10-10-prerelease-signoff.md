@@ -37,6 +37,14 @@
 
 与 C/G 映射交叉。已实测面：V23/V24（secret scan PASS 多轮）、V08/V49 相关（双 CLI dry-run 生命周期）、goal 链验收（3/3 checks ×2 次真实运行）。**逐项映射到 52 条的核对表未建**——建表+逐项挂证据属发布前专批（估 1 批）。
 
+## 治理三项闭环（D93–D94，owner 批准）
+
+- **V01–V52 证据映射表**：`audits/2026-10-10-v01-v52-evidence-map.md`（逐项 ✅/🟡/⬜ + 矩阵纪律声明）。✅ 含半边 🟡 的项仍受"无证据不得发布"约束。
+- **Paseo 透明声明**：入 `releases/0.3.0-testing-release-notes.md`（上游 Apache-2.0 + 包级字段缺失瑕疵 + 详细 findings 链接）。
+- **双权威选项 A**：owner 批准落 `decisions/dual-authority-goals-vs-control-plane.md`（Goals=执行账本、:4324=调度账本）。
+- **权限**：三敏感文件（微信 token.json、vectors/meta.json、vectors/.lock）0644→0600，旧值与回滚证据在 `evidence/2026-10-10-s02-deploy/three-files-0644.txt`；服务健康复核全过（memory ok/ingest 118、wechat connected、矩阵 11/11）。**复发风险登记**：token.json 系 bridge 重写时按进程 umask 落盘致回退（首装 0600→现 0644 即证据）；wechat-acp 写 token 处补 mode 属代码批（未授权不动），本次为时点收紧+留证。
+- **canary**：单 owner pid 53426 计时 1.52h，五服务全 200；pmset/电源基线已入日记（standby=1/hibernatemode=3/ttyskeepawake=1），suspend/wake 对账在满 24h 后以 tick 缺口+`pmset -g log`+日记三方核。
+
 ## 旧告警
 
 - alert #1（上游合成样例误报）：处置于 D85r 批次（精确 path+sha256 处置，PASS 0 未处置）——✅ 按"该具体授权"关闭，未顺带 dismiss 其它告警。
