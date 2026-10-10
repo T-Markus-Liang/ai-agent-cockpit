@@ -119,7 +119,7 @@ export class GoalRuntime {
       }
       if (!allPassed) {
         await this.tasks.updateExecutionStatus(workerId, { status: 'failed', outcome: 'real acceptance checks failed or changed the artifact' }, { idempotencyKey: key('failed-checks') })
-        await this.goals.settle(goal.id, token, { outcome: 'retry', summary: '真实验收未通过，下一轮由 Agent 依据失败记录调整方案。', artifactRef: checked.artifactRef, checks, progress: checked.artifactRef !== before.artifactRef, taskId })
+        await this.goals.settle(goal.id, token, { outcome: 'retry', summary: '真实验收未通过，下一轮由 Agent 依据失败记录调整方案。', artifactRef: checked.artifactRef, checks, writerIdentity: proposal.identity, progress: checked.artifactRef !== before.artifactRef, taskId })
         return
       }
       const reviewerFields = { workerId: 'kimi/reviewer', parentExecutionId: workerId, artifactRef: after.artifactRef }
@@ -151,7 +151,7 @@ export class GoalRuntime {
         })
       }
       await this.goals.settle(goal.id, token, { outcome: passed ? 'complete' : 'retry', summary: review.result.summary.slice(0, 1500), artifactRef: current.artifactRef,
-        checks, review: { ...review.result, identity: review.identity }, progress: current.artifactRef !== before.artifactRef, taskId })
+        checks, review: { ...review.result, identity: review.identity }, writerIdentity: proposal.identity, progress: current.artifactRef !== before.artifactRef, taskId })
     } catch (error) {
       for (const id of [workerId, reviewId].filter(Boolean)) {
         const execution = await this.tasks.getExecution(id).catch(() => null)
