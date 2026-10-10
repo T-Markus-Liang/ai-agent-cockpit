@@ -14,3 +14,15 @@ drwx------ markus /Users/markus/.wechat-acp/instances/cezar-codex
 -rw------- markus /Users/markus/.wechat-acp/instances/cezar-codex/state.json
 -rw-r--r-- markus /Users/markus/.wechat-acp/instances/cezar-codex/telemetry-id
 -rw-r--r-- markus config/wechat-acp.json
+# permission tightening wave2 — 2026-10-10T08:31:17+08:00
+drwxr-xr-x /Users/markus/.local/state/personal-ai-os
+drwxr-xr-x /Users/markus/.cc-switch
+drwxr-xr-x /Users/markus/personal-ai-os-staging
+drwx------ /Users/markus/personal-ai-os-staging/s02-20261010-073444
+drwxr-xr-x logs
+## after wave2
+drwx------ /Users/markus/.local/state/personal-ai-os
+drwx------ /Users/markus/.cc-switch
+drwx------ /Users/markus/personal-ai-os-staging
+drwx------ logs
+父目录 ~/.local/state 保持 755（多 App 共享，§7 不碰其他应用配置）；cc-switch 内含凭据库已 700。
