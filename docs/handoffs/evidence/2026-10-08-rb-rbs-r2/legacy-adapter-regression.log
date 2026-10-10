@@ -1,0 +1,24 @@
+npm notice run personal-ai-os@0.2.2 test:legacy-adapter
+npm notice run node --test tests/legacy-adapter.test.mjs
+✔ 1: a normal submit persists binding + intent before driver.startSession (26.2805ms)
+✔ 2: an out-of-scope taskId is refused with legacy-scope-violation and never calls the driver (14.719833ms)
+✔ 3: an expired identity is refused with binding-expired and never calls the driver (3.718625ms)
+✔ 4: a re-submit of the same request key is idempotent (same id, one startSession) (4.363833ms)
+✔ 5: a driver startSession failure marks the intent uncertain; re-submit never re-dispatches (4.674917ms)
+✔ 6: wait returns the right status and output for done and failed (5.946833ms)
+✔ 7: aborting a submission kills it; an unknown requestKey is refused (5.223209ms)
+✔ 8: abort scopes owned elsewhere are refused with unsupported-scope (3.563667ms)
+✔ 9: recover keeps an alive session and marks a gone one uncertain without re-dispatching (6.825334ms)
+✔ 10: the mapping DB is 0600 (/dir 0700) and a reopen restores the mapping (4.710791ms)
+✔ 11: V01 - repeated submission runs the real prompt exactly once (4.524584ms)
+✔ 12: a request already bound to pi-durable fails closed with binding-conflict (no dual-alive) (3.202208ms)
+✔ 13: observe() reports status counts and a secret-free identity summary (4.228125ms)
+✔ 14: an unknown mapping schema version is refused fail-closed (3.706667ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 130.395958

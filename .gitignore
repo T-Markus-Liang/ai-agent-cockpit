@@ -2,6 +2,10 @@
 .env.*
 !.env.example
 logs/
+node_modules/
+.canary-state-*/
+.owner-state-*/
+.port-state-*/
 vendor/*/node_modules/
 vendor/*/packages/*/node_modules/
 vendor/*/dist/

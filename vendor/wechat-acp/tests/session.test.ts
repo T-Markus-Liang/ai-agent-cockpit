@@ -269,6 +269,7 @@ function makeTurnSession(opts: {
         return opts.flushText;
       },
       hasProducedMessage: opts.producedMessage,
+      hasUsedTools: false,
     } as never,
     agentInfo: {
       process: agentProcess,
@@ -592,13 +593,13 @@ test("queued prompts prepare memory after the preceding reply is delivered", asy
   } finally { await manager.stop(); }
 });
 
-test("timeout fallback reuses prepared context without archiving the user twice", async () => {
+test("an in-budget startup failure falls back and prepares the prompt exactly once", async () => {
   let preparations = 0;
   let retry: PendingMessage | undefined;
   const manager = new SessionManager({
     agentCommand: "unused", agentArgs: [], agentCwd: process.cwd(),
     idleTimeoutMs: 0, maxConcurrentUsers: 1, showThoughts: false,
-    promptTimeoutMs: 20, fallbackAgents: [{ command: "fallback", args: [] }],
+    grantDeadlineMs: 5000, fallbackAgents: [{ command: "fallback", args: [] }],
     log: () => {}, sendTyping: async () => {}, onReply: async () => {},
     killAgentProcess: async () => {},
     preparePrompt: async (_id, prompt) => {
@@ -608,19 +609,20 @@ test("timeout fallback reuses prepared context without archiving the user twice"
   });
   manager.enqueue = async (_id, pending) => { retry = pending; };
   const primary = makeTurnSession({ flushText: "", producedMessage: false, events: [] });
-  primary.agentInfo.connection.prompt = async () => new Promise(() => {});
+  // A turn that fails during setup never reached the provider: proven clean, in budget.
+  (primary.client as unknown as { beginTurn: () => Promise<never> }).beginTurn = async () => { throw new Error("synthetic primary startup failure"); };
   primary.agentInfo.connection.cancel = async () => {};
   try {
     await processTurn(manager, primary);
-    assert.ok(retry?.preparedPrompt);
-    const originalPrepared = retry.preparedPrompt;
+    assert.ok(retry, "a proven-clean startup failure is retried on a fallback candidate");
+    assert.equal(typeof retry!.deadlineAt, "number", "the retry inherits an absolute deadline");
     const fallback = makeTurnSession({ flushText: "recalled", producedMessage: true, events: [] });
     fallback.fallbackSession = true;
-    fallback.queue = [retry];
+    fallback.queue = [retry!];
     let dispatched: unknown;
     fallback.agentInfo.connection.prompt = async (params) => { dispatched = params.prompt; return { stopReason: "end_turn" }; };
     await processTurn(manager, fallback);
-    assert.equal(preparations, 1);
-    assert.equal(dispatched, originalPrepared);
+    assert.equal(preparations, 1, "preparePrompt must run exactly once across the fallback (no double enrich)");
+    assert.deepEqual(dispatched, [{ type: "text", text: "shared memory and persona" }]);
   } finally { await manager.stop(); }
 });

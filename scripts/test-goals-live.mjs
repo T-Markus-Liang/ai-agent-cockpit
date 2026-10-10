@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import os from 'node:os'
 import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
 const root = 'http://127.0.0.1:4326'
-const token = (await fs.readFile(path.join(os.homedir(), '.local/state/personal-ai-os/goals/api-token'), 'utf8')).trim()
+// Per-client token (0.3.0 M02 / goals wave 1.6): the goals service no longer
+// accepts the shared api-token file. Mint a token for this client with
+// identity-pairing's beginPairing/completePairing, export the goals
+// authority.json, then pass the plaintext token here.
+const token = process.env.GOALS_AUTH_TOKEN
+if (!token) throw new Error('GOALS_AUTH_TOKEN is required: mint a per-client token via identity-pairing and export the goals authority.json')
 async function request(endpoint, body, key) {
   const response = await fetch(`${root}${endpoint}`, { signal: AbortSignal.timeout(5000), headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(key ? { 'Idempotency-Key': key } : {}) },
     ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}) })

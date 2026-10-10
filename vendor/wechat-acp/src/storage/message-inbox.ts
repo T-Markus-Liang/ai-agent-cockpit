@@ -25,6 +25,7 @@ export const MESSAGE_INBOX_STATUSES = [
   'queued',
   'buffered',
   'running',
+  'background',
   'done',
   'uncertain',
   'cancelled',
@@ -46,7 +47,14 @@ export interface MessageInboxRecord {
 
 export interface ExecutionCheckpoint {
   attempt: number;
-  phase: 'preparing' | 'dispatched' | 'tool_activity' | 'result_ready';
+  /**
+   * `sent-unconfirmed` is journaled durably immediately before the ACP prompt is
+   * issued. From the moment it is on disk the prompt may have reached the
+   * provider, so a crash must recover the receipt as `uncertain` and never
+   * replay it. Only `preparing` without a recorded dispatch attempt may ever
+   * collapse back to a queued (replayable) state.
+   */
+  phase: 'preparing' | 'sent-unconfirmed' | 'dispatched' | 'tool_activity' | 'result_ready';
   sessionId?: string;
   usedTools?: boolean;
   resultText?: string;
@@ -58,6 +66,13 @@ export interface ExecutionCheckpoint {
   processId?: number;
   groupIds?: string[];
   resultArchived?: boolean;
+  /**
+   * Absolute epoch-ms grant deadline for the turn, journaled with `preparing`. It
+   * is the turn's fixed budget instant: a restart resumes against it rather than
+   * silently granting a fresh full deadline. A `preparing` record WITHOUT it
+   * predates this field, so recovery cannot know the remaining budget.
+   */
+  deadlineAt?: number;
 }
 
 interface StoredRecord extends MessageInboxRecord {
@@ -86,6 +101,7 @@ const STATUS_RANK: Record<MessageInboxStatus, number> = {
   queued: 1,
   buffered: 2,
   running: 3,
+  background: 3,
   uncertain: 3,
   done: 4,
   cancelled: 4,
@@ -223,8 +239,8 @@ export class MessageInbox {
     }
     if (record.execution !== undefined) {
       const execution = record.execution as ExecutionCheckpoint;
-      if (!execution || !Number.isSafeInteger(execution.attempt) || execution.attempt < 0 || !['preparing', 'dispatched', 'tool_activity', 'result_ready'].includes(execution.phase) || (execution.retryCount !== undefined && (!Number.isSafeInteger(execution.retryCount) || execution.retryCount < 0))) throw new Error('MessageInbox: corrupt execution checkpoint');
-      if ((execution.processId !== undefined && (!Number.isSafeInteger(execution.processId) || execution.processId < 1)) || (execution.usedTools !== undefined && typeof execution.usedTools !== 'boolean') || (execution.retryAt !== undefined && (!Number.isFinite(execution.retryAt) || execution.retryAt < 0)) || (execution.resultText !== undefined && typeof execution.resultText !== 'string') || (execution.groupIds !== undefined && (!Array.isArray(execution.groupIds) || execution.groupIds.length > 50 || !execution.groupIds.includes(id) || execution.groupIds.some(groupId => !ID_PATTERN.test(groupId))))) throw new Error('MessageInbox: corrupt execution evidence');
+      if (!execution || !Number.isSafeInteger(execution.attempt) || execution.attempt < 0 || !['preparing', 'sent-unconfirmed', 'dispatched', 'tool_activity', 'result_ready'].includes(execution.phase) || (execution.retryCount !== undefined && (!Number.isSafeInteger(execution.retryCount) || execution.retryCount < 0))) throw new Error('MessageInbox: corrupt execution checkpoint');
+      if ((execution.processId !== undefined && (!Number.isSafeInteger(execution.processId) || execution.processId < 1)) || (execution.usedTools !== undefined && typeof execution.usedTools !== 'boolean') || (execution.retryAt !== undefined && (!Number.isFinite(execution.retryAt) || execution.retryAt < 0)) || (execution.deadlineAt !== undefined && (!Number.isFinite(execution.deadlineAt) || execution.deadlineAt < 0)) || (execution.resultText !== undefined && typeof execution.resultText !== 'string') || (execution.groupIds !== undefined && (!Array.isArray(execution.groupIds) || execution.groupIds.length > 50 || !execution.groupIds.includes(id) || execution.groupIds.some(groupId => !ID_PATTERN.test(groupId))))) throw new Error('MessageInbox: corrupt execution evidence');
     }
   }
 
@@ -456,7 +472,12 @@ export class MessageInbox {
     });
   }
 
-  /** Only a checkpoint proving no ACP dispatch permits automatic admission retry. */
+  /**
+   * Only a checkpoint proving no ACP dispatch permits automatic admission retry.
+   * `preparing` is the sole safe phase: `sent-unconfirmed`, `dispatched` and
+   * `tool_activity` all mean the prompt may already have reached the provider, so
+   * they are refused here and the caller must retain the receipt as uncertain.
+   */
   scheduleRetry(id: string, { maxAttempts, delayMs, errorKind }: { maxAttempts: number; delayMs: number; errorKind: string }): Promise<boolean> {
     return this._enqueue(async () => {
       await this._ready();
@@ -535,10 +556,21 @@ export class MessageInbox {
     return records.map((record) => this._toPublic(record));
   }
 
+  /** Read a single receipt by id (null when it does not exist). */
+  get(id: string): Promise<MessageInboxRecord | null> {
+    return this._enqueue(async () => {
+      await this._ready();
+      if (!ID_PATTERN.test(id)) throw new Error('MessageInbox: invalid receipt id');
+      const record = await this._readRecord(id);
+      return record ? this._toPublic(record) : null;
+    });
+  }
+
   /**
-   * Recover after a restart. running/buffered work becomes uncertain and is
-   * never auto-replayed. Returns pending (received/queued) and the total number
-   * of uncertain receipts.
+   * Recover after a restart. running/buffered/background work becomes uncertain
+   * (or reply_pending when a result was already journaled) and is never
+   * auto-replayed. Returns pending (received/queued) and the total number of
+   * uncertain receipts.
    */
   recover(): Promise<RecoverResult> {
     return this._enqueue(async () => {
@@ -551,9 +583,20 @@ export class MessageInbox {
         try {
           const record = await this._readRecord(id);
           if (record === null) continue;
-          if (record.status === 'running' || record.status === 'buffered') {
-            record.status = record.execution?.phase === 'result_ready' ? 'reply_pending'
-              : record.execution?.phase === 'preparing' && !record.execution.usedTools ? 'queued' : 'uncertain';
+          if (record.status === 'running' || record.status === 'buffered' || record.status === 'background') {
+            // Invariant: only a receipt that never left `preparing` (and recorded
+            // no tool activity) may return to the queue. `sent-unconfirmed` and
+            // `dispatched` prove the prompt may already have been sent, so they
+            // recover as `uncertain` and are never auto-replayed. A `preparing`
+            // record is replayable ONLY when its absolute `deadlineAt` was journaled;
+            // without one (a pre-deadline record) the remaining grant budget is
+            // unknown, so we neither fabricate a deadline nor silently grant a fresh
+            // full budget — it is retained as `uncertain` for review.
+            const execution = record.execution;
+            record.status = execution?.phase === 'result_ready' ? 'reply_pending'
+              : execution?.phase === 'preparing' && !execution.usedTools
+                ? (typeof execution.deadlineAt === 'number' ? 'queued' : 'uncertain')
+                : 'uncertain';
             record.updatedAt = Date.now();
             await this._writeRecord(record);
           }

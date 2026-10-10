@@ -1,0 +1,12 @@
+5148669a0baff140f477dc9f6b38d352892a0f6d3efa2427cb5922a331168d4a  runtime/route-binding.mjs
+32c516da71076f8af7661cac94dec2690f102168ba25986db613e025df41aa8e  tests/route-binding.test.mjs
+9d99dcb828a39f794a360c71c2f76d43321b873af8d666031e04769c56ad17a4  runtime/route-binding-store.mjs
+4e83ad7a6b2a9827548c033f97ea6fd6e4a3f6c2ba4d04325e3880b7e3b157cd  tests/route-binding-store.test.mjs
+5656fd086dfcb763735c892a99cbb8e84200a6646e43b0bfa10f03255e04e4be  docs/handoffs/m02-route-binding-r2.md
+e8bb6b0fd29fd67ef85e47d2d36854ba289fa49b0667175103abffc330c81580  docs/handoffs/m02-route-binding-store-r2.md
+97f4c57eb65670bc00256c37e473d4fd34467c3e6abe5dc8a9b5d566256c3663  docs/handoffs/evidence/2026-10-08-rb-rbs-r2/README.md
+5a3a9c50e3fe793e94d1c98db05c0a78b1d4deea3d9094861f2a0e0db5c6c582  docs/handoffs/evidence/2026-10-08-rb-rbs-r2/legacy-adapter-regression.log
+4b776ee55d2a9e4d90e332cc57a3cef8ca3a7296c7877e9751943ec1b62e82a3  docs/handoffs/evidence/2026-10-08-rb-rbs-r2/route-binding-negative-on-prefix.log
+0827acdf1c431a73308491dab4d6d5af07d92e5837d80ddc1fbe3a0a41809c3c  docs/handoffs/evidence/2026-10-08-rb-rbs-r2/route-binding-r2.log
+320e897c6581c1377a3e13abfa3da82bb8fb83f16d6b60f44fd54a30f75cde25  docs/handoffs/evidence/2026-10-08-rb-rbs-r2/route-binding-store-negative-on-prefix.log
+79cf098697be25c255c37b73cf7924aa372ac659bc3e07f56aa1ea1b948b1bbf  docs/handoffs/evidence/2026-10-08-rb-rbs-r2/route-binding-store-r2.log

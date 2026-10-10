@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 
@@ -757,7 +760,9 @@ test("acp-new discards acp-more queued behind an in-flight reply", async () => {
   );
 });
 
-test("acp-new discards an injection admitted before target resolution", async () => {
+test("acp-new discards an injection admitted before target resolution", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-injection-reset-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const bridge = makeBridge();
   let resolutionStarted!: () => void;
   const started = new Promise<void>((resolve) => {
@@ -783,7 +788,7 @@ test("acp-new discards an injection admitted before target resolution", async ()
     };
     enqueueInjectedMessage(job: InjectedMessage): Promise<void>;
   };
-  internal.config.storage.stateFile = "state.json";
+  internal.config.storage.stateFile = path.join(directory, "state.json");
   internal.sessionManager = {
     enqueueAndWait: async (_userId, message) => {
       injected.push(message.contextToken);

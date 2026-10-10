@@ -73,10 +73,185 @@ const TRANSLATIONS: Record<string, string> = {
   'Recent results': '最近结果', 'Results source': '结果来源', All: '全部', 'Task results': '任务结果', 'No GitHub repositories configured': '未配置 GitHub 仓库',
   'GitHub needs attention': 'GitHub 需要处理', 'GitHub not configured': '未配置 GitHub', 'GitHub source': 'GitHub 来源',
   'Open tracker settings': '打开跟踪器设置', 'Retry connection': '重试连接', 'Search results could not be loaded.': '无法加载搜索结果。',
-  '系统连接': '系统连接', '本机 Agent、微信入口和模型反代的实际连接状态。': '本机 Agent、微信入口和模型反代的实际连接状态。',
-  '打开微信连接': '打开微信连接', '查看本机 Agent 通道': '查看本机 Agent 通道',
-  '主 Agent、fallback、微信和本机 App 的实时边界': '主 Agent、fallback、微信和本机 App 的实时边界', '管理连接': '管理连接',
-  '连接微信': '连接微信', '微信已连接': '微信已连接',
+  // Personal AI OS cockpit (system-connections.tsx). User-visible surface text carries the
+  // ENGLISH source string as its key; the value is the exact Chinese wording it renders today.
+  'System connections': '系统连接',
+  'Live boundary of the primary agent, fallback, WeChat and local apps.': '主 Agent、fallback、微信和本机 App 的实时边界',
+  'Open WeChat connection': '打开微信连接',
+  'View local agent channels': '查看本机 Agent 通道',
+  'Manage connections': '管理连接',
+  'Connect WeChat': '连接微信',
+  'WeChat connected': '微信已连接',
+  'WeChat Bot': '微信 Bot',
+  'Shared Mem0 memory': 'Mem0 共享记忆',
+  'Connected': '已连接',
+  'Available': '可接入',
+  'Unavailable': '不可用',
+  'Local WeChat bridge is healthy': '本机微信桥正常',
+  'Open settings to regenerate the QR code': '打开设置重新生成二维码',
+  'Local storage · {pending} pending · {retrying} retrying': '本地存储 · 待提炼 {pending} · 重试 {retrying}',
+  'Long-term retrieval is unavailable; WeChat keeps using local context': '长期检索暂不可用；微信继续使用本地上下文',
+  'GUI-only; old sessions are managed by the Codex App': 'GUI-only；旧会话由 Codex App 管理',
+  'Local OpenAI-compatible proxy': '本机 OpenAI-compatible 反代',
+  'codebuddy --acp; old sessions need an explicit resume': 'codebuddy --acp；旧会话需显式 resume',
+  'Devin ACP discovered; old sessions need an explicit resume': '已发现 Devin ACP；旧会话需显式恢复',
+  'Cloud entry discovered; auth/billing unverified': '云端入口已发现；未验证认证/计费',
+  'CI entry discovered; workflows not triggered': 'CI 入口已发现；未触发 workflow',
+  'GUI-only; no stable CLI/ACP control channel': 'GUI-only；没有稳定 CLI/ACP 控制通道',
+  'WeChat primary agent (configured)': '微信主 Agent（配置）',
+  'Standalone ACP / fallback channel': '独立 ACP / fallback 通道',
+  '{boundary} / old sessions available via kimi --session': '{boundary} / 旧会话可用 kimi --session',
+
+  // Personal AI OS cockpit (continuous-goals.tsx — read-only since AUI3-F004/F005).
+  'Continuous goals · autonomous verification': '持续目标 · 自主验证',
+  'Personal AI OS 0.2.0 · confirm the scope once, the agent iterates on its own, you spot-check the results': 'Personal AI OS 0.2.0 · 一次确认范围，Agent 自己迭代，你抽查结果',
+  'Connect': '连接',
+  'Service unavailable': '服务不可用',
+  'The first version fixes inside an isolated working copy and supports only fixed Node acceptance; it never overwrites the original project, deploys, or modifies native old sessions.': '首版在独立工作副本中修复，只支持固定 Node 验收；不会自动覆盖原项目、部署或修改原生旧会话。',
+  'The continuous goals service is temporarily unavailable; WeChat chat and Cezar native tasks are unaffected.': '持续目标服务暂不可用；微信聊天与 Cezar 原生任务不受影响。',
+  'Reading goals…': '正在读取目标…',
+  'No continuous goals yet.': '暂无持续目标。',
+  'Read-only view: the browser no longer holds a goal access token. Managing goals (create / confirm scope / pause / resume / cancel) is done through the operator console.': '只读视图：浏览器不再持有 goal 访问 token。goal 管理（创建 / 确认范围 / 暂停 / 恢复 / 取消）请通过 operator 控制台进行。',
+  'Round {iteration} / {maxRounds} · tokens {used} / {max}': '第 {iteration} / {maxRounds} 轮 · token {used} / {max}',
+  'Interruption self-recovery: resumed {count} / {max} times; verify the scope and checkpoints first': '中断自恢复：已接续 {count} / {max} 次；先核对范围和检查点',
+  'Old goal or self-recovery off: an interruption needs review, it does not rerun on its own': '旧目标或未开启自恢复：中断后需核对，不自动重跑',
+  'Pause': '暂停',
+  'Resume': '恢复',
+  'Spot-check scope and acceptance record': '抽查范围与验收记录',
+  'Read: ': '读取：',
+  'Write: ': '修改：',
+  'Fixed checks: ': '固定检查：',
+  'Result copy: ': '结果副本：',
+  '{name}: exit code {code}': '{name}：退出码 {code}',
+  'did not finish normally': '未正常结束',
+  'Not yet reviewed': '尚未复核',
+  'Scope pending': '待确认范围',
+  'Waiting to run': '等待下一轮',
+  'Executing autonomously': '自主执行中',
+  'Paused': '已暂停',
+  'Cancelled': '已取消',
+  'Accepted': '已完成验收',
+  'Planning': '规划',
+  'Chief planning': 'Chief 规划',
+  'Worker proposes changes': 'Worker 提出修改',
+  'Applying controlled changes': '应用受控修改',
+  'Real acceptance': '真实验收',
+  'Independent review': '独立复核',
+  'Waiting for wake': '待唤醒',
+  'Check in ~{minutes} min': '约 {minutes} 分钟后检查',
+  'Check at {time}': '{time} 检查',
+  'Next check: {label}': '下一检查：{label}',
+  'Recovery status: pending': '恢复状态：待恢复',
+  'Recovery status: auto-recovered {count} times': '恢复状态：已自动恢复 {count} 次',
+  'Recovery pending': '待恢复',
+  'Auto-recovered {count} times': '已自动恢复 {count} 次',
+
+  // Personal AI OS cockpit (control-plane-tasks.tsx).
+  'Control-plane tasks': '控制面任务',
+  'Personal AI OS Task / Execution state': 'Personal AI OS Task / Execution 状态',
+  '{count} items': '{count} 个',
+  'Reading control-plane…': '正在读取控制面…',
+  "The control-plane is unavailable; Cezar's native tasks are unaffected": '控制面暂不可用；不会影响 Cezar 原生任务',
+  'No control-plane tasks': '暂无控制面任务',
+  'Draft': '草稿',
+  'Planned': '已规划',
+  'Running': '执行中',
+  'Verifying': '验证中',
+  'In review': 'Review 中',
+  'Ready to deliver': '待交付',
+  'Blocked': '已阻塞',
+  'Failed': '失败',
+  'Show execution details for task {id}': '展开任务 {id} 的执行详情',
+  'Hide execution details for task {id}': '收起任务 {id} 的执行详情',
+  '{count} executions': '{count} 次执行',
+
+  // Personal AI OS cockpit (control-plane-executions.tsx).
+  'Reviewing': '复核中',
+  'Succeeded': '已成功',
+  'Command': '命令',
+  'Test': '测试',
+  'Diff': '差异',
+  'Log': '日志',
+  'Screenshot': '截图',
+  'Review': '复核',
+  'Message': '消息',
+  'Execution status: {status}': '执行状态：{status}',
+  'Verdict: {verdict}': '判定：{verdict}',
+  'Passed': '通过',
+  'Exit code {code}': '退出码 {code}',
+  'Copy {ref}': '副本 {ref}',
+  'Attempt {attempt}': '第 {attempt} 次',
+  'Review child · parent {id}': '复核子执行 · 父执行 {id}',
+  'Evidence {count}': '证据 {count}',
+  'Show evidence for execution {id}': '展开执行 {id} 的证据',
+  'Hide evidence for execution {id}': '收起执行 {id} 的证据',
+  'No evidence for this execution.': '该执行暂无证据。',
+  'Evidence list': '证据列表',
+  'Execution list': 'Execution 列表',
+  'Execution list · task {id}': 'Execution 列表 · 任务 {id}',
+  'Loading execution details…': '正在读取执行详情…',
+  "The control-plane is unreachable; cannot read this task's execution details": '控制面暂不可达，无法读取该任务的执行详情',
+  'Completion acceptance conditions': '完成验收条件',
+  'Loading completion conditions…': '正在读取完成条件…',
+  'Completion conditions are unreachable; cannot tell whether this task can be completed': '完成条件暂不可达，无法判断该任务是否可以完成',
+  'The fixed acceptance conditions are met: every Execution has reached a terminal state, a succeeded root worker exists, and the artifactRef and independent review evidence are all present. Completing requires separate approval; this page will not trigger it.': '满足固定验收条件：全部 Execution 已进入终态，存在 succeeded 的 root worker，且 artifactRef 与独立 review 证据齐备。完成操作需另行审批，本页不会触发。',
+  'Completion conditions not met yet:': '尚不满足完成条件：',
+  "The control-plane gave no specific reason; check this task's execution records.": '控制面未给出具体原因，请查看该任务的执行记录。',
+  'Unmet completion conditions': '未满足的完成条件',
+  'Parameter digest {digest}': '参数摘要 {digest}',
+  'No Execution for this task.': '该任务暂无 Execution。',
+
+  // Personal AI OS cockpit (control-plane-approvals.tsx).
+  'Pending approvals': '待审批动作',
+  'Target, parameter digest and expiry are verified before approving': '批准前会校验目标、参数摘要和有效期',
+  'Reject': '拒绝',
+  'Approve': '批准',
+  'Read-only: decisions are made through WeChat or the operator console, not from the browser.': '只读：审批请通过微信或 operator 控制台完成，浏览器不执行决策。',
+
+  // Personal AI OS cockpit (personal-ai-os-workflow.tsx + settings/local-agents-section.tsx).
+  // Same convention as above: the ENGLISH source string is the key, the value is the exact
+  // Chinese the surface renders today, and a sentence carrying a variable is ONE whole template
+  // key (never assembled from translated fragments) so the Chinese can carry its own word order.
+  'WeChat / phone entry': '微信 / 手机入口',
+  'Messages, approvals, status and Evidence relayed back': '消息、审批、状态、Evidence 回传',
+  'Understands the goal, checks constraints, summarizes results': '理解目标、核对约束、汇总结果',
+  'Capability evidence, Jev advisory, Policy gate': '能力证据、Jev advisory、Policy gate',
+  'Idempotency, state machine, Session lock, audit': '幂等、状态机、Session lock、审计',
+  'Cezar, Codex, OpenCode, Kimi, Devin, WorkBuddy': 'Cezar、Codex、OpenCode、Kimi、Devin、WorkBuddy',
+  'Independent Review, test/command Evidence': '独立 Review、test/command Evidence',
+  'Completion or external side effects only after precise Approval': '精确 Approval 后才允许完成或外部副作用',
+  'Personal AI OS control-plane workflow': 'Personal AI OS 控制面工作流',
+  'The Chief → Router → Worker → Reviewer → Verification closed loop being designed. The Cezar workflow below is still one reusable Worker chain in it.': '架构设计中的 Chief → Router → Worker → Reviewer → Verification 闭环。下方的 Cezar workflow 仍是其中一个可复用 Worker 链。',
+  'A worker reporting completion does not close the case: it must pass Verification, independent Review and precise Approval.': 'Worker 自报完成不会直接结案：必须经过 Verification、独立 Review 和精确 Approval。',
+  'Local agent channels, protocols and availability.': '本机 Agent 通道、协议和可用状态。',
+  'Standalone local agent channel': '独立本机 Agent 通道',
+  'Codex App manages its own old sessions; the control plane does not silently drive the GUI': 'Codex App 的旧会话由 App 自己管理，控制面不静默操作 GUI',
+  'Usable as a local fallback and an independent workflow': '可作为本机 fallback 和独立工作流',
+  'Config entry point detected; sign in to enable it': '检测到配置入口，需完成登录后启用',
+  'ACP supported; old sessions can be resumed via kimi --session': '支持 ACP；旧会话可通过 kimi --session 选择恢复',
+  'Bundled CodeBuddy CLI detected; new sessions can join via ACP': '检测到内置 CodeBuddy CLI；可通过 ACP 接入新会话',
+  'Reached through the local Gemini reverse proxy': '通过本机 Gemini 反代接入',
+  'Devin ACP discovered; old sessions are chosen with Devin own session arguments': '已发现 Devin ACP；旧会话需通过 Devin 自身 session 参数选择',
+  'Shows entry evidence only; no cloud task is created and no auth is read automatically': '仅显示入口证据；未自动创建云端任务或读取认证',
+  'CLI detected only; no workflow is triggered': '仅发现 CLI；未触发 workflow',
+  'Only a desktop app and internal IPC today; no verifiable CLI/ACP port': '当前只有桌面 App 和内部 IPC，没有可验证的 CLI/ACP 端口',
+  'Discovered / unverified': '已发现/待验证',
+  'Recent context, full transcript archive and cross-model long-term semantic memory.': '近期上下文、完整原文归档与跨模型长期语义记忆。',
+  'Connected · {pending} pending · {retrying} retrying': '已连接 · 待提炼 {pending} · 重试 {retrying}',
+  'Local Qdrant + SQLite; fact extraction uses the existing Kimi API, not fully offline inference.': '本地 Qdrant + SQLite；事实提炼使用已有 Kimi API，不是全离线推理。',
+
+  // Personal AI OS cockpit (settings/wechat-section.tsx). Same convention: English source key,
+  // exact Chinese value; the unreachable-service message is one whole `fill()` template so the
+  // Chinese keeps its own `：` separator and word order. `Connected` reuses the key above.
+  'WeChat connection': '微信连接',
+  'Receive tasks and send Agent replies through the local WeChat bridge.': '通过本机微信桥接器接收任务和发送 Agent 回复。',
+  'Click to generate a QR code, then scan it in WeChat and confirm the login.': '点击生成二维码，用微信扫码并确认登录。',
+  'Generating…': '生成中…',
+  'Generate WeChat QR code': '生成微信二维码',
+  'WeChat login QR code': '微信登录二维码',
+  'Scanned; confirm the login in WeChat.': '已扫码，请在微信中确认登录。',
+  'WeChat control service is unavailable: {error}': '微信控制服务不可用：{error}',
+  'The QR code and login token are handled only by the local loopback service, and are never committed to the Git repository.': '二维码和登录令牌只在本机回环服务处理，不会提交到 Git 仓库。',
 }
 
 type LocaleContextValue = { locale: Locale; setLocale: (locale: Locale) => void; t: (text: string) => string }
@@ -102,6 +277,25 @@ export function LocaleProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useLocale() { return React.useContext(LocaleContext) }
+
+/**
+ * Fill `{name}` placeholders in a translated template.
+ *
+ *  A sentence that carries a variable is NEVER assembled by concatenating translated
+ *  fragments: word order differs between the languages ("第 2 次" vs "Attempt 2"), so the
+ *  WHOLE sentence — placeholders and all — is the translation key, and only the values are
+ *  interpolated here. The Chinese table carries the same placeholders in its own order:
+ *
+ *    fill(t('Attempt {attempt}'), { attempt: 2 })   // "Attempt 2" (en) / "第 2 次" (zh-CN)
+ *
+ *  An unknown placeholder is left verbatim rather than blanked — a missing value should show
+ *  up as `{id}` in the UI, not silently vanish.
+ */
+export function fill(template: string, values: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
+    name in values ? String(values[name]) : whole,
+  )
+}
 
 export function LanguageToggle({ className }: { className?: string }) {
   const { locale, setLocale, t } = useLocale()

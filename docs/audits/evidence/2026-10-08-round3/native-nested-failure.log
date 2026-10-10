@@ -1,0 +1,94 @@
+✔ buildSandboxProfile emits every enforced clause (0.436584ms)
+✔ DEFAULT_DENY_READ_SUBPATHS is the frozen default deny set (0.251708ms)
+✔ spec validation rejects empty exec whitelists and relative paths (0.188583ms)
+✔ quotes and backslashes in literals are escaped, not left to break the profile (0.044333ms)
+✔ wrapWithSandbox shapes the command and refuses a command outside the whitelist (0.110042ms)
+✔ sandboxEnv returns a fresh minimal environment (0.058542ms)
+✔ assertSandboxAvailable fails closed with SANDBOX_REQUIRED when Seatbelt is missing (0.079334ms)
+✖ real Seatbelt: a whitelisted command runs and reaches stdout (7.436583ms)
+✔ real Seatbelt: a write outside the literal set is denied and leaves no file (5.8055ms)
+✖ real Seatbelt: a literal write target is allowed and holds the right bytes (5.961625ms)
+✖ real Seatbelt: exec outside the whitelist is denied by the profile (10.977209ms)
+✖ real Seatbelt: network is denied while a local listener is reachable from the host (2.767083ms)
+✔ real Seatbelt: a private read outside the literal set is denied (6.421792ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 9
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 81.69075
+
+✖ failing tests:
+
+test at tests/native-sandbox.test.mjs:147:1
+✖ real Seatbelt: a whitelisted command runs and reaches stdout (7.436583ms)
+  AssertionError [ERR_ASSERTION]: sandbox-exec: sandbox_apply: Operation not permitted
+  
+  
+  71 !== 0
+  
+      at TestContext.<anonymous> (file:///private/tmp/personal-ai-os-review-round3.ClxFrw/input/tests/native-sandbox.test.mjs:150:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 71,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/native-sandbox.test.mjs:164:1
+✖ real Seatbelt: a literal write target is allowed and holds the right bytes (5.961625ms)
+  AssertionError [ERR_ASSERTION]: sandbox-exec: sandbox_apply: Operation not permitted
+  
+  
+  71 !== 0
+  
+      at TestContext.<anonymous> (file:///private/tmp/personal-ai-os-review-round3.ClxFrw/input/tests/native-sandbox.test.mjs:168:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 71,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/native-sandbox.test.mjs:172:1
+✖ real Seatbelt: exec outside the whitelist is denied by the profile (10.977209ms)
+  AssertionError [ERR_ASSERTION]: sandbox-exec: sandbox_apply: Operation not permitted
+  
+  
+  71 !== 0
+  
+      at TestContext.<anonymous> (file:///private/tmp/personal-ai-os-review-round3.ClxFrw/input/tests/native-sandbox.test.mjs:178:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 71,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/native-sandbox.test.mjs:181:1
+✖ real Seatbelt: network is denied while a local listener is reachable from the host (2.767083ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1:4324
+      at Server.setupListenHandle [as _listen2] (node:net:1986:21)
+      at listenInCluster (node:net:2065:12)
+      at node:net:2274:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1',
+    port: 4324
+  }

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { verifyGrant } from '../control-plane/execution-grant.mjs'
 
 const PORT = 4397
 
@@ -79,6 +80,48 @@ test('HTTP control plane covers task lifecycle, approval, audit and MCP boundari
     })
     assert.equal(execution.response.status, 201)
     const executionId = execution.body.execution.id
+    // (S03b) the HTTP entry issues the admission Grant before enqueue and
+    // persists it with the record: structurally valid, bound to this
+    // task/execution/digest, and verifiable under the real clock — so a later
+    // dispatch is never refused GRANT_MISSING for an entry-created execution.
+    const httpGrant = verifyGrant(execution.body.execution.grant, { taskId, executionId, parametersDigest: execution.body.execution.parametersDigest, now: Date.now })
+    assert.equal(httpGrant.effectiveDeadlineAt <= Date.now() + 30 * 60_000, true, 'the default lifetime cap participates in the effective deadline')
+    // a retry with the same Idempotency-Key replays (deterministic derived id,
+    // clock fields excluded from the fingerprint) instead of conflicting
+    const executionReplay = await request(`/api/control-plane/tasks/${taskId}/executions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'http-execution-1' },
+      body: JSON.stringify({ workerId: 'codex', artifactRef: `git:${'a'.repeat(40)}` }),
+    })
+    assert.equal(executionReplay.response.status, 200)
+    assert.equal(executionReplay.body.replay, true)
+    assert.equal(executionReplay.body.execution.id, executionId)
+    // caller-supplied grant material is stripped and re-issued by the host
+    // (probed on a SEPARATE task so the lifecycle task above stays completable)
+    const probeTask = await request('/api/control-plane/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'http-task-grant-probes' },
+      body: JSON.stringify({ goal: 'grant probe task' }),
+    })
+    const probeTaskId = probeTask.body.task.id
+    const forged = await request(`/api/control-plane/tasks/${probeTaskId}/executions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'http-execution-forged' },
+      body: JSON.stringify({ workerId: 'codex', grant: { version: 1, grantId: 'grant_forged' }, parametersDigest: 'sha256:forged' }),
+    })
+    assert.equal(forged.response.status, 201)
+    assert.notEqual(forged.body.execution.grant.grantId, 'grant_forged', 'a caller can never supply its own admission artifact')
+    verifyGrant(forged.body.execution.grant, { taskId: probeTaskId, executionId: forged.body.execution.id, parametersDigest: forged.body.execution.parametersDigest, now: Date.now })
+    // negative: an illegal request-level expiresAt is refused and nothing is enqueued
+    const countBefore = (await request('/health')).body.persistence.executionCount
+    const badDeadline = await request(`/api/control-plane/tasks/${probeTaskId}/executions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'http-execution-bad-expiry' },
+      body: JSON.stringify({ workerId: 'codex', expiresAt: 'not-a-timestamp' }),
+    })
+    assert.equal(badDeadline.response.status, 400)
+    assert.equal(badDeadline.body.error, 'GRANT_INVALID')
+    assert.equal((await request('/health')).body.persistence.executionCount, countBefore, 'a refused admission never enqueues')
 
     const invalidStatus = await request(`/api/control-plane/executions/${executionId}/status`, {
       method: 'POST',
@@ -162,6 +205,7 @@ test('HTTP control plane covers task lifecycle, approval, audit and MCP boundari
     const toolNames = mcpTools.body.result.tools.map((tool) => tool.name)
     assert.ok(toolNames.includes('plan_route'))
     assert.ok(toolNames.includes('prompt_native_session'))
+    assert.ok(toolNames.includes('cancel_native_session'))
     assert.ok(toolNames.includes('complete_task'))
 
     const route = await request('/api/control-plane/route-plan', {

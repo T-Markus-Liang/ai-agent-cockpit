@@ -16,8 +16,10 @@ const root = 'http://127.0.0.1:4325'
 const target = `gui/${process.getuid()}/com.markus.personal-ai-os.memory`
 const plist = path.join(os.homedir(), 'Library/LaunchAgents/com.markus.personal-ai-os.memory.plist')
 await fs.access(plist)
-const tokenFile = path.join(os.homedir(), '.local/state/personal-ai-os/mem0/api-token')
-const token = (await fs.readFile(tokenFile, 'utf8')).trim()
+// Per-client authentication (0.3.0 G4): the shared mem0 api-token file is
+// retired. Supply this client's bearer token via MEMORY_AUTH_TOKEN.
+const token = process.env.MEMORY_AUTH_TOKEN
+if (!token) throw new Error('MEMORY_AUTH_TOKEN is required (per-client bearer token; the shared mem0 api-token file was retired)')
 const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
 async function request(endpoint, body) {
   const response = await fetch(`${root}${endpoint}`, { signal: AbortSignal.timeout(3000), ...(body ? { method: 'POST', headers, body: JSON.stringify(body) } : {}) })
@@ -50,6 +52,10 @@ const query = text => request('/v1/search', { user_id: userId, query: text, limi
 await request('/v1/turns', { event_id: `${user}:before`, user_id: userId, role: 'user', text: '我的独立恢复测试项目代号是银河蓝。' })
 await eventually(async () => (await query('测试项目代号')).results.some(row => /银河蓝/.test(row.memory)), 'Pre-restart fact extraction failed', 180)
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mem0-real-recovery-'))
+// The bridge client still reads a token file (migrated in a deployment batch);
+// materialise this client's per-client token for it.
+const tokenFile = path.join(dir, 'client-token')
+await fs.writeFile(tokenFile, token, { mode: 0o600 })
 const options = { file: path.join(dir, 'memory.json'), enabled: true, mem0: { url: root, tokenFile, timeoutMs: 1500 } }
 let first, second, stopped = false
 try {

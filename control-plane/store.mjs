@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import {
   createApproval,
   createEvidence,
@@ -115,47 +116,94 @@ export class ControlPlaneStore {
 
   async #acquireFileLock() {
     await fs.mkdir(this.stateDir, { recursive: true, mode: 0o700 })
+    // ponytail: use SQLite's OS-released write lock only for coordination;
+    // records stay in the existing JSON file. Dead-owner reclaimers serialize.
+    const mutexFile = path.join(this.stateDir, 'control-plane-mutex.sqlite')
+    const mutex = new DatabaseSync(mutexFile)
+    const mutexStarted = Date.now()
+    let reserved = false
+    try {
+      await fs.chmod(mutexFile, 0o600)
+      mutex.exec('PRAGMA busy_timeout=0')
+      while (Date.now() - mutexStarted < this.lockTimeoutMs) {
+        try { mutex.exec('BEGIN IMMEDIATE'); reserved = true; break }
+        catch (error) {
+          if (![5, 6].includes(error.errcode)) throw new StoreError('LOCK_FAILED', 'control-plane coordination failed', 500)
+          await sleep(25)
+        }
+      }
+      if (!reserved) throw new StoreError('LOCK_TIMEOUT', 'control-plane state is busy; retry the operation', 409)
+    const token = crypto.randomUUID()
+    const candidate = `${this.lockFile}.${token}.candidate`
+    await fs.writeFile(candidate, JSON.stringify({ pid: process.pid, token, acquiredAt: now() }), { flag: 'wx', mode: 0o600 })
     const started = Date.now()
+    try {
     while (Date.now() - started < this.lockTimeoutMs) {
       try {
-        const handle = await fs.open(this.lockFile, 'wx', 0o600)
-        await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: now() }))
-        await handle.close()
-        return
+        // Publish a complete owner record, never an empty half-written lock.
+        await fs.link(candidate, this.lockFile)
+        return { token, mutex }
       } catch (error) {
         if (error?.code !== 'EEXIST') throw new StoreError('LOCK_FAILED', error.message, 500)
         try {
-          const stat = await fs.stat(this.lockFile)
-          if (Date.now() - stat.mtimeMs > Math.max(this.lockTimeoutMs * 2, 30_000)) await fs.unlink(this.lockFile)
+          const held = JSON.parse(await fs.readFile(this.lockFile, 'utf8'))
+          if (Number.isSafeInteger(held.pid) && held.pid > 0) {
+            let dead = false
+            try { process.kill(held.pid, 0) } catch (error) { dead = error.code === 'ESRCH' }
+            if (dead) {
+              const current = JSON.parse(await fs.readFile(this.lockFile, 'utf8'))
+              if (current.pid === held.pid && current.token === held.token) await fs.unlink(this.lockFile)
+            }
+          }
         } catch {
-          // A concurrent writer may have removed the lock between stat and unlink.
+          // Malformed/unknown ownership is never reclaimed by age. A concurrent
+          // release may remove the file; the next link attempt observes that.
         }
         await sleep(25)
       }
     }
     throw new StoreError('LOCK_TIMEOUT', 'control-plane state is busy; retry the operation', 409)
+    } finally { await fs.unlink(candidate).catch(() => {}) }
+    } catch (error) {
+      if (reserved) { try { mutex.exec('ROLLBACK') } catch {} }
+      mutex.close()
+      throw error
+    }
   }
 
-  async #releaseFileLock() {
-    await fs.unlink(this.lockFile).catch(() => {})
+  async #releaseFileLock({ token, mutex }) {
+    try {
+    const owner = await fs.readFile(this.lockFile, 'utf8').then(JSON.parse).catch(() => null)
+    if (owner?.pid === process.pid && owner.token === token) await fs.unlink(this.lockFile).catch(() => {})
+    } finally {
+      try { mutex.exec('ROLLBACK') } finally { mutex.close() }
+    }
   }
 
-  async #write(state) {
+  async #write(state, token) {
     await fs.mkdir(this.stateDir, { recursive: true, mode: 0o700 })
     const temporary = path.join(this.stateDir, `.control-plane.${process.pid}.${crypto.randomUUID()}.tmp`)
-    await fs.writeFile(temporary, JSON.stringify(state, null, 2), { mode: 0o600 })
+    const handle = await fs.open(temporary, 'wx', 0o600)
+    try { await handle.writeFile(JSON.stringify(state, null, 2)); await handle.sync() } finally { await handle.close() }
+    const owner = await fs.readFile(this.lockFile, 'utf8').then(JSON.parse).catch(() => null)
+    if (owner?.pid !== process.pid || owner.token !== token) {
+      await fs.unlink(temporary).catch(() => {})
+      throw new StoreError('LOCK_OWNER_CHANGED', 'control-plane write owner changed', 409)
+    }
     await fs.rename(temporary, this.stateFile)
+    const directory = await fs.open(this.stateDir, 'r')
+    try { await directory.sync() } finally { await directory.close() }
   }
 
   async #mutate(mutator) {
-    await this.#acquireFileLock()
+    const lock = await this.#acquireFileLock()
     try {
       const state = await readJson(this.stateFile)
       const result = await mutator(state)
-      await this.#write(state)
+      await this.#write(state, lock.token)
       return result
     } finally {
-      await this.#releaseFileLock()
+      await this.#releaseFileLock(lock)
     }
   }
 
@@ -327,15 +375,69 @@ export class ControlPlaneStore {
     return execution
   }
 
-  async createExecution(taskId, input, { idempotencyKey } = {}) {
+  async createExecution(taskId, requestedInput, { idempotencyKey, executionGuard, admissionIntent, admissionFactory } = {}) {
+    if (requestedInput?.status !== undefined && requestedInput.status !== 'queued') throw new StoreError('INVALID_INITIAL_STATUS', 'new executions must start queued', 400)
+    if (admissionFactory !== undefined && (typeof admissionFactory !== 'function' || !admissionIntent || typeof admissionIntent !== 'object')) {
+      throw new StoreError('INVALID_ADMISSION', 'host admission requires a factory and explicit intent', 400)
+    }
     return this.#mutate(async (state) => {
       this.#pruneLocks(state)
-      const request = { taskId, input, operation: 'execution.create' }
+      // The host-issued admission grant/digest are EXCLUDED from the
+      // idempotency fingerprint: they are derived artifacts whose clock
+      // fields (issuedAt/expiresAt/effectiveDeadlineAt) necessarily differ
+      // between a request and its retry, and a retry must read as a replay,
+      // never as an IDEMPOTENCY_CONFLICT. Callers cannot smuggle semantics
+      // through this exclusion — host entries strip caller-supplied grant
+      // material before issuing their own (see gateway/MCP/CLI entries), and
+      // every caller-affecting field and explicit admission intent (including
+      // requested expiresAt) still participates. Host entry factories run
+      // only after this fingerprint misses, so expired retries never re-sign.
+      // The grant is still validated and persisted by the mutator below.
+      const { grant: _admissionGrant, parametersDigest: _admissionDigest, ...fingerprintInput } = requestedInput ?? {}
+      const request = { taskId, input: fingerprintInput, operation: 'execution.create', ...(executionGuard === undefined ? {} : { executionGuard }), ...(admissionIntent === undefined ? {} : { admissionIntent }) }
       const result = this.#idempotent(state, idempotencyKey, request, 'execution.create', () => {
         const task = state.tasks[taskId]
         if (!task) throw new StoreError('TASK_NOT_FOUND', `task ${taskId} was not found`, 404)
+        const input = { ...requestedInput, ...(admissionFactory === undefined ? {} : admissionFactory()) }
+        if (executionGuard !== undefined) {
+          // Recheck under the same durable write lock as creation. A prior
+          // getTask() is advisory and cannot fence cancellation between reads.
+          const parent = state.executions[executionGuard?.executionId]
+          if (!executionGuard || Object.keys(executionGuard).some(key => !['taskId', 'executionId'].includes(key)) ||
+              executionGuard.taskId !== taskId || executionGuard.executionId !== input?.parentExecutionId ||
+              !parent || parent.taskId !== taskId || !ACTIVE_EXECUTION_STATUSES.has(parent.status) ||
+              ['completed', 'cancelled', 'failed', 'blocked'].includes(task.status)) {
+            throw new StoreError('EXECUTION_SCOPE_CHANGED', 'parent execution is no longer in the controlled scope', 403)
+          }
+        }
         const execution = createExecution({ ...input, taskId, status: input?.status ?? 'queued' })
         if (state.executions[execution.id]) throw new StoreError('EXECUTION_EXISTS', `execution ${execution.id} already exists`, 409)
+        // S03b execution Grant (remediation §5): an OPTIONAL formal admission
+        // artifact, persisted verbatim with the record it is bound to (the
+        // whole execution record is the durable JSON unit, so no separate
+        // table/format is needed). The store performs only the cheap binding
+        // check here — the grant must name THIS task and THIS execution — so a
+        // misbound grant can never even be persisted; full structural, clock
+        // and expiry validation happens fail-closed at dispatch admission
+        // (verifyGrant in control-plane/dispatcher.mjs). Records created
+        // BEFORE this upgrade (or by callers that do not issue grants) simply
+        // carry no grant field; dispatch refuses them with GRANT_MISSING (see
+        // docs/handoffs/s03b-execution-grant-r1.md for the legacy semantics).
+        if (input?.grant !== undefined) {
+          const grant = input.grant
+          if (typeof grant !== 'object' || grant === null || Array.isArray(grant)) throw new StoreError('INVALID_GRANT', 'grant must be a plain object issued by control-plane/execution-grant.mjs', 400)
+          if (grant.taskId !== taskId || grant.executionId !== execution.id) {
+            throw new StoreError('GRANT_BINDING_MISMATCH', 'grant is bound to a different task/execution than the record being created', 400)
+          }
+          execution.grant = grant
+        }
+        // The digest of the admitted parameter set the grant binds to. It is
+        // carried on the record (never recomputed at dispatch) so the
+        // anti-portability check compares two STORED values.
+        if (input?.parametersDigest !== undefined) {
+          if (typeof input.parametersDigest !== 'string' || input.parametersDigest.trim() === '') throw new StoreError('INVALID_PARAMETERS_DIGEST', 'parametersDigest must be a non-empty string', 400)
+          execution.parametersDigest = input.parametersDigest
+        }
         if (execution.sessionRefId) {
           const locked = state.locks[execution.sessionRefId]
           if (locked && Date.parse(locked.expiresAt) > Date.now() && input?.sessionLockToken !== locked.token) {
@@ -452,10 +554,13 @@ export class ControlPlaneStore {
   }
 
   async createApproval(input, { idempotencyKey } = {}) {
+    if (input?.decision !== undefined && input.decision !== 'pending') throw new StoreError('APPROVAL_DECISION_FORBIDDEN', 'approvals must be created pending', 400)
+    if (Object.hasOwn(input ?? {}, 'approvedBy')) throw new StoreError('APPROVAL_APPROVER_FORBIDDEN', 'approval creation cannot set an approver', 400)
+    if (Object.hasOwn(input ?? {}, 'usedAt')) throw new StoreError('APPROVAL_USED_AT_FORBIDDEN', 'approval creation cannot consume an approval', 400)
     return this.#mutate(async (state) => {
       const request = { input, operation: 'approval.create' }
       const result = this.#idempotent(state, idempotencyKey, request, 'approval.create', () => {
-        const approval = createApproval({ ...input, decision: input?.decision ?? 'pending' })
+        const approval = createApproval({ ...input, decision: 'pending' })
         if (state.approvals[approval.id]) throw new StoreError('APPROVAL_EXISTS', `approval ${approval.id} already exists`, 409)
         state.approvals[approval.id] = approval
         this.#remember(state, { type: 'approval.created', entityType: 'Approval', entityId: approval.id, details: { action: approval.action, target: approval.target } })
@@ -480,18 +585,24 @@ export class ControlPlaneStore {
       .slice(0, safeLimit(limit))
   }
 
-  async decideApproval(approvalId, input, { idempotencyKey } = {}) {
+  async decideApproval(approvalId, input, { idempotencyKey, principal } = {}) {
+    if (principal !== undefined && (principal?.authenticated !== true || principal.role !== 'operator' ||
+        typeof principal.id !== 'string' || !/^[A-Za-z0-9:_-]{1,200}$/.test(principal.id) || input?.approvedBy !== principal.id)) {
+      throw new StoreError('APPROVAL_AUTHORITY_MISMATCH', 'operator authority does not match this decision', 403)
+    }
     return this.#mutate(async (state) => {
-      const request = { approvalId, input, operation: 'approval.decide' }
+      const request = { approvalId, input, operation: 'approval.decide', ...(principal === undefined ? {} : { authority: { kind: 'authenticated-operator', subjectId: principal.id } }) }
       const result = this.#idempotent(state, idempotencyKey, request, 'approval.decide', () => {
         const approval = state.approvals[approvalId]
         if (!approval) throw new StoreError('APPROVAL_NOT_FOUND', `approval ${approvalId} was not found`, 404)
+        if (approval.usedAt) throw new StoreError('APPROVAL_ALREADY_USED', 'a consumed approval cannot be relabeled', 409)
         const decision = input?.decision
         if (!['approved', 'rejected', 'expired'].includes(decision)) throw new StoreError('INVALID_APPROVAL_DECISION', 'decision must be approved, rejected or expired', 400)
         if (approval.decision !== 'pending' && approval.decision !== decision) throw new StoreError('APPROVAL_ALREADY_DECIDED', `approval is already ${approval.decision}`, 409)
         if (decision === 'approved' && !String(input?.approvedBy ?? '').trim()) throw new StoreError('APPROVER_REQUIRED', 'approvedBy is required to approve an action', 400)
         approval.decision = decision
         if (input?.approvedBy !== undefined) approval.approvedBy = String(input.approvedBy)
+        if (principal !== undefined) approval.decisionAuthority = { kind: 'authenticated-operator', subjectId: principal.id }
         this.#remember(state, { type: 'approval.decided', entityType: 'Approval', entityId: approvalId, details: { decision, approvedBy: approval.approvedBy } })
         return { approvalId }
       })
@@ -499,15 +610,26 @@ export class ControlPlaneStore {
     })
   }
 
-  async consumeApproval(approvalId, input, { idempotencyKey } = {}) {
+  async consumeApproval(approvalId, input, { idempotencyKey, executionGuard, requireOperator = false } = {}) {
     return this.#mutate(async (state) => {
-      const request = { approvalId, input, operation: 'approval.consume' }
+      const request = { approvalId, input, operation: 'approval.consume', ...(executionGuard === undefined ? {} : { executionGuard }), ...(requireOperator ? { requireOperator: true } : {}) }
       const result = this.#idempotent(state, idempotencyKey, request, 'approval.consume', () => {
         const approval = state.approvals[approvalId]
         if (!approval) throw new StoreError('APPROVAL_NOT_FOUND', `approval ${approvalId} was not found`, 404)
+        if (requireOperator && (approval.decisionAuthority?.kind !== 'authenticated-operator' || approval.decisionAuthority.subjectId !== approval.approvedBy)) {
+          throw new StoreError('APPROVAL_AUTHORITY_REQUIRED', 'a verified operator decision is required', 403)
+        }
+        if (requireOperator && !approval.expiresAt) throw new StoreError('APPROVAL_EXPIRY_REQUIRED', 'tool approval requires an explicit expiry', 403)
+        if (executionGuard !== undefined) {
+          const execution = state.executions[executionGuard.executionId]
+          if (!execution || execution.taskId !== executionGuard.taskId || execution.status !== 'running' ||
+              execution.engineRef?.engine !== 'native-acp' || ['source', 'nativeSessionId', 'cwd', 'sessionRefId', 'accountId', 'profileId'].some(field => execution.engineRef[field] !== executionGuard[field])) {
+            throw new StoreError('EXECUTION_SCOPE_CHANGED', 'native execution is no longer in the approved scope', 403)
+          }
+        }
         if (approval.decision !== 'approved') throw new StoreError('APPROVAL_NOT_APPROVED', `approval is ${approval.decision}`, 409)
         if (approval.usedAt) throw new StoreError('APPROVAL_ALREADY_USED', 'approval has already been consumed', 409)
-        if (approval.expiresAt && Date.parse(approval.expiresAt) <= Date.now()) {
+        if (approval.expiresAt && (!Number.isFinite(Date.parse(approval.expiresAt)) || Date.parse(approval.expiresAt) <= Date.now())) {
           approval.decision = 'expired'
           throw new StoreError('APPROVAL_EXPIRED', 'approval has expired', 409)
         }

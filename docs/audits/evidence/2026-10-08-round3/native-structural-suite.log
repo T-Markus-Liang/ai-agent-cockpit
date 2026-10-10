@@ -1,0 +1,15 @@
+✔ buildSandboxProfile emits every enforced clause (0.440125ms)
+✔ DEFAULT_DENY_READ_SUBPATHS is the frozen default deny set (0.265083ms)
+✔ spec validation rejects empty exec whitelists and relative paths (0.275125ms)
+✔ quotes and backslashes in literals are escaped, not left to break the profile (0.0645ms)
+✔ wrapWithSandbox shapes the command and refuses a command outside the whitelist (0.144916ms)
+✔ sandboxEnv returns a fresh minimal environment (0.070666ms)
+✔ assertSandboxAvailable fails closed with SANDBOX_REQUIRED when Seatbelt is missing (0.111583ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 43.954958

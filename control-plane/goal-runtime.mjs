@@ -1,5 +1,7 @@
 import { GoalAI } from './goal-ai.mjs'
-import { workspaceState, applyProposal, runChecks } from './goal-workspace.mjs'
+import { workspaceState, runChecks } from './goal-workspace.mjs'
+import { createGoalAccessBroker } from './goal-access-broker.mjs'
+import { createAdmittedExecution } from './dispatcher.mjs'
 import crypto from 'node:crypto'
 
 /** Persistent scheduler. Agents propose; this process owns file and evidence writes. */
@@ -52,6 +54,8 @@ export class GoalRuntime {
   }
   async run(goal, controller) {
     const token = goal.lease.token
+    // All read/write/check effects for this iteration go through the single
+    // confirmed-scope broker. GoalStore remains the sole grant owner.
     const deadline = setTimeout(() => controller.abort(new Error('goal deadline reached')), Math.max(1, Date.parse(goal.grant.expiresAt) - Date.now()))
     const heartbeat = setInterval(() => { void this.goals.heartbeat(goal.id, token).catch(() => controller.abort(new Error('goal lease expired'))) }, 5000)
     let taskId, workerId, reviewId
@@ -64,7 +68,8 @@ export class GoalRuntime {
         reconcile: (reserved, actual) => this.goals.reconcileUsage(goal.id, token, reserved, actual) })
     }
     try {
-      const before = await workspaceState(goal)
+      const broker = createGoalAccessBroker({ goals: this.goals, goal, leaseToken: token, role: 'worker' })
+      const before = await broker.workspaceState()
       const saved = goal.resumeCheckpoint
       const restoring = saved?.proposal && saved.generation === goal.generation && saved.specDigest === goal.specDigest
       if (restoring) {
@@ -83,20 +88,29 @@ export class GoalRuntime {
       await this.goals.checkpoint(goal.id, token, { taskId })
       const plan = restoring ? { result: { instruction: '接续已保存且范围匹配的提案，不再次派发 Worker' } } : await call('planner', common)
       if (typeof plan.result.instruction !== 'string' || !plan.result.instruction.trim()) throw new Error('chief returned no usable next step')
-      const { execution } = await this.tasks.createExecution(taskId, { workerId: restoring ? 'checkpoint-recovery/controller' : 'deepseek-official/deepseek-flash', artifactRef: before.artifactRef }, { idempotencyKey: key('worker') })
+      // (S03b) host-issued admission Grant at enqueue. The goal grant's own
+      // expiry is the authorizing artifact's deadline, so it participates in
+      // the effective minimum (authorizerExpiresAt): an iteration can never
+      // out-admit the material authority it runs under. A goal grant that has
+      // already expired refuses the enqueue fail-closed instead of admitting
+      // work past its authority.
+      const workerFields = { workerId: restoring ? 'checkpoint-recovery/controller' : 'deepseek-official/deepseek-flash', artifactRef: before.artifactRef }
+      const { execution } = await createAdmittedExecution({ store: this.tasks, taskId, input: workerFields, owner: goal.owner, scope: ['goal-runtime.execution'], authorizerExpiresAt: goal.grant.expiresAt, idempotencyKey: key('worker') })
       workerId = execution.id
       await this.tasks.updateExecutionStatus(workerId, { status: 'running' }, { idempotencyKey: key('working') })
       const proposal = restoring ? { result: saved.proposal, identity: saved.writerIdentity } : await call('worker', { ...common, instruction: plan.result.instruction })
       checkpoint = { ...checkpoint, proposal: proposal.result, writerIdentity: proposal.identity }
       await this.goals.checkpoint(goal.id, token, { phase: 'applying', resumeCheckpoint: checkpoint })
       const pendingProposal = restoring ? { ...proposal.result, files: proposal.result.files.filter(file => before.files.find(current => current.path === file.path)?.content !== file.content) } : proposal.result
-      await this.goals.withLease(goal.id, token, () => applyProposal(goal, pendingProposal))
-      const after = await workspaceState(goal)
+      await broker.applyProposal(pendingProposal)
+      const after = await broker.workspaceState()
       await this.tasks.updateExecutionStatus(workerId, { status: 'verifying', artifactRef: after.artifactRef }, { idempotencyKey: key('verifying') })
       checkpoint = { ...checkpoint, afterArtifactRef: after.artifactRef }; delete checkpoint.checks
       await this.goals.checkpoint(goal.id, token, { phase: 'verifying', artifactRef: after.artifactRef, resumeCheckpoint: checkpoint })
-      const checks = await this.checks(goal, { signal: controller.signal })
-      const checked = await workspaceState(goal)
+      // Custom fake checks injected by tests keep working; the real path uses
+      // the broker so the long child wait never holds the Goal JSON lock.
+      const checks = this.checks === runChecks ? await broker.runChecks({ signal: controller.signal }) : await this.checks(goal, { signal: controller.signal })
+      const checked = await broker.workspaceState()
       const allPassed = checks.length === goal.spec.checks.length && checks.every(check => check.exitCode === 0 && !check.timedOut) && checked.artifactRef === after.artifactRef
       checkpoint = { ...checkpoint, checks, checkedArtifactRef: checked.artifactRef }
       await this.goals.checkpoint(goal.id, token, { lastChecks: checks, resumeCheckpoint: checkpoint })
@@ -105,15 +119,16 @@ export class GoalRuntime {
       }
       if (!allPassed) {
         await this.tasks.updateExecutionStatus(workerId, { status: 'failed', outcome: 'real acceptance checks failed or changed the artifact' }, { idempotencyKey: key('failed-checks') })
-        await this.goals.settle(goal.id, token, { outcome: 'retry', summary: '真实验收未通过，下一轮由 Agent 依据失败记录调整方案。', artifactRef: checked.artifactRef, checks, progress: checked.artifactRef !== before.artifactRef, taskId })
+        await this.goals.settle(goal.id, token, { outcome: 'retry', summary: '真实验收未通过，下一轮由 Agent 依据失败记录调整方案。', artifactRef: checked.artifactRef, checks, writerIdentity: proposal.identity, progress: checked.artifactRef !== before.artifactRef, taskId })
         return
       }
-      const reviewer = await this.tasks.createExecution(taskId, { workerId: 'kimi/reviewer', parentExecutionId: workerId, artifactRef: after.artifactRef }, { idempotencyKey: key('reviewer') })
+      const reviewerFields = { workerId: 'kimi/reviewer', parentExecutionId: workerId, artifactRef: after.artifactRef }
+      const reviewer = await createAdmittedExecution({ store: this.tasks, taskId, input: reviewerFields, owner: goal.owner, scope: ['goal-runtime.execution'], authorizerExpiresAt: goal.grant.expiresAt, idempotencyKey: key('reviewer') })
       reviewId = reviewer.execution.id
       await this.tasks.updateExecutionStatus(reviewId, { status: 'running' }, { idempotencyKey: key('reviewing-agent') })
       const review = await call('reviewer', { objective: goal.spec.objective, files: checked.files, artifactRef: after.artifactRef, checks, writerIdentity: proposal.identity })
       if (!['passed', 'failed'].includes(review.result.verdict) || typeof review.result.goalMet !== 'boolean' || typeof review.result.summary !== 'string') throw new Error('independent reviewer returned invalid verdict')
-      const current = await workspaceState(goal)
+      const current = await broker.workspaceState()
       const passed = review.result.verdict === 'passed' && review.result.goalMet && current.artifactRef === after.artifactRef
       await this.tasks.updateExecutionStatus(workerId, { status: 'reviewing' }, { idempotencyKey: key('reviewing') })
       await this.tasks.updateExecutionStatus(reviewId, { status: 'verifying' }, { idempotencyKey: key('review-verifying') })
@@ -124,16 +139,19 @@ export class GoalRuntime {
       if (passed) {
         // Material authority is the explicit, version-bound goal grant. The
         // model cannot create or increase it; legacy unscoped actions stay gated.
-        await this.goals.withLease(goal.id, token, async () => {
+        await this.goals.withLease(goal.id, token, async currentGoal => {
+          if (currentGoal.specDigest !== goal.specDigest || currentGoal.generation !== goal.generation ||
+              currentGoal.grant?.digest !== currentGoal.specDigest || currentGoal.grant.generation !== currentGoal.generation) throw new Error('goal grant changed before completion')
           const completion = await this.tasks.completionPlan(taskId)
           if (!completion.ready) throw new Error('completion evidence gate rejected the iteration')
           const approval = await this.tasks.createApproval({ action: completion.action, target: completion.target, parametersDigest: completion.parametersDigest,
-            decision: 'approved', approvedBy: `goal-grant:${goal.id}:${goal.specDigest}` }, { idempotencyKey: key('completion-approval') })
+            expiresAt: currentGoal.grant.expiresAt }, { idempotencyKey: key('completion-approval') })
+          await this.tasks.decideApproval(approval.approval.id, { decision: 'approved', approvedBy: `goal-grant:${goal.id}:${goal.specDigest}` }, { idempotencyKey: key('completion-decision') })
           await this.tasks.completeTask(taskId, { approvalId: approval.approval.id }, { idempotencyKey: key('complete-task') })
         })
       }
       await this.goals.settle(goal.id, token, { outcome: passed ? 'complete' : 'retry', summary: review.result.summary.slice(0, 1500), artifactRef: current.artifactRef,
-        checks, review: { ...review.result, identity: review.identity }, progress: current.artifactRef !== before.artifactRef, taskId })
+        checks, review: { ...review.result, identity: review.identity }, writerIdentity: proposal.identity, progress: current.artifactRef !== before.artifactRef, taskId })
     } catch (error) {
       for (const id of [workerId, reviewId].filter(Boolean)) {
         const execution = await this.tasks.getExecution(id).catch(() => null)

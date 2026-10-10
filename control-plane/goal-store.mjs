@@ -44,6 +44,36 @@ export function validateGoalSpec(input) {
   return { title, objective, sourceDir: path.resolve(sourceDir), readPaths, writePaths, checks, limits, recovery: { enabled: recovery.enabled, maxAttempts: recovery.maxAttempts } }
 }
 
+// Grant integrity is a pure read of a goal snapshot. It never mutates state and
+// is the single fail-closed predicate used by the broker for every operation.
+//
+// `admitting` distinguishes scheduling a *new* iteration from checking an
+// *active* one. The last permitted iteration (iterations === maxIterations) may
+// still run, verify and settle; only admitting an iteration beyond the budget is
+// denied. The same rule applies to token budget: when a full reservation is
+// legitimate (tokensUsed === maxTokens) the active iteration must remain valid so
+// its reservation can be reconciled; admission of further work is still denied.
+export function grantFailureReason(goal, { admitting = false } = {}) {
+  if (!goal?.grant || goal.grant.digest !== goal.specDigest || goal.grant.generation !== goal.generation) return '未确认目标或目标已改变'
+  const expiresAt = Date.parse(goal.grant.expiresAt)
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return '授权期限已到'
+  if (admitting ? goal.tokensUsed >= goal.spec.limits.maxTokens : goal.tokensUsed > goal.spec.limits.maxTokens) return 'token 预算已耗尽'
+  if (admitting ? goal.iterations >= goal.spec.limits.maxIterations : goal.iterations > goal.spec.limits.maxIterations) return '已达到迭代上限'
+  if (goal.noProgress >= goal.spec.limits.maxNoProgress) return '连续无进展，需要重新规划'
+  return ''
+}
+
+// Lease integrity helper for read-only rechecks outside the JSON lock. It does
+// not acquire the store lock; callers must still hold authority via withLease
+// for any state effect. It always evaluates the *active* iteration scope.
+export function assertLeaseIntegrity(goal, token) {
+  if (goal?.status !== 'running' || !goal.lease || goal.lease.token !== token || goal.lease.generation !== goal.generation || !Number.isFinite(goal.lease.expiresAt) || goal.lease.expiresAt <= Date.now()) fail('STALE_LEASE', 'goal stopped, changed or lease expired')
+  const reason = grantFailureReason(goal, { admitting: false })
+  if (reason) fail('GRANT_INACTIVE', reason)
+}
+
+export function goalSpecDigest(spec) { return digest(spec) }
+
 export class GoalStore {
   constructor({ stateDir = path.join(os.homedir(), '.local/state/personal-ai-os/goals') } = {}) {
     this.stateDir = stateDir; this.file = path.join(stateDir, 'goals.json'); this.pending = Promise.resolve()
@@ -125,14 +155,7 @@ export class GoalStore {
       goal.status = 'ready'; goal.nextWakeAt = Date.now(); goal.reason = ''; this.event(state, goal, 'granted'); return goal
     })
   }
-  permitted(goal) {
-    if (!goal.grant || goal.grant.digest !== goal.specDigest || goal.grant.generation !== goal.generation) return '未确认目标或目标已改变'
-    if (Date.parse(goal.grant.expiresAt) <= Date.now()) return '授权期限已到'
-    if (goal.tokensUsed >= goal.spec.limits.maxTokens) return 'token 预算已耗尽'
-    if (goal.iterations >= goal.spec.limits.maxIterations) return '已达到迭代上限'
-    if (goal.noProgress >= goal.spec.limits.maxNoProgress) return '连续无进展，需要重新规划'
-    return ''
-  }
+  permitted(goal) { return grantFailureReason(goal, { admitting: true }) }
   async control(id, action) {
     return this.mutate(state => {
       const goal = this.item(state, id)
@@ -183,7 +206,7 @@ export class GoalStore {
     if (patch.resumeCheckpoint && JSON.stringify(patch.resumeCheckpoint).length > 2500000) fail('CHECKPOINT_SIZE', 'checkpoint exceeds allowed size')
     return this.mutate(state => { const goal = this.item(state, id); this.lease(goal, token); Object.assign(goal, copy(patch)); this.event(state, goal, 'checkpoint'); return goal })
   }
-  async withLease(id, token, callback) { return this.mutate(async state => { const goal = this.item(state, id); this.lease(goal, token); return callback(copy(goal)) }) }
+  async withLease(id, token, callback) { return this.mutate(async state => { if (state.globalPaused) fail('GLOBAL_PAUSE', 'all goals are paused'); const goal = this.item(state, id); this.lease(goal, token); return callback(copy(goal)) }) }
   async reserve(id, token, count) {
     if (!Number.isInteger(count) || count <= 0) fail('INVALID_USAGE', 'invalid token reservation', 400)
     return this.mutate(state => { const goal = this.item(state, id); this.lease(goal, token); if (goal.tokensUsed + count > goal.spec.limits.maxTokens) fail('TOKEN_BUDGET', 'remaining token budget is insufficient', 403); goal.tokensUsed += count; return count })

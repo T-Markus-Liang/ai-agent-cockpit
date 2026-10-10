@@ -1,0 +1,166 @@
+✔ 1: a binding persists across close/reopen with every field intact (17.444375ms)
+✔ 2: a binding-conflict writes nothing (DB dump identical before/after) (3.212792ms)
+✔ 3: an identical re-bind is idempotent and re-writes nothing (2.246958ms)
+✔ 4: an intent persists and repeated planEffect is idempotent (row count stays 1) (3.136958ms)
+✔ 5: crash-atomicity: an uncommitted row never survives a reopen (2.225291ms)
+✔ 6: an expired legacy binding is loaded (retained) but resolve fails closed (2.225ms)
+✔ 7: an unknown schema version is refused and the DB is left untouched (2.57875ms)
+✔ 8: a legacy scope violation still holds after a reopen (2.28225ms)
+✔ 9: the store file is 0600 and its directory is 0700 (2.284375ms)
+✔ 10: the durable key set matches the memory-visible key set (3.417084ms)
+✖ 11: every API is refused after close (2.659041ms)
+✖ 12: a failed INSERT poisons the store; the idempotent retry is refused, not faked (2.339375ms)
+✖ 13: a write failure whose reload also fails stays poisoned (no ghost success) (2.549667ms)
+✖ 14: a failed COMMIT poisons the store (no ghost success) (2.43675ms)
+✖ 15: a failed intent INSERT poisons the store too (2.767541ms)
+✖ 16: an existing foreign database is refused untouched (no chmod, no DDL) (2.230417ms)
+✔ 17: a zero-byte file is initialized fresh and a valid store reopens normally (2.027375ms)
+✖ 18: a symlink or a non-regular path is refused without being followed (2.200833ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 11
+ℹ fail 7
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 94.891792
+
+✖ failing tests:
+
+test at tests/route-binding-store.test.mjs:384:1
+✖ 11: every API is refused after close (2.659041ms)
+  AssertionError [ERR_ASSERTION]: expected RouteBindingError(store-closed)
+      at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:393:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: Error: database is not open
+        at inTransaction (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:275:6)
+        at insertBindingRow (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:294:3)
+        at Object.bind (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:349:4)
+        at file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:393:26
+        at getActual (node:assert:611:5)
+        at strict.throws (node:assert:759:24)
+        at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+        at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:393:3)
+        at async Test.run (node:internal/test_runner/test:1208:7)
+        at async Test.processPendingSubtests (node:internal/test_runner/test:831:7),
+    operator: 'throws',
+    diff: 'simple'
+  }
+
+test at tests/route-binding-store.test.mjs:405:1
+✖ 12: a failed INSERT poisons the store; the idempotent retry is refused, not faked (2.339375ms)
+  AssertionError [ERR_ASSERTION]: expected RouteBindingError(store-poisoned)
+      at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:420:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: Error: blocked
+        at file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:297:6
+        at inTransaction (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:278:19)
+        at insertBindingRow (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:294:3)
+        at Object.bind (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:349:4)
+        at file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:420:26
+        at getActual (node:assert:611:5)
+        at strict.throws (node:assert:759:24)
+        at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+        at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:420:3)
+        at async Test.run (node:internal/test_runner/test:1208:7),
+    operator: 'throws',
+    diff: 'simple'
+  }
+
+test at tests/route-binding-store.test.mjs:439:1
+✖ 13: a write failure whose reload also fails stays poisoned (no ghost success) (2.549667ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception: expected RouteBindingError(store-poisoned)
+      at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:458:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    operator: 'throws',
+    diff: 'simple'
+  }
+
+test at tests/route-binding-store.test.mjs:468:1
+✖ 14: a failed COMMIT poisons the store (no ghost success) (2.43675ms)
+  AssertionError [ERR_ASSERTION]: expected RouteBindingError(store-poisoned)
+      at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:482:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: Error: database is locked
+        at inTransaction (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:279:7)
+        at insertBindingRow (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:294:3)
+        at Object.bind (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:349:4)
+        at file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:482:26
+        at getActual (node:assert:611:5)
+        at strict.throws (node:assert:759:24)
+        at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+        at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:482:3)
+        at async Test.run (node:internal/test_runner/test:1208:7)
+        at async Test.processPendingSubtests (node:internal/test_runner/test:831:7),
+    operator: 'throws',
+    diff: 'simple'
+  }
+
+test at tests/route-binding-store.test.mjs:499:1
+✖ 15: a failed intent INSERT poisons the store too (2.767541ms)
+  AssertionError [ERR_ASSERTION]: expected RouteBindingError(store-poisoned)
+      at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:511:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: Error: blocked-intent
+        at file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:305:6
+        at inTransaction (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:278:19)
+        at insertIntentRow (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:302:3)
+        at Object.planEffect (file:///private/tmp/negcheck-rbs/runtime/route-binding-store.mjs:366:4)
+        at file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:511:26
+        at getActual (node:assert:611:5)
+        at strict.throws (node:assert:759:24)
+        at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+        at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:511:3)
+        at async Test.run (node:internal/test_runner/test:1208:7),
+    operator: 'throws',
+    diff: 'simple'
+  }
+
+test at tests/route-binding-store.test.mjs:522:1
+✖ 16: an existing foreign database is refused untouched (no chmod, no DDL) (2.230417ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception: expected RouteBindingError(unknown_existing_db)
+      at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:536:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    operator: 'throws',
+    diff: 'simple'
+  }
+
+test at tests/route-binding-store.test.mjs:572:1
+✖ 18: a symlink or a non-regular path is refused without being followed (2.200833ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception: expected RouteBindingError(unsafe-store-path)
+      at throwsCode (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:90:9)
+      at TestContext.<anonymous> (file:///private/tmp/negcheck-rbs/tests/route-binding-store.test.mjs:583:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    operator: 'throws',
+    diff: 'simple'
+  }

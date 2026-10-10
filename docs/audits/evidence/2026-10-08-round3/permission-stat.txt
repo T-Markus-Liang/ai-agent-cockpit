@@ -1,0 +1,10 @@
+/Users/markus/.wechat-acp | mode=755 uid=501 gid=20 links=3
+/Users/markus/.wechat-acp/instances | mode=755 uid=501 gid=20 links=3
+/Users/markus/.wechat-acp/instances/cezar-codex | mode=700 uid=501 gid=20 links=12
+/Users/markus/.wechat-acp/instances/cezar-codex/token.json | mode=644 uid=501 gid=20 links=1
+/Users/markus/.local/state/personal-ai-os | mode=755 uid=501 gid=20 links=4
+/Users/markus/.local/state/personal-ai-os/mem0/history.sqlite | mode=644 uid=501 gid=20 links=1
+/Users/markus/.local/state/personal-ai-os/mem0/vectors | mode=755 uid=501 gid=20 links=5
+/Users/markus/.local/state/personal-ai-os/mem0/vectors/meta.json | mode=644 uid=501 gid=20 links=1
+/Users/markus/.local/state/personal-ai-os/mem0/vectors/.lock | mode=644 uid=501 gid=20 links=1
+/Users/markus/ai-agent-cockpit/logs | mode=755 uid=501 gid=20 links=21

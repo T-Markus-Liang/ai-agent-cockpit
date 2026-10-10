@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { indexLocalSessions } from '../control-plane/session-index.mjs'
 import { ControlPlaneStore } from '../control-plane/store.mjs'
-import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution } from '../control-plane/dispatcher.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, reconcileCezarExecution, createAdmittedExecution } from '../control-plane/dispatcher.mjs'
 import { listNativeAcpSessions } from '../control-plane/native-acp.mjs'
-import { executeNativeSessionPrompt, nativePromptPlan } from '../control-plane/native-acp-executor.mjs'
+import { executeNativeSessionPrompt, cancelNativeExecution, nativePromptPlan } from '../control-plane/native-acp-executor.mjs'
 import { createReviewerExecution } from '../control-plane/reviewer.mjs'
 
 const args = process.argv.slice(2)
@@ -83,13 +83,31 @@ async function main() {
   if (command === 'task' && subcommand === 'complete') return output(await store.completeTask(required('id'), { approvalId: required('approval') }, { idempotencyKey: idempotency() }))
   if (command === 'audit' && subcommand === 'list') return output(await store.listEvents({ entityId: value('entity'), limit: value('limit') }))
   if (command === 'execution' && subcommand === 'create') {
-    return output(await store.createExecution(required('task'), {
+    // (S03b) the CLI is a host entry: it issues the admission Grant before
+    // enqueue. Optional operator flags: --owner (defaults to the worker id),
+    // --expires-at (ISO timestamp or epoch ms; can only narrow the window),
+    // --max-lifetime-ms (operator override of the 30-minute default cap).
+    const taskId = required('task')
+    const fields = {
       id: value('id'),
       workerId: required('worker'),
       sessionRefId: value('session'),
       parentExecutionId: value('parent'),
       attempt: value('attempt') ? Number(value('attempt')) : undefined,
-    }, { idempotencyKey: idempotency() }))
+    }
+    const rawExpiresAt = value('expires-at')
+    const expiresAt = rawExpiresAt === undefined ? undefined : (Number.isFinite(Number(rawExpiresAt)) && rawExpiresAt.trim() !== '' ? Number(rawExpiresAt) : rawExpiresAt)
+    const rawLifetime = value('max-lifetime-ms')
+    const maxLifetimeMs = rawLifetime === undefined ? undefined : Number(rawLifetime)
+    return output(await createAdmittedExecution({
+      store, input: fields,
+      taskId,
+      owner: value('owner') ?? fields.workerId,
+      scope: ['cezar.dispatch', 'native.session.prompt'],
+      expiresAt,
+      idempotencyKey: idempotency(),
+      ...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
+    }))
   }
   if (command === 'execution' && subcommand === 'status') {
     return output(await store.updateExecutionStatus(required('id'), { status: required('status'), outcome: value('outcome') }, { idempotencyKey: idempotency() }))
@@ -98,10 +116,13 @@ async function main() {
     return output(await createReviewerExecution({ store, taskId: required('task'), sourceExecutionId: required('source-execution'), reviewerId: required('reviewer'), sessionRefId: value('session'), idempotencyKey: idempotency() }))
   }
   if (command === 'native' && subcommand === 'plan') {
-    return output(nativePromptPlan({ taskId: required('task'), executionId: required('execution'), source: required('provider'), nativeSessionId: required('session'), cwd: required('cwd'), prompt: required('prompt') }))
+    return output(nativePromptPlan({ taskId: required('task'), executionId: required('execution'), source: required('provider'), nativeSessionId: required('session'), sessionRefId: required('session-ref'), cwd: required('cwd'), prompt: required('prompt') }))
   }
   if (command === 'native' && subcommand === 'prompt') {
-    return output(await executeNativeSessionPrompt({ store, taskId: required('task'), executionId: required('execution'), approvalId: required('approval'), source: required('provider'), nativeSessionId: required('session'), cwd: required('cwd'), prompt: required('prompt'), idempotencyKey: idempotency() }))
+    return output(await executeNativeSessionPrompt({ store, taskId: required('task'), executionId: required('execution'), approvalId: required('approval'), source: required('provider'), nativeSessionId: required('session'), sessionRefId: required('session-ref'), cwd: required('cwd'), prompt: required('prompt'), accountId: value('account'), profileId: value('profile'), idempotencyKey: idempotency() }))
+  }
+  if (command === 'native' && subcommand === 'cancel') {
+    return output(await cancelNativeExecution({ store, executionId: required('execution'), approvalId: required('approval'), idempotencyKey: idempotency() }))
   }
   if (command === 'evidence' && subcommand === 'add') {
     return output(await store.addEvidence(required('execution'), {
@@ -143,7 +164,7 @@ async function main() {
   if (command === 'session' && subcommand === 'unlock') {
     return output(await store.releaseSessionLock(required('id'), { owner: value('owner'), token: value('token') }, { idempotencyKey: idempotency() }))
   }
-  throw new Error('用法：sessions list/native-list/native-load-probe | task create/list/show/completion-plan/complete | execution create/status | review create | native plan/prompt | evidence add | approval create/decide | cezar plan/dispatch/reconcile | session lock/unlock')
+  throw new Error('用法：sessions list/native-list/native-load-probe | task create/list/show/completion-plan/complete | execution create/status | review create | native plan/prompt/cancel | evidence add | approval create/decide | cezar plan/dispatch/reconcile | session lock/unlock')
 }
 
 try {

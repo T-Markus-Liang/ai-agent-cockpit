@@ -1,10 +1,11 @@
+import { copyJson } from '@earendil-works/chord'
 import { indexLocalSessions } from '../../control-plane/session-index.mjs'
 import { getSessionMetadata } from '../../control-plane/session-adapters.mjs'
 import { listNativeAcpSessions } from '../../control-plane/native-acp.mjs'
-import { executeNativeSessionPrompt, nativePromptPlan } from '../../control-plane/native-acp-executor.mjs'
+import { executeNativeSessionPrompt, cancelNativeExecution, nativePromptPlan } from '../../control-plane/native-acp-executor.mjs'
 import { buildRoutePlan } from '../../control-plane/router.mjs'
 import { createReviewerExecution } from '../../control-plane/reviewer.mjs'
-import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution } from '../../control-plane/dispatcher.mjs'
+import { cezarCancelPlan, cezarDispatchPlan, cancelCezarExecution, dispatchCezar, watchCezarExecution, createAdmittedExecution } from '../../control-plane/dispatcher.mjs'
 import { CezarAdapter } from '../../adapters/engines/cezar.mjs'
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
@@ -58,7 +59,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
   {
     name: 'create_execution',
     description: '为 Task 创建一个排队的 Execution；不启动外部 Agent。',
-    inputSchema: { type: 'object', required: ['taskId', 'workerId', 'idempotencyKey'], properties: { taskId: { type: 'string' }, workerId: { type: 'string' }, sessionRefId: { type: 'string' }, parentExecutionId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['taskId', 'workerId', 'idempotencyKey'], properties: { taskId: { type: 'string' }, workerId: { type: 'string' }, sessionRefId: { type: 'string' }, parentExecutionId: { type: 'string' }, artifactRef: { type: 'string' }, sessionLockToken: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'create_review_execution',
@@ -73,12 +74,17 @@ export const TOOL_DEFINITIONS = Object.freeze([
   {
     name: 'plan_native_prompt',
     description: '生成恢复旧 ACP 会话的审批摘要；只规划，不 load 或 prompt。',
-    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'source', 'nativeSessionId', 'cwd', 'prompt'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'source', 'nativeSessionId', 'sessionRefId', 'cwd', 'prompt'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, sessionRefId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' } } },
   },
   {
     name: 'prompt_native_session',
     description: '在精确 Approval 下 load 并 prompt 一个已有 ACP 会话；完成后进入 VERIFYING。',
-    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'approvalId', 'source', 'nativeSessionId', 'cwd', 'prompt', 'idempotencyKey'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, approvalId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['taskId', 'executionId', 'approvalId', 'source', 'nativeSessionId', 'sessionRefId', 'cwd', 'prompt', 'idempotencyKey'], properties: { taskId: { type: 'string' }, executionId: { type: 'string' }, approvalId: { type: 'string' }, source: { type: 'string' }, nativeSessionId: { type: 'string' }, sessionRefId: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, accountId: { type: 'string' }, profileId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
+  },
+  {
+    name: 'cancel_native_session',
+    description: '使用精确匹配且未消费的 Approval 取消一个在途 native ACP 会话：先发 ACP session/cancel，未收尾再 SIGTERM。',
+    inputSchema: { type: 'object', required: ['executionId', 'approvalId', 'idempotencyKey'], properties: { executionId: { type: 'string' }, approvalId: { type: 'string' }, idempotencyKey: { type: 'string' } } },
   },
   {
     name: 'add_evidence',
@@ -135,7 +141,83 @@ function errorResult(error) {
   return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: error.code ?? 'MCP_TOOL_ERROR', message: error.message }) }] }
 }
 
-export async function callTool(name, args = {}, { store } = {}) {
+// Restricted authority operations are host-only. MCP is an agent channel by
+// default, so these are neither advertised nor accepted without a trusted HOST
+// principal. `deps` is trusted host wiring: it is not a JS code sandbox and is
+// not a substitute for HTTP bearer authentication.
+const RESTRICTED_TOOL_ROLES = Object.freeze({
+  decide_approval: Object.freeze(['operator']),
+  update_execution_status: Object.freeze(['operator', 'coordinator']),
+  add_evidence: Object.freeze(['operator', 'coordinator']),
+})
+
+const TOOL_ARGUMENT_ALLOWLIST = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, new Set(Object.keys(tool.inputSchema?.properties ?? {}))]))
+const HOST_ROLES = new Set(['operator', 'coordinator', 'chief', 'agent', 'viewer'])
+const READ_ONLY_TOOLS = new Set(['list_sessions', 'get_session', 'get_task', 'plan_task_completion', 'list_audit_events', 'list_approvals'])
+const COORDINATOR_TOOLS = new Set([...READ_ONLY_TOOLS, 'update_execution_status', 'add_evidence', 'complete_task'])
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function invalidArgumentsError() {
+  const error = new Error('invalid MCP tool arguments')
+  error.code = 'MCP_INVALID_ARGUMENTS'
+  return error
+}
+
+function notAuthorizedError() {
+  const error = new Error('not authorized')
+  error.code = 'MCP_NOT_AUTHORIZED'
+  return error
+}
+
+function trustedPrincipal(principal) {
+  if (!isPlainObject(principal) || principal.authenticated !== true ||
+      typeof principal.id !== 'string' || !/^[A-Za-z0-9:_-]{1,200}$/.test(principal.id) ||
+      !HOST_ROLES.has(principal.role)) return null
+  return principal
+}
+
+function isToolAuthorized(name, principal) {
+  const trusted = principal === undefined ? undefined : trustedPrincipal(principal)
+  if (principal !== undefined && !trusted) return false
+  if (trusted?.role === 'viewer') return READ_ONLY_TOOLS.has(name)
+  if (trusted?.role === 'coordinator') return COORDINATOR_TOOLS.has(name)
+  const roles = RESTRICTED_TOOL_ROLES[name]
+  return !roles || Boolean(trusted && roles.includes(trusted.role))
+}
+
+export function listVisibleTools(principal) {
+  return TOOL_DEFINITIONS.filter(tool => isToolAuthorized(tool.name, principal))
+}
+
+function validateArguments(name, args) {
+  let safe
+  try {
+    // ponytail: reuse the existing strict JSON clone; don't maintain a second walker.
+    safe = copyJson(args)
+  } catch { throw invalidArgumentsError() }
+  if (!isPlainObject(safe)) throw invalidArgumentsError()
+  const allowed = TOOL_ARGUMENT_ALLOWLIST.get(name)
+  if (!allowed || Object.keys(safe).some(key => !allowed.has(key))) throw invalidArgumentsError()
+  const schema = TOOL_DEFINITIONS.find(tool => tool.name === name).inputSchema
+  if ((schema.required ?? []).some(key => !Object.hasOwn(safe, key))) throw invalidArgumentsError()
+  for (const [key, value] of Object.entries(safe)) {
+    const type = schema.properties[key].type
+    if (type === 'string' && typeof value !== 'string' || type === 'boolean' && typeof value !== 'boolean' ||
+        type === 'number' && (typeof value !== 'number' || !Number.isFinite(value)) ||
+        type === 'integer' && !Number.isSafeInteger(value) || type === 'array' && !Array.isArray(value) ||
+        type === 'object' && !isPlainObject(value)) throw invalidArgumentsError()
+  }
+  return safe
+}
+
+export async function callTool(name, args = {}, { store, principal, requireOperator = true } = {}) {
+  if (typeof name !== 'string' || !TOOL_ARGUMENT_ALLOWLIST.has(name)) throw invalidArgumentsError()
+  args = validateArguments(name, args)
+  if (!isToolAuthorized(name, principal)) throw notAuthorizedError()
+
   if (name === 'list_sessions') return indexLocalSessions({ providers: args.provider ? [args.provider] : undefined, limit: args.limit })
   if (name === 'plan_route') return buildRoutePlan(args)
   if (name === 'get_session') return getSessionMetadata({ source: args.source, nativeSessionId: args.nativeSessionId })
@@ -146,26 +228,45 @@ export async function callTool(name, args = {}, { store } = {}) {
   if (name === 'plan_task_completion') return store.completionPlan(args.taskId)
   if (name === 'complete_task') return store.completeTask(args.taskId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'list_audit_events') return store.listEvents(args)
-  if (name === 'create_execution') return store.createExecution(args.taskId, args, { idempotencyKey: args.idempotencyKey })
+  if (name === 'create_execution') {
+    // (S03b) the host issues the admission Grant at enqueue; the tool schema
+    // allowlist already prevents a caller from supplying grant/digest fields,
+    // so the entry only needs to mint, bind and persist them with the record.
+    const { idempotencyKey, ...fields } = args
+    return createAdmittedExecution({
+      store, input: fields,
+      taskId: args.taskId,
+      owner: principal?.authenticated === true ? principal.id : args.workerId,
+      scope: ['cezar.dispatch', 'native.session.prompt'],
+      idempotencyKey,
+    })
+  }
   if (name === 'create_review_execution') return createReviewerExecution({ ...args, store })
   if (name === 'update_execution_status') return store.updateExecutionStatus(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'plan_native_prompt') return nativePromptPlan(args)
-  if (name === 'prompt_native_session') return executeNativeSessionPrompt({ ...args, store, idempotencyKey: args.idempotencyKey })
+  if (name === 'prompt_native_session') return executeNativeSessionPrompt({ ...args, store, requireOperator, idempotencyKey: args.idempotencyKey })
+  if (name === 'cancel_native_session') return cancelNativeExecution({ ...args, store, requireOperator, idempotencyKey: args.idempotencyKey })
   if (name === 'add_evidence') return store.addEvidence(args.executionId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'create_approval') return store.createApproval(args, { idempotencyKey: args.idempotencyKey })
-  if (name === 'decide_approval') return store.decideApproval(args.approvalId, args, { idempotencyKey: args.idempotencyKey })
+  if (name === 'decide_approval') {
+    const trusted = trustedPrincipal(principal)
+    const claimed = args.approvedBy
+    if (claimed !== undefined && claimed !== trusted.id) throw notAuthorizedError()
+    const decision = { ...args, approvedBy: trusted.id }
+    return store.decideApproval(decision.approvalId, decision, { idempotencyKey: decision.idempotencyKey, principal: trusted })
+  }
   if (name === 'list_approvals') return store.listApprovals(args)
   if (name === 'lock_session') return store.acquireSessionLock(args.sessionRefId, args, { idempotencyKey: args.idempotencyKey })
   if (name === 'plan_cezar_dispatch') return cezarDispatchPlan(args)
   if (name === 'dispatch_cezar') {
     const adapter = new CezarAdapter()
-    const value = await dispatchCezar({ ...args, store, adapter, idempotencyKey: args.idempotencyKey })
+    const value = await dispatchCezar({ ...args, store, adapter, requireOperator, idempotencyKey: args.idempotencyKey })
     if (!value.replay) void watchCezarExecution({ store, adapter, executionId: args.executionId }).catch(() => {})
     return value
   }
   if (name === 'plan_cancel_cezar') return cezarCancelPlan(args)
-  if (name === 'cancel_cezar') return cancelCezarExecution({ ...args, store, idempotencyKey: args.idempotencyKey })
-  throw new Error(`unknown MCP tool: ${name}`)
+  if (name === 'cancel_cezar') return cancelCezarExecution({ ...args, store, requireOperator, idempotencyKey: args.idempotencyKey })
+  throw invalidArgumentsError()
 }
 
 export async function handleMcpRequest(request, deps = {}) {
@@ -175,7 +276,7 @@ export async function handleMcpRequest(request, deps = {}) {
   if (method === 'initialize') {
     return { jsonrpc: '2.0', id, result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: { name: 'personal-ai-os-control-plane', version: '0.2.0' } } }
   }
-  if (method === 'tools/list') return { jsonrpc: '2.0', id, result: { tools: TOOL_DEFINITIONS } }
+  if (method === 'tools/list') return { jsonrpc: '2.0', id, result: { tools: listVisibleTools(deps.principal) } }
   if (method === 'tools/call') {
     try {
       const value = await callTool(request.params?.name, request.params?.arguments ?? {}, deps)

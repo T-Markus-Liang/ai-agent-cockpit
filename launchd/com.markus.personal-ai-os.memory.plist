@@ -16,6 +16,7 @@
     <key>MEM0_TELEMETRY</key><string>false</string>
     <key>HF_HUB_DISABLE_TELEMETRY</key><string>1</string>
     <key>HF_HUB_OFFLINE</key><string>1</string>
+    <key>FASTEMBED_CACHE_PATH</key><string>/Users/markus/.cache/fastembed</string>
     <key>TOKENIZERS_PARALLELISM</key><string>false</string>
     <key>NO_PROXY</key><string>localhost,127.0.0.1,::1</string>
   </dict>

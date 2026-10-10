@@ -222,7 +222,7 @@ test('a live old process prevents overlap and resumes only after exit is confirm
   (bridge as any).sessionManager = manager;
   t.after(async () => { await bridge.stop(); await fs.rm(dir, { recursive: true, force: true }); });
   const inbox = (bridge as any).messageInbox as MessageInbox, { record } = await inbox.put(userMessage(303));
-  await inbox.checkpoint(record.id, { phase: 'preparing', processId: process.pid }, true);
+  await inbox.checkpoint(record.id, { phase: 'preparing', processId: process.pid, deadlineAt: Date.now() + 60_000 }, true);
   await (bridge as any).recoverIncoming(); await (bridge as any).runRecoverySweep();
   assert.equal(manager.calls.length, 0); assert.equal((await inbox.list())[0]?.status, 'queued');
   await inbox.checkpoint(record.id, { processId: 999999 });

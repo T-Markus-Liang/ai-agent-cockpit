@@ -1,0 +1,229 @@
+{
+  "capturedAt": "2026-10-08T10:19:07.342Z",
+  "projectName": "personal-ai-os",
+  "workspaceRoot": "/Users/markus/ai-agent-cockpit",
+  "snapshot": {
+    "head": "19e4e274a9306aa3fee0515b86ac22c90e8ca7d7",
+    "files": 1747,
+    "bytes": 27053616,
+    "skipped": []
+  },
+  "publicHistory": {
+    "head": "e8c4317201d70e75cabe279da5e7736a9aab20a0",
+    "commits": 110,
+    "blobs": 2099,
+    "bytes": 32980928,
+    "findings": 165,
+    "shallow": false
+  },
+  "publicRefs": [
+    "refs/heads/feat/0.3.0-progress 19e4e274a9306aa3fee0515b86ac22c90e8ca7d7",
+    "refs/heads/main e8c4317201d70e75cabe279da5e7736a9aab20a0",
+    "refs/pull/1/head 19e4e274a9306aa3fee0515b86ac22c90e8ca7d7",
+    "refs/pull/1/merge a8515ca7f132004b5f330b26447040a36353d3ec",
+    "refs/tags/v0.2.0 ee12efd1785f0374199d66c668449311e24f3c70",
+    "refs/tags/v0.2.1 156a2b42da9b4e7b66615356400982e7a549963c",
+    "refs/tags/v0.2.2 d2c9c669735d0a9fb5c674c0f2da4c7f72a1208d"
+  ],
+  "knownCredentialComparison": {
+    "loadedValues": 12,
+    "publicMatches": 0,
+    "mirrorPublicMatches": 0,
+    "localLogMatches": 0,
+    "localLogPatternFindings": 0,
+    "localFiles": 22,
+    "localBytes": 6091155
+  },
+  "gitleaksVersion": "8.30.1",
+  "gitleaksVerifiedArchiveSha256": "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
+  "gitleaksCurrentBefore": [
+    {
+      "file": "tests/kimi_shim_test.py",
+      "line": 246,
+      "rule": "generic-api-key",
+      "commit": null,
+      "entropy": 3.7946534
+    },
+    {
+      "file": "tests/execution-ownership.test.mjs",
+      "line": 73,
+      "rule": "generic-api-key",
+      "commit": null,
+      "entropy": 4.3820214
+    },
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/secret-redaction.test.ts",
+      "line": 66,
+      "rule": "gcp-api-key",
+      "commit": null,
+      "entropy": 5.182838
+    },
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/secret-redaction.test.ts",
+      "line": 101,
+      "rule": "generic-api-key",
+      "commit": null,
+      "entropy": 4.932138
+    },
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/agent-env.test.ts",
+      "line": 21,
+      "rule": "stripe-access-token",
+      "commit": null,
+      "entropy": 3.2454472
+    },
+    {
+      "file": "vendor/wechat-acp/src/telemetry/index.ts",
+      "line": 22,
+      "rule": "generic-api-key",
+      "commit": null,
+      "entropy": 3.7918794
+    }
+  ],
+  "gitleaksCurrentAfter": [
+    {
+      "file": "tests/kimi_shim_test.py",
+      "line": 246,
+      "rule": "generic-api-key",
+      "commit": null,
+      "entropy": 3.7946534
+    },
+    {
+      "file": "tests/execution-ownership.test.mjs",
+      "line": 73,
+      "rule": "generic-api-key",
+      "commit": null,
+      "entropy": 4.3820214
+    },
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/agent-env.test.ts",
+      "line": 21,
+      "rule": "stripe-access-token",
+      "commit": null,
+      "entropy": 3.2454472
+    },
+    {
+      "file": "vendor/wechat-acp/src/telemetry/index.ts",
+      "line": 22,
+      "rule": "generic-api-key",
+      "commit": null,
+      "entropy": 3.7918794
+    }
+  ],
+  "gitleaksPublicHistory": [
+    {
+      "file": "tests/execution-ownership.test.mjs",
+      "line": 73,
+      "rule": "generic-api-key",
+      "commit": "e5983804861ccca661564090a91794ef45cb4421",
+      "entropy": 4.3820214
+    },
+    {
+      "file": "tests/kimi_shim_test.py",
+      "line": 246,
+      "rule": "generic-api-key",
+      "commit": "140e762be4fb49d6a1a1bc9d6db38ee5d3cc4587",
+      "entropy": 3.7946534
+    },
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/secret-redaction.test.ts",
+      "line": 66,
+      "rule": "gcp-api-key",
+      "commit": "88aeae65b7cc3eb01b0c81bb23a881fdc38536fc",
+      "entropy": 5.182838
+    },
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/secret-redaction.test.ts",
+      "line": 101,
+      "rule": "generic-api-key",
+      "commit": "88aeae65b7cc3eb01b0c81bb23a881fdc38536fc",
+      "entropy": 4.932138
+    },
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/agent-env.test.ts",
+      "line": 21,
+      "rule": "stripe-access-token",
+      "commit": "88aeae65b7cc3eb01b0c81bb23a881fdc38536fc",
+      "entropy": 3.2454472
+    },
+    {
+      "file": "vendor/wechat-acp/src/telemetry/index.ts",
+      "line": 22,
+      "rule": "generic-api-key",
+      "commit": "88aeae65b7cc3eb01b0c81bb23a881fdc38536fc",
+      "entropy": 3.7918794
+    }
+  ],
+  "targetFixture": {
+    "oldFingerprint": "0c5019b6e84a",
+    "upstreamBlob": "8986db859911b8b6c524feb3432c9a760752002a",
+    "exactUpstreamFileMatchBefore": true,
+    "constructibleFromAlphabetAndDecimalRuns": true,
+    "gitleaksAfterFindings": 0
+  },
+  "githubAlert": {
+    "number": 1,
+    "state": "open",
+    "type": "google_api_key",
+    "validity": "unknown",
+    "publiclyLeaked": true,
+    "matchesSyntheticFixture": true,
+    "line": 66,
+    "commit": "88aeae65b7cc3eb01b0c81bb23a881fdc38536fc"
+  },
+  "tests": {
+    "filesPassed": 4,
+    "testsPassed": 188,
+    "vitest": "4.1.10",
+    "serverTypecheckExit": 0
+  },
+  "sourceRef": [
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/secret-redaction.test.ts",
+      "sha256": "cd7690163dff86010cd2b0d49f46810351e4774be60286333df4fe372879967d"
+    },
+    {
+      "file": "vendor/cezar/packages/cezar/src/core/secret-redaction.ts",
+      "sha256": "d0ce4b2a9d047b8c755e0c6cfc851aaff921dedb429c04d2acfac3cc27509cd3"
+    },
+    {
+      "file": "vendor/wechat-acp/src/telemetry/index.ts",
+      "sha256": "fccfc087f2f15d402bbf38ca311b65cbf5224bb39a3cce7cb9400472e4f6133a"
+    }
+  ],
+  "privacyProbe": {
+    "sdkIsFake": true,
+    "realNetworkCalls": 0,
+    "realFilesystemWrites": 0,
+    "defaultEnvironment": {
+      "sdkStarts": 1,
+      "rawCanaryForwarded": true,
+      "sameErrorObjectForwarded": true
+    },
+    "disabledEnvironment": {
+      "sdkStarts": 0,
+      "rawCanaryForwarded": false
+    }
+  },
+  "auditorPushedFix": false,
+  "publicFeatureFixObserved": true,
+  "publicFeatureFixObservedAt": "2026-10-08T10:26:53.961Z",
+  "publicFeatureFixSha256": "a1ba5dde0df2ab9f5a440f30509c6ddefb621006bd93c19e7a09ae5647b06a84",
+  "githubAlertResolved": false,
+  "auditorChangedProduction": false,
+  "finalHeadAtEvidence": "19e4e274a9306aa3fee0515b86ac22c90e8ca7d7",
+  "sourceDriftAfterSnapshot": [],
+  "postSnapshotTestHygiene": "Only an extra EOF blank line in the changed test file was removed; targeted scanner and relevant tests rerun afterward.",
+  "diffCheckExit": 0,
+  "finalPublicCredentialMatchCount": 0,
+  "finalPublicCredentialValueCount": 12,
+  "telemetryRepairR1Review": {
+    "sourceSha256": "4b2a7abc99469d12e3f04475624c19d4ca5f87e05608f60d31de7469540541da",
+    "providedTestsPassed": 11,
+    "defaultOffAccepted": true,
+    "rawExceptionTextScrubbingAccepted": true,
+    "optInPropertyAndTagCanaryCounterexamples": 4,
+    "verdict": "CHANGES_REQUESTED SKEY-F003",
+    "productionUpdatedVerified": false
+  }
+}

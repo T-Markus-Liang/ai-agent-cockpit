@@ -1,0 +1,66 @@
+{
+  "memory": {
+    "frozenReview": "r2-new-batches-r1",
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "reconcile-disconnected-cycle",
+        "current": [
+          "c"
+        ],
+        "successorEdges": {
+          "c": null,
+          "a": "b",
+          "b": "a"
+        },
+        "conflicts": 0,
+        "cycleRetained": true
+      },
+      {
+        "probe": "purge-payload-not-erased",
+        "reportsVerified": true,
+        "payloadStillPresent": true,
+        "vectorRemoved": true
+      },
+      {
+        "probe": "purge-stale-receipt-preflight",
+        "error": "verify-failed",
+        "effectsBeforeDriftRejected": [
+          "vector-delete",
+          "turn-scrub"
+        ],
+        "changedContentErased": true
+      }
+    ]
+  },
+  "security": {
+    "frozenReview": "r2-new-batches-r1",
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "close-session-during-approval",
+        "closed": true,
+        "result": "allow_once",
+        "approvalConsumedAfterClose": true
+      },
+      {
+        "probe": "concurrent-same-tool-call-id",
+        "sameSession": true,
+        "sameToolCallId": true,
+        "differentParameters": true,
+        "allowResponses": 2,
+        "consumedApprovals": 2
+      },
+      {
+        "probe": "exported-http-authority-lifecycle",
+        "directAuthorityRejects": true,
+        "httpAcceptsOldAfterRotate": true,
+        "httpAcceptsAfterRevoke": true,
+        "httpAcceptsAfterExpiry": true,
+        "productionWiringTested": false
+      }
+    ]
+  }
+}

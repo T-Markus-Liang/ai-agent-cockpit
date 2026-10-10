@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "source": "synthetic-only",
+  "cases": [
+    {
+      "id": "nickname-object-loss",
+      "role": "user",
+      "text": "请记住我希望你称呼我小柚，并且以后用简体中文回答。",
+      "badExtraction": "用户希望被称为",
+      "requiredSourceValues": ["小柚", "简体中文"]
+    },
+    {
+      "id": "english-name-and-number",
+      "role": "user",
+      "text": "My name is Rowan. My project budget is 1234 CNY.",
+      "requiredSourceValues": ["Rowan", "1234", "CNY"]
+    },
+    {
+      "id": "negative-preference",
+      "role": "user",
+      "text": "我不喝咖啡，喜欢喝茶。",
+      "badExtraction": "用户喜欢喝咖啡",
+      "requiredSourceValues": ["不喝咖啡", "喝茶"]
+    },
+    {
+      "id": "explicit-correction",
+      "role": "user",
+      "text": "更正一下，不要再叫我小柚，以后请叫我小林。",
+      "requiredSourceValues": ["不要再叫我小柚", "小林"]
+    },
+    {
+      "id": "assistant-guess",
+      "role": "assistant",
+      "text": "我猜用户的名字是小星。",
+      "trustedFactCount": 0
+    },
+    {
+      "id": "forget-request",
+      "role": "user",
+      "text": "忘记我之前告诉你的昵称，不要再检索或者重新提炼它。",
+      "policy": "forget-tombstone-prevents-reextraction"
+    }
+  ]
+}

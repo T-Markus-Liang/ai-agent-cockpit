@@ -1,0 +1,16 @@
+{
+  "network": "none; SDK completely stubbed",
+  "filesystem": "in-memory fake; no real writes",
+  "defaultEnvironment": {
+    "sdkStarts": 1,
+    "fakeWrites": 1,
+    "exceptionHasSyntheticCanary": true,
+    "exceptionSameObject": true
+  },
+  "explicitDisabled": {
+    "sdkStarts": 0,
+    "fakeWrites": 0,
+    "exceptionHasSyntheticCanary": false,
+    "exceptionSameObject": false
+  }
+}

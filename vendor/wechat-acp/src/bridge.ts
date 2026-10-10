@@ -51,9 +51,10 @@ import {
   updatePersistedSession,
 } from "./storage/state.js";
 import { ConversationMemoryStore } from "./storage/memory.js";
-import { MessageInbox, type MessageInboxStatus } from './storage/message-inbox.js';
+import { MessageInbox, type MessageInboxStatus, type MessageInboxRecord } from './storage/message-inbox.js';
 import { ReplyOutbox } from './storage/reply-outbox.js';
 import { RecoveryLease } from './storage/recovery-lease.js';
+import { SubmissionRegistry, computePayloadDigest } from './storage/submission-registry.js';
 import { WeChatGoalClient } from "./goals.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 
@@ -138,6 +139,7 @@ export class WeChatAcpBridge {
   private readonly messageInbox?: MessageInbox;
   private readonly replyOutbox?: ReplyOutbox;
   private readonly recoveryLease?: RecoveryLease;
+  private readonly submissionRegistry?: SubmissionRegistry;
   private recoveryTimer?: ReturnType<typeof setInterval>;
   private recoverySweep?: Promise<void>;
   private readonly incomingInFlight = new Set<string>();
@@ -152,7 +154,10 @@ export class WeChatAcpBridge {
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
     this.config = config;
     this.log = log ?? ((msg: string) => console.log(`[wechat-acp] ${msg}`));
-    if (config.inbound?.enabled || config.recovery?.enabled) this.messageInbox = new MessageInbox({ dir: config.inbound?.dir ?? path.join(config.storage.dir, 'incoming-receipts') });
+    if (config.inbound?.enabled || config.recovery?.enabled) {
+      this.messageInbox = new MessageInbox({ dir: config.inbound?.dir ?? path.join(config.storage.dir, 'incoming-receipts') });
+      this.submissionRegistry = new SubmissionRegistry({ dir: path.join(config.storage.dir, 'submission-registry') });
+    }
     if (config.recovery?.enabled) {
       this.replyOutbox = new ReplyOutbox({ dir: path.join(config.storage.dir, 'reply-outbox'), maxAttempts: config.recovery.replyMaxAttempts, maxDelayMs: config.recovery.replyMaxDelayMs });
       this.recoveryLease = new RecoveryLease(config.storage.dir);
@@ -248,7 +253,8 @@ export class WeChatAcpBridge {
         mcpServers: this.config.agent.mcpServers,
         idleTimeoutMs: this.config.session.idleTimeoutMs,
         maxConcurrentUsers: this.config.session.maxConcurrentUsers,
-        promptTimeoutMs: this.config.session.promptTimeoutMs,
+        foregroundWaitMs: this.config.session.foregroundWaitMs,
+        grantDeadlineMs: this.config.session.grantDeadlineMs,
         startupTimeoutMs: this.config.session.startupTimeoutMs,
         progressNoticeMs: 10000,
         preparePrompt: async (userId, prompt, pending) => {
@@ -257,8 +263,12 @@ export class WeChatAcpBridge {
           return this.config.recovery?.enabled && pending?.receiptIds?.[0] ? [...enriched, { type: 'text', text: `[可靠请求关联]\n本请求 sourceRequestId=${pending.receiptIds[0]}。如需创建控制面 Task，请在 create_task 中填写此 sourceRequestId，并以本标识作为幂等键的一部分。先查询已有关联任务，不重复派单；该标识不是执行授权，审批与任务验收门槛仍须满足。` } as const] : enriched;
         },
         onNotice: (userId, token, text, generation, current, metadata) => this.sendAgentReply(userId, token, text, this.requireReplyGeneration(generation), current, metadata),
-        onTurnEvent: this.config.recovery?.enabled ? async (_userId, pending, event) => {
-          for (const id of pending.receiptIds ?? []) await this.messageInbox!.checkpoint(id, { ...event, groupIds: pending.receiptIds, ...(event.phase === 'tool_activity' ? { usedTools: true } : {}) }, event.phase === 'preparing');
+        onTurnEvent: this.config.recovery?.enabled ? async (userId, pending, event) => {
+          if (event.phase === 'background') {
+            await this.handleTurnBackground(userId, pending);
+            return;
+          }
+          for (const id of pending.receiptIds ?? []) await this.messageInbox!.checkpoint(id, { ...event, phase: event.phase as 'preparing' | 'sent-unconfirmed' | 'dispatched' | 'tool_activity' | 'result_ready', groupIds: pending.receiptIds, ...(event.phase === 'tool_activity' ? { usedTools: true } : {}) }, event.phase === 'preparing');
         } : undefined,
         resumePolicy,
         getPersistedSessionId:
@@ -370,6 +380,9 @@ export class WeChatAcpBridge {
       this.sessionManager.start();
       await this.replyOutbox?.recover();
       await this.recoverIncoming();
+      // Backfill a runtime Submission for every inbox receipt admitted before
+      // this registry existed (idempotent; never drops a receipt).
+      await this.reconcileSubmissions();
       if (this.replyOutbox) {
         const sweepMs = Math.max(1000, this.config.recovery?.sweepMs ?? 5000);
         this.recoveryTimer = setInterval(() => { void this.runRecoverySweep().catch(() => this.log('Recovery sweep deferred; private state retained')); }, sweepMs);
@@ -447,6 +460,7 @@ export class WeChatAcpBridge {
     while (this.receiptTasks.size) await Promise.allSettled([...this.receiptTasks]);
     await Promise.allSettled([...this.sendChains.values()]);
     await this.messageInbox?.close();
+    await this.submissionRegistry?.close();
     await this.replyOutbox?.close();
     await this.recoveryLease?.close();
     await this.conversationMemory.close();
@@ -553,8 +567,10 @@ export class WeChatAcpBridge {
     const textItem = msg.item_list?.length === 1 ? (msg.item_list[0]?.text_item?.text ?? msg.item_list[0]?.voice_item?.text)?.trim() : undefined;
     if (textItem && /^\/消息(?:\s|$)/.test(textItem)) {
       const records = (await this.messageInbox?.list() ?? []).filter(record => record.message.from_user_id === userId);
-      const labels: Record<string, string> = { received: '已保存', queued: '排队', retry_wait: '等待自动重试', running: '处理中', uncertain: '中断/待核对', done: '对话已结束', reply_pending: '对话已结束/回复待补发', buffered: '缓冲', cancelled: '已取消', failed: '未能处理/待核对' };
-      const latest = records.slice(-5).map(record => `${new Date(record.receivedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}：${labels[record.status] ?? record.status}`);
+      const labels: Record<string, string> = { received: '已保存', queued: '排队', retry_wait: '等待自动重试', running: '处理中', background: '后台执行中', uncertain: '中断/待核对', done: '对话已结束', reply_pending: '对话已结束/回复待补发', buffered: '缓冲', cancelled: '已取消', failed: '未能处理/待核对' };
+      const displayed = records.slice(-5);
+      const reviewing = await this.resolveReviewingReceiptIds(displayed);
+      const latest = displayed.map(record => `${new Date(record.receivedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}：${labels[record.status] ?? record.status}${reviewing.has(record.id) ? '，任务验收中' : ''}`);
       const outgoing = await this.replyOutbox?.list({ userId, statuses: ['pending', 'sending', 'blocked'] }) ?? [];
       const blocked = outgoing.filter(row => row.status === 'blocked').length;
       await this.sendReply(userId, contextToken, (latest.length ? latest.join('\n') : '暂时还没有新的可靠收件记录。') + (outgoing.length ? `\n待补发文本 ${outgoing.length} 段${blocked ? `，其中 ${blocked} 段已到重试上限；发 /acp-more 可重试补发` : '，会自动补发'}` : ''));
@@ -695,10 +711,15 @@ export class WeChatAcpBridge {
     );
 
     if (!isCurrent()) return;
+    // A recovered turn resumes against the ORIGINAL absolute deadline journaled with
+    // its `preparing` checkpoint — never a fresh full budget. A fresh message has no
+    // execution record, so the SessionManager stamps the deadline when its turn starts.
+    const recoveredDeadline = ids.length ? (await this.messageInbox?.get(ids[0]!))?.execution?.deadlineAt : undefined;
     await this.sessionManager!.enqueue(userId, {
       receiptIds: ids,
       completion: this.receiptCompletion(ids),
       prompt,
+      deadlineAt: recoveredDeadline,
       contextToken,
       replyGeneration,
     });
@@ -710,13 +731,49 @@ export class WeChatAcpBridge {
 
   private async admitIncoming(msg: WeixinMessage): Promise<boolean> {
     if (!this.incomingGenerations.has(msg)) this.incomingGenerations.set(msg, this.messageGenerationForUser(msg.from_user_id!));
-    if (!this.messageInbox || this.receiptIds.has(msg)) return true;
+    if (!this.messageInbox) return true;
+    // Already admitted in this process, or seeded by the recovery sweep (which
+    // sets receiptIds before re-admitting): the receipt is already durable, so
+    // re-register idempotently instead of returning early — a retry after a
+    // failed registration re-runs the registration, never silently skips it.
+    if (this.receiptIds.has(msg)) {
+      await this.registerSubmission(this.receiptIds.get(msg)!, msg);
+      return true;
+    }
     const result = await this.messageInbox.put(msg);
     this.latestContexts.set(msg.from_user_id!, msg.context_token!);
     await this.replyOutbox?.refreshContext(msg.from_user_id!, msg.context_token!);
     if (!result.isNew) return false;
     this.receiptIds.set(msg, result.record.id);
+    // Register the durable runtime Submission before the receipt is handled. A
+    // failure (including a poisoned registry) throws so the message stays in the
+    // inbox for the existing monitor/ recovery-sweep admission retry — it is
+    // never reported as already handled.
+    await this.registerSubmission(result.record.id, result.record.message);
     return true;
+  }
+
+  /** Idempotently record the runtime Submission for a durable receipt. */
+  private async registerSubmission(receiptId: string, message: WeixinMessage): Promise<void> {
+    if (!this.submissionRegistry) return;
+    await this.submissionRegistry.register({
+      receiptId,
+      userId: message.from_user_id!,
+      payloadDigest: computePayloadDigest(message),
+    });
+  }
+
+  /**
+   * Backfill submissions for inbox receipts with no registration yet (startup
+   * reconciliation). Idempotent; a registration failure surfaces fail-closed
+   * instead of being silently swallowed.
+   */
+  private async reconcileSubmissions(): Promise<void> {
+    if (!this.messageInbox || !this.submissionRegistry) return;
+    for (const record of await this.messageInbox.list()) {
+      if (await this.submissionRegistry.has(record.id)) continue;
+      await this.registerSubmission(record.id, record.message);
+    }
   }
 
   private isNativeCommand(msg: WeixinMessage): boolean {
@@ -729,6 +786,31 @@ export class WeChatAcpBridge {
   private async setReceiptStatus(ids: string[], status: MessageInboxStatus, errorKind?: string): Promise<void> {
     if (!this.messageInbox) return;
     for (const id of ids) await this.messageInbox.setStatus(id, status, errorKind ? { errorKind } : undefined);
+  }
+
+  /**
+   * A foreground wait elapsed while the turn is still running: record the turn
+   * as background work on its receipts and tell the user once (per turn) that
+   * the result will arrive later. This never dispatches, cancels, or replays
+   * work — the turn keeps running on its original ACP prompt, and its eventual
+   * result is delivered through the existing result_ready → outbox path.
+   */
+  private async handleTurnBackground(userId: string, pending: PendingMessage): Promise<void> {
+    const receiptIds = pending.receiptIds ?? [];
+    try {
+      await this.setReceiptStatus(receiptIds, 'background');
+    } catch (err) {
+      this.log(`Background receipt status update failed: ${String(err)}`);
+    }
+    const notice = '这条任务已转入后台执行，完成后的结果会照常发给你。后台期间你可以继续发新消息，也可以发 /acp-cancel 取消。';
+    if (this.replyOutbox) {
+      // A durable dedupeKey makes the notice idempotent: a repeated background
+      // event for the same turn can never deliver it twice.
+      await this.replyOutbox.put({ userId, contextToken: pending.contextToken, text: notice, receiptIds, kind: 'notice', dedupeKey: `${receiptIds[0] ?? userId}:turn-background` });
+      void this.flushReplyOutbox(userId).catch(() => this.log('Background notice queued for durable retry'));
+      return;
+    }
+    await this.sendReply(userId, pending.contextToken, notice);
   }
 
   private receiptCompletion(ids: string[]): PendingMessage['completion'] {
@@ -864,6 +946,38 @@ export class WeChatAcpBridge {
         text: `中断后的关联任务已有完成、测试和复核记录，我不再重复执行，现补发结果：\n${matching.map(task => task.goal.slice(0, 600)).join('\n')}` });
       return true;
     } catch { return false; }
+  }
+
+  /**
+   * Display-layer derivation for /消息: which of the shown receipts have a linked
+   * control-plane task currently in 验收 (verifying/reviewing). Purely derived —
+   * no receipt schema or status is persisted, and a query failure/timeout or a
+   * non-loopback control plane silently yields no extra label (never fabricated).
+   * Mirrors reconcileLinkedTask's loopback-only + bounded-timeout + fail-closed
+   * query pattern. At most 5 deduplicated sourceRequestId queries per render.
+   */
+  private async resolveReviewingReceiptIds(records: MessageInboxRecord[]): Promise<Set<string>> {
+    const reviewing = new Set<string>();
+    if (!this.config.controlPlaneUrl || !records.length) return reviewing;
+    let base: URL;
+    try { base = new URL(this.config.controlPlaneUrl); } catch { return reviewing; }
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) return reviewing;
+    const bySource = new Map<string, string[]>();
+    for (const record of records) {
+      const sourceRequestId = record.execution?.groupIds?.[0] ?? record.id;
+      const ids = bySource.get(sourceRequestId) ?? []; ids.push(record.id); bySource.set(sourceRequestId, ids);
+    }
+    await Promise.all([...bySource.entries()].slice(0, 5).map(async ([sourceRequestId, receiptIds]) => {
+      try {
+        const query = new URL('/api/control-plane/tasks', base); query.searchParams.set('sourceRequestId', sourceRequestId); query.searchParams.set('limit', '50');
+        const response = await fetch(query, { signal: AbortSignal.timeout(3000) });
+        if (!response.ok) return;
+        const body = await response.json() as { tasks?: Array<{ sourceRequestId?: string; status: string }> };
+        const matching = body.tasks?.filter(task => task.sourceRequestId === sourceRequestId) ?? [];
+        if (matching.some(task => task.status === 'verifying' || task.status === 'reviewing')) for (const id of receiptIds) reviewing.add(id);
+      } catch { /* Unreachable/slow/malformed control plane: keep original labels. */ }
+    }));
+    return reviewing;
   }
 
   private flushReplyOutbox(userId: string, force = false): Promise<void> {
@@ -1288,6 +1402,15 @@ export class WeChatAcpBridge {
       this.isMessageGenerationCurrent(userId, generation);
     return this.queueSendTask(userId, async () => {
       if (!isCurrent()) return;
+      // Renew durable blocked outbox segments for this user: /acp-more only
+      // re-queues delivery attempts (status -> pending, attempts reset to 0,
+      // nextAttemptAt = now). The existing outbox drain performs the actual
+      // send, so no ACP task is ever re-executed here. In-memory pending text
+      // is drained separately below; both paths are reported to the user.
+      const renewedBlockedCount = this.replyOutbox
+        ? await this.replyOutbox.retryBlockedForUser(userId)
+        : 0;
+      if (!isCurrent()) return;
       const result = await drainPendingText(
         this.pendingText,
         userId,
@@ -1301,17 +1424,25 @@ export class WeChatAcpBridge {
         "command.acp_more",
         {
           userIdHash: hashUserId(userId),
+          renewedBlockedCount,
           pendingCount: result.pendingCount,
           sentCount: result.sentCount,
           remainingCount: result.remainingCount,
         },
         hashUserId(userId),
       );
-      if (result.pendingCount === 0) {
+      // Report both renewal paths faithfully: the durable blocked segments that
+      // were just re-queued for delivery and the in-memory pending text drained
+      // above. Only when neither path had anything do we say there is nothing.
+      const renewedParts: string[] = [];
+      if (renewedBlockedCount > 0) renewedParts.push(`已恢复 ${renewedBlockedCount} 段到重试上限的待补发文本，稍后会自动重试补发。`);
+      if (result.pendingCount > 0) renewedParts.push(`待补发文本共 ${result.pendingCount} 段，本次已发出 ${result.sentCount} 段${result.remainingCount > 0 ? `，仍有 ${result.remainingCount} 段未发出` : ''}。`);
+      if (renewedParts.length > 0) await this.sendTextSegment(userId, contextToken, renewedParts.join('\n'), isCurrent);
+      if (result.pendingCount === 0 && renewedBlockedCount === 0) {
         await this.sendTextSegment(
           userId,
           contextToken,
-          "No pending messages right now.",
+          "目前没有待补发的消息。",
           isCurrent,
         );
       }

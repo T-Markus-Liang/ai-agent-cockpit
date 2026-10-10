@@ -9,16 +9,64 @@ import { GoalStore, GoalError } from '../control-plane/goal-store.mjs'
 import { ControlPlaneStore } from '../control-plane/store.mjs'
 import { GoalRuntime } from '../control-plane/goal-runtime.mjs'
 import { prepareWorkspace } from '../control-plane/goal-workspace.mjs'
+import { createLiveRequestAuthority, AuthorityError } from '../control-plane/request-authority.mjs'
 
 const ORIGINS = new Set(['http://127.0.0.1:4321', 'http://localhost:4321'])
+
+// Role -> permitted action matrix (RR-F003). The role is taken from the
+// authenticated principal (authority document), never from a request header.
+// X-Goal-Actor keeps its owner-binding semantics only: a viewer that sends
+// `X-Goal-Actor: local` is still read-only, because authorization on the role
+// runs first and independently of the actor header.
+//
+//   viewer      read only
+//   coordinator read + wake            (a scheduler nudge, no state transition)
+//   chief       read + single-goal management (create/pause/resume/cancel/
+//               revise/wake); NOT grant, NOT the global pause-all/resume-all
+//   operator    everything, including grant and the global pause-all/resume-all
+const ROLE_ACTIONS = Object.freeze({
+  viewer: Object.freeze(['read']),
+  coordinator: Object.freeze(['read', 'wake']),
+  chief: Object.freeze(['read', 'create', 'pause', 'resume', 'cancel', 'revise', 'wake']),
+  operator: Object.freeze(['read', 'create', 'pause', 'resume', 'cancel', 'revise', 'wake', 'grant', 'pause-all', 'resume-all']),
+})
+
+// Map a request to its authorization action. Returns undefined for routes or
+// methods that are not part of the matrix, so unrecognised requests keep their
+// existing NOT_FOUND / INVALID_METHOD handling rather than being denied here.
+export function goalActionFor(method, pathname) {
+  if (method === 'GET' && /^\/api\/goals(\/[^/]+(\/proof)?)?$/.test(pathname)) return 'read'
+  if (method !== 'POST') return undefined
+  if (pathname === '/api/goals/pause-all') return 'pause-all'
+  if (pathname === '/api/goals/resume-all') return 'resume-all'
+  if (pathname === '/api/goals') return 'create'
+  const match = pathname.match(/^\/api\/goals\/[^/]+\/(grant|pause|resume|cancel|revise|wake)$/)
+  return match ? match[1] : undefined
+}
+
+// Throws GoalError AUTH_FORBIDDEN (403) when the authenticated role may not
+// perform the resolved action. Runs after authentication and before any
+// owner/actor check or state mutation.
+export function authorizeGoalRequest(principal, method, pathname) {
+  const action = goalActionFor(method, pathname)
+  if (action === undefined) return
+  if (!ROLE_ACTIONS[principal?.role]?.includes(action)) {
+    throw new GoalError('AUTH_FORBIDDEN', 'the authenticated role may not perform this goal action', 403)
+  }
+}
+
 export async function createGoalServer({ stateDir, goals = new GoalStore({ stateDir }), tasks, runtime, wechatStateFile = path.join(os.homedir(), '.wechat-acp/instances/cezar-codex/state.json') } = {}) {
   const root = goals.stateDir
   await fs.mkdir(root, { recursive: true, mode: 0o700 }); await fs.chmod(root, 0o700)
-  const tokenFile = path.join(root, 'api-token')
-  await fs.writeFile(tokenFile, crypto.randomBytes(32).toString('base64url'), { flag: 'wx', mode: 0o600 }).catch(error => { if (error.code !== 'EEXIST') throw error })
-  await fs.chmod(tokenFile, 0o600)
-  const token = (await fs.readFile(tokenFile, 'utf8')).trim()
-  if (!token) throw new Error('goal API token is empty')
+  // Per-client principal authentication (0.3.0 M02 / goals wave 1.6). The
+  // authority document is produced out-of-band by identity-pairing's
+  // exportPrincipals() and written atomically via writeAuthorityFile(); this
+  // service only consumes it. It is revalidated on every request, so token
+  // rotation, revocation and expiry take effect without a restart. A missing or
+  // invalid configuration fails closed (AUTH_CONFIGURATION 500) rather than
+  // falling back to any shared token.
+  const authFile = process.env.GOALS_AUTH_FILE ?? path.join(root, 'authority.json')
+  const authority = createLiveRequestAuthority({ file: authFile, required: true })
   const ownerFile = path.join(root, 'wechat-owner')
   let owner = await fs.readFile(ownerFile, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error })
   if (!owner) {
@@ -51,19 +99,26 @@ export async function createGoalServer({ stateDir, goals = new GoalStore({ state
       const url = new URL(req.url, 'http://127.0.0.1')
       if (req.method === 'GET' && url.pathname === '/health') {
         const items = await goals.list()
-        return respond(res, 200, { status: 'ok', service: 'personal-ai-os-goals', version: '0.2.2', active: engine.active.size,
+        return respond(res, 200, { status: 'ok', service: 'personal-ai-os-goals', version: '0.3.0', active: engine.active.size,
           goalCount: items.length, sandbox: 'macOS-seatbelt', mode: 'isolated-proposal-workspace', wechatOwnerBound: Boolean(owner) }, origin)
       }
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
-        if (!ORIGINS.has(origin) || req.headers['x-ai-os-client'] !== 'cockpit') throw new GoalError('BOOTSTRAP_DENIED', 'bootstrap requires the local cockpit', 403)
-        return respond(res, 200, { token }, origin)
+        throw new GoalError('BOOTSTRAP_RETIRED', 'bootstrap endpoint is retired', 410)
       }
-      const supplied = req.headers.authorization ?? ''
-      const expected = `Bearer ${token}`
-      if (Buffer.byteLength(supplied) !== Buffer.byteLength(expected) || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) throw new GoalError('AUTH_REQUIRED', 'goal API authentication required', 401)
+      let principal
+      try { principal = authority.authenticate(req.headers) }
+      catch (error) {
+        if (error instanceof AuthorityError) throw new GoalError(error.code, error.status === 401 ? 'goal API authentication required' : 'goal API authority configuration is invalid', error.status)
+        throw error
+      }
+      if (principal?.authenticated !== true) throw new GoalError('AUTH_REQUIRED', 'goal API authentication required', 401)
+      // Role authorization (RR-F003): independent of, and before, the owner/actor
+      // binding below. A viewer (or a viewer claiming X-Goal-Actor: local) cannot
+      // reach any write action, so no state transition can occur.
+      authorizeGoalRequest(principal, req.method, url.pathname)
       const actor = req.headers['x-goal-actor'] ?? 'local'
       if (actor !== 'local' && (!owner || actor !== owner)) throw new GoalError('OWNER_REQUIRED', 'only the bound WeChat owner may manage goals', 403)
-      if (req.method === 'GET' && url.pathname === '/api/goals') return respond(res, 200, { goals: await goals.list(), paused: await goals.isPaused(), version: '0.2.2' }, origin)
+      if (req.method === 'GET' && url.pathname === '/api/goals') return respond(res, 200, { goals: await goals.list(), paused: await goals.isPaused(), version: '0.3.0' }, origin)
       if (req.method === 'POST' && ['/api/goals/pause-all', '/api/goals/resume-all'].includes(url.pathname)) {
         const action = url.pathname.endsWith('pause-all') ? 'pause' : 'resume'
         const result = await goals.controlAll(action)
@@ -103,7 +158,7 @@ export async function createGoalServer({ stateDir, goals = new GoalStore({ state
       return respond(res, 200, { goal }, origin)
     } catch (error) { respond(res, error.status ?? 500, { error: error.code ?? 'GOAL_ERROR', message: error instanceof GoalError ? error.message : '目标操作失败，请检查本机范围或服务状态' }, origin) }
   })
-  return { server, goals, engine, tokenFile, start: () => engine.start(), stop: () => engine.stop() }
+  return { server, goals, engine, authFile, start: () => engine.start(), stop: () => engine.stop() }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

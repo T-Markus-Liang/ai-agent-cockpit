@@ -1,0 +1,10 @@
+# 3-file permission tightening — 2026-10-10T10:14:19+08:00
+## before
+-rw-r--r-- markus /Users/markus/.wechat-acp/instances/cezar-codex/token.json
+-rw-r--r-- markus /Users/markus/.local/state/personal-ai-os/mem0/vectors/meta.json
+-rw-r--r-- markus /Users/markus/.local/state/personal-ai-os/mem0/vectors/.lock
+## after
+-rw------- markus /Users/markus/.wechat-acp/instances/cezar-codex/token.json
+-rw------- markus /Users/markus/.local/state/personal-ai-os/mem0/vectors/meta.json
+-rw------- markus /Users/markus/.local/state/personal-ai-os/mem0/vectors/.lock
+## rollback evidence: 回滚命令 = chmod 0640（组读）或 0644（原值），本记录 before 段即旧值凭证

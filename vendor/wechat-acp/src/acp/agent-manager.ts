@@ -34,6 +34,38 @@ export class AgentProcessCleanupError extends AggregateError {
   }
 }
 
+/**
+ * The launch stage spawnAgent had reached when a startup failed. `spawn`
+ * covers everything before the ACP `initialize` request; `new-session` means
+ * the provider may already have created a session (unknown launch effect).
+ */
+export type AgentStartupPhase =
+  | "spawn"
+  | "initialize"
+  | "load-session"
+  | "new-session";
+
+/**
+ * Structured startup failure. `kind` feeds the createSession candidate-chain
+ * launch gate (`classifyLaunchFailure` in fallback-policy);
+ * `providerSessionTouched` records whether session/new (or session/load) had
+ * already been SENT when the failure occurred — after that point the provider
+ * may hold an orphan session, so the failure is an unknown launch effect and
+ * must never auto-advance to another candidate.
+ */
+export class AgentStartupError extends Error {
+  constructor(
+    message: string,
+    readonly kind: string,
+    readonly phase: AgentStartupPhase,
+    readonly providerSessionTouched: boolean,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "AgentStartupError";
+  }
+}
+
 const uncertainWindowsProcessTrees = new WeakMap<
   ChildProcess,
   { error: unknown }
@@ -65,8 +97,15 @@ export async function spawnAgent(params: {
     signal,
     log,
   } = params;
+  let phase: AgentStartupPhase = "spawn";
+  let providerSessionTouched = false;
   if (signal?.aborted) {
-    throw new Error("Agent spawn aborted");
+    throw new AgentStartupError(
+      "Agent spawn aborted",
+      "aborted",
+      phase,
+      providerSessionTouched,
+    );
   }
 
   // On Windows, shell mode avoids EINVAL/ENOENT for command shims like npx/claude/gemini.
@@ -134,6 +173,7 @@ export async function spawnAgent(params: {
     const connection = new acp.ClientSideConnection(() => client, stream);
 
     // Initialize
+    phase = "initialize";
     log("Initializing ACP connection...");
     const initResult = await abortable(
       startupOperation(connection.initialize({
@@ -144,10 +184,7 @@ export async function spawnAgent(params: {
           version: packageJson.version,
         },
         clientCapabilities: {
-          fs: {
-            readTextFile: true,
-            writeTextFile: true,
-          },
+          fs: client.filesystemCapabilities,
         },
       })),
       signal,
@@ -179,6 +216,11 @@ export async function spawnAgent(params: {
       } else {
         log(`Loading ACP session: ${persistedSessionId}`);
         client.beginSessionReplay();
+        phase = "load-session";
+        // session/load is about to be SENT: from here on the provider may
+        // already hold (or create) the session, so a later failure is an
+        // unknown launch effect for the candidate-chain gate.
+        providerSessionTouched = true;
         try {
           const loadResult = await abortable(
             startupOperation(connection.loadSession({
@@ -208,6 +250,9 @@ export async function spawnAgent(params: {
       }
     }
 
+    phase = "new-session";
+    // session/new is about to be SENT (same unknown-launch-effect barrier).
+    providerSessionTouched = true;
     log("Creating ACP session...");
     const sessionResult = await abortable(
       startupOperation(connection.newSession({
@@ -231,7 +276,7 @@ export async function spawnAgent(params: {
     } catch (cleanupErr) {
       throw new AgentProcessCleanupError(err, cleanupErr, proc);
     }
-    throw err;
+    throw toStartupError(err);
   }
 
   function isResourceNotFound(err: unknown): boolean {
@@ -240,6 +285,42 @@ export async function spawnAgent(params: {
       err !== null &&
       "code" in err &&
       err.code === -32002
+    );
+  }
+
+  /**
+   * Wrap a startup failure in a structured AgentStartupError so the
+   * createSession candidate chain can apply the launch gate. An
+   * AgentStartupError passes through untouched. The kind comes from the
+   * spawn errno (string `code`: ENOENT/EACCES/EPERM/other), then from the
+   * well-known startup messages, and defaults to `launch-error` — the gate
+   * refuses every kind it does not explicitly know (fail closed). A numeric
+   * JSON-RPC error code never maps to a spawn kind.
+   */
+  function toStartupError(err: unknown): AgentStartupError {
+    if (err instanceof AgentStartupError) return err;
+    const normalized = normalizeError(err);
+    const code = (err as { code?: unknown } | null)?.code;
+    let kind: string;
+    if (typeof code === "string" && code !== "") {
+      if (code === "ENOENT") kind = "spawn-not-found";
+      else if (code === "EACCES" || code === "EPERM") kind = "spawn-permission";
+      else kind = "spawn-error";
+    } else if (normalized.message.includes("exited during startup")) {
+      kind = "startup-exit";
+    } else if (normalized.message.includes("timed out")) {
+      kind = "startup-timeout";
+    } else if (normalized.message.includes("aborted")) {
+      kind = "aborted";
+    } else {
+      kind = "launch-error";
+    }
+    return new AgentStartupError(
+      normalized.message,
+      kind,
+      phase,
+      providerSessionTouched,
+      { cause: err },
     );
   }
 

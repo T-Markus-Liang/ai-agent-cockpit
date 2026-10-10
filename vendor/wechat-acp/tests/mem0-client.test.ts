@@ -3,7 +3,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { Mem0Client } from "../src/storage/mem0.js";
+import { Mem0Client, sentenceHashes } from "../src/storage/mem0.js";
+import crypto from "node:crypto";
+
+test("source sentence hashes match server grammar and preserve decimals", () => {
+  const source = "My name is Rowan. My project budget is 1234.50 CNY.\n我不喝咖啡，喜欢喝茶。";
+  const expected = ["My name is Rowan.", "My project budget is 1234.50 CNY.", "我不喝咖啡，喜欢喝茶。"];
+  assert.deepEqual(sentenceHashes(source), expected.map(value => crypto.createHash("sha256").update(value).digest("hex")));
+});
 import { ConversationMemoryStore } from "../src/storage/memory.js";
 
 test("Mem0 client accepts only loopback HTTP endpoints", () => {

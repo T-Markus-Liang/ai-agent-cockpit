@@ -22,6 +22,7 @@ import {
 } from "./agent-manager.js";
 import type { AgentCommandConfig, SessionResumePolicy } from "../config.js";
 import { trackEvent, trackException, hashUserId } from "../telemetry/index.js";
+import { classifyLaunchFailure, decideFallback } from "./fallback-policy.js";
 
 /**
  * Build a short, user-friendly notice for a turn that ended without the
@@ -51,6 +52,13 @@ export interface PendingMessage {
   receiptIds?: string[];
   automaticRetryCount?: number;
   replySequence?: number;
+  /**
+   * Absolute epoch-ms grant deadline for this turn, stamped once when the turn
+   * starts and inherited unchanged by every fallback / retry / resume. Every wait
+   * derives its remaining budget from this fixed instant and NEVER opens a fresh
+   * full grantDeadlineMs.
+   */
+  deadlineAt?: number;
   contextToken: string;
   replyGeneration?: number;
   completion?: {
@@ -113,16 +121,28 @@ export interface SessionManagerOpts {
   agentEnv?: Record<string, string>;
   agentPreset?: string;
   fallbackAgents?: AgentCommandConfig[];
+  /** Test seam: overrides the agent spawner (defaults to agent-manager spawnAgent). */
+  spawnAgent?: typeof spawnAgent;
   mcpServers?: acp.McpServer[];
   idleTimeoutMs: number;
   maxConcurrentUsers: number;
-  /** Hard cap for one prompt turn; prevents a hung provider blocking later messages forever. */
-  promptTimeoutMs?: number;
+  /**
+   * Foreground wait: after this long the turn is surfaced to the user as
+   * running in the background, but the turn itself keeps running. It never
+   * terminates the turn.
+   */
+  foregroundWaitMs?: number;
+  /**
+   * Grant deadline: the only hard cap for one prompt turn. When it elapses the
+   * session is reset through the existing cancel + cleanup path so a hung
+   * provider cannot block later messages forever.
+   */
+  grantDeadlineMs?: number;
   startupTimeoutMs?: number;
   progressNoticeMs?: number;
   preparePrompt?: (userId: string, prompt: acp.ContentBlock[], pending?: PendingMessage) => Promise<acp.ContentBlock[]>;
   onNotice?: SessionManagerOpts['onReply'];
-  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'dispatched' | 'tool_activity' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string }) => Promise<void>;
+  onTurnEvent?: (userId: string, pending: PendingMessage, event: { phase: 'preparing' | 'sent-unconfirmed' | 'dispatched' | 'tool_activity' | 'background' | 'result_ready'; sessionId?: string; processId?: number; resultText?: string; stopReason?: string; deadlineAt?: number }) => Promise<void>;
   resumePolicy?: SessionResumePolicy;
   getPersistedSessionId?: (userId: string) => Promise<string | undefined>;
   persistSessionId?: (userId: string, sessionId: string) => Promise<void>;
@@ -204,13 +224,14 @@ export class QueuedMessageDeferredError extends Error {
   constructor() { super('Queued message preserved for safe recovery'); this.name = 'QueuedMessageDeferredError'; }
 }
 
-class PromptTimeoutError extends Error {
-  readonly timeoutMs: number;
+class GrantDeadlineError extends Error {
+  /** The absolute epoch-ms deadline that was reached (never a relative budget). */
+  readonly deadlineAt: number;
 
-  constructor(operationName: string, timeoutMs: number) {
-    super(`${operationName} timed out after ${timeoutMs}ms`);
-    this.name = "PromptTimeoutError";
-    this.timeoutMs = timeoutMs;
+  constructor(operationName: string, deadlineAt: number) {
+    super(`${operationName} reached its absolute grant deadline (${new Date(deadlineAt).toISOString()})`);
+    this.name = "GrantDeadlineError";
+    this.deadlineAt = deadlineAt;
   }
 }
 
@@ -1039,7 +1060,7 @@ export class SessionManager {
           await this.opts.removePersistedSessionId?.(userId).catch(() => {});
         }
         try {
-          agentInfo = await spawnAgent({
+          agentInfo = await (this.opts.spawnAgent ?? spawnAgent)({
             command: candidate.command,
             args: candidate.args,
             cwd: this.opts.agentCwd,
@@ -1063,8 +1084,21 @@ export class SessionManager {
           break;
         } catch (err) {
           lastError = err;
-          this.opts.log(`[${userId}] ACP candidate ${candidate.command} failed: ${String(err)}`);
-          if (index === candidates.length - 1) throw err;
+          // S03a launch gate: a candidate failure may advance to the next
+          // candidate ONLY on an explicit proof that no provider session was
+          // requested (providerSessionTouched === false) plus a degradable
+          // launch kind. auth / permission / abort / unknown-launch-effect
+          // failures stop here and are never retried on another harness.
+          const gate = classifyLaunchFailure({
+            kind: (err as { kind?: unknown } | null)?.kind,
+            providerSessionTouched: (err as { providerSessionTouched?: unknown } | null)
+              ?.providerSessionTouched,
+          });
+          this.opts.log(
+            `[${userId}] ACP candidate ${candidate.command} failed: ${String(err)} ` +
+              `(launch gate: ${gate.advance ? "advance" : "stop"}/${gate.reason})`,
+          );
+          if (!gate.advance || index === candidates.length - 1) throw err;
         }
       }
       if (!agentInfo!) throw lastError ?? new Error("No ACP agent candidates configured");
@@ -1144,6 +1178,14 @@ export class SessionManager {
         session.activeMessage = pending;
         let completionError: unknown;
         const promptStartedAt = Date.now();
+        // Stamp the ABSOLUTE grant deadline exactly once, when the turn starts.
+        // Every later wait (foreground / background / fallback / retry / resume)
+        // derives its remaining budget from this fixed instant — never a fresh
+        // full grantDeadlineMs. A fallback re-enqueue spreads the same pending, so
+        // it keeps this `deadlineAt` instead of restarting the clock.
+        if (pending.deadlineAt === undefined && this.opts.grantDeadlineMs && this.opts.grantDeadlineMs > 0) {
+          pending.deadlineAt = Date.now() + this.opts.grantDeadlineMs;
+        }
         const isSessionCurrent = () => this.isCurrentSession(session);
         const progressTimer = this.opts.progressNoticeMs && this.opts.progressNoticeMs > 0
           ? setTimeout(() => { if (this.isCurrentSession(session) && !session.client.hasProducedMessage) void this.notice(session, pending, '这条消息已保存，我还在处理。后续消息也会排队保留；你可以发 /取消 中止当前处理。', true).catch(() => {}); }, this.opts.progressNoticeMs)
@@ -1245,6 +1287,7 @@ export class SessionManager {
             session,
             beginTurn,
             "turn setup",
+            { deadlineAt: pending.deadlineAt },
           );
 
           if (!this.isCurrentSession(session)) {
@@ -1263,13 +1306,17 @@ export class SessionManager {
           ).catch(() => {});
 
           // Send ACP prompt
-          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'preparing', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid });
+          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'preparing', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid, deadlineAt: pending.deadlineAt });
           pending.preparedPrompt ??= this.opts.preparePrompt
             ? await this.opts.preparePrompt(session.userId, pending.prompt, pending)
             : pending.prompt;
           if (!this.isCurrentSession(session)) continue;
           this.opts.log(`[${session.userId}] Sending prompt to agent...`);
           session.promptDispatched = true;
+          // Durable pre-send marker. From here the prompt may reach the provider,
+          // so a crash must recover the receipt as uncertain and never replay it.
+          // This write is awaited: if it fails the prompt is never issued.
+          await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'sent-unconfirmed', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid });
           await this.opts.onTurnEvent?.(session.userId, pending, { phase: 'dispatched', sessionId: session.agentInfo.sessionId, processId: session.agentInfo.process.pid });
           const result = await this.awaitAgentOperation(
             session,
@@ -1278,7 +1325,16 @@ export class SessionManager {
               prompt: pending.preparedPrompt,
             }),
             "prompt response",
-            this.opts.promptTimeoutMs,
+            {
+              foregroundWaitMs: this.opts.foregroundWaitMs,
+              deadlineAt: pending.deadlineAt,
+              onForegroundWaitExpired: () =>
+                this.opts.onTurnEvent?.(session.userId, pending, {
+                  phase: 'background',
+                  sessionId: session.agentInfo.sessionId,
+                  processId: session.agentInfo.process.pid,
+                }),
+            },
           );
           if (!this.isCurrentSession(session)) {
             completionError = session.closedError ?? new SessionResetError();
@@ -1371,16 +1427,32 @@ export class SessionManager {
           }
           this.opts.log(`[${session.userId}] Agent prompt error: ${String(err)}`);
 
-          if (err instanceof PromptTimeoutError) {
-            this.opts.log(
-              `[${session.userId}] Prompt timed out after ${err.timeoutMs}ms; resetting the ACP session`,
-            );
-            const generation = session.lifecycleGeneration ?? (this.userGenerations.get(session.userId) ?? 0);
+          // ONE gate decides whether this failed turn may be retried on another
+          // candidate. It refuses whenever side effects are uncertain OR the grant
+          // budget (the absolute `deadlineAt`) is spent, so a deadline can NEVER
+          // trigger a resend — the audited re-enqueue is gone.
+          const generation = session.lifecycleGeneration ?? (this.userGenerations.get(session.userId) ?? 0);
+          const remainingMs = pending.deadlineAt !== undefined ? pending.deadlineAt - Date.now() : Number.POSITIVE_INFINITY;
+          const gate = decideFallback({
+            kind: this.classifyTurnFailure(err, session),
+            hasProducedMessage: session.client.hasProducedMessage,
+            hasUsedTools: session.client.hasUsedTools,
+            remainingMs,
+          });
+          this.opts.log(
+            `[${session.userId}] Turn-failure gate: ${gate.action} (${gate.reason}); ${Number.isFinite(remainingMs) ? `remaining ${Math.round(remainingMs)}ms` : 'no grant deadline'}`,
+          );
+
+          if (err instanceof GrantDeadlineError || gate.action === 'fallback') {
+            // Tear the failed turn's session down before any further execution: the
+            // provider process must not overlap a replacement, and the stale persisted
+            // session id is never resumed inside another harness. Queued messages are
+            // retained; the expired/failed turn itself is NEVER re-sent.
             const kept = session.queue.splice(0);
             const existing = this.retainedMessages.get(session.userId);
             this.retainedMessages.set(session.userId, { generation, messages: [...(existing?.generation === generation ? existing.messages : []), ...kept] });
-            session.closedError = err;
-            this.sessions.delete(session.userId);
+            session.closedError = err instanceof Error ? err : new Error(String(err));
+            if (this.sessions.get(session.userId) === session) this.sessions.delete(session.userId);
             session.cleanupRegistered = true;
             this.registerSessionCleanup(session, true);
             if (this.opts.removePersistedSessionId) {
@@ -1393,17 +1465,18 @@ export class SessionManager {
             let cleaned = true;
             await this.retryCleanupState(session.userId).catch((cleanupErr) => {
               cleaned = false;
-              this.opts.log(
-                `[${session.userId}] Timed-out ACP cleanup deferred: ${String(cleanupErr)}`,
-              );
+              this.opts.log(`[${session.userId}] Failed-turn ACP cleanup deferred: ${String(cleanupErr)}`);
             });
-            if (cleaned && !session.client.hasProducedMessage && !session.client.hasUsedTools && (pending.automaticRetryCount ?? 0) < 1 && !this.fallbackUsers.has(session.userId) && (this.opts.fallbackAgents?.length ?? 0) > 0 && this.isUserGenerationCurrent(session.userId, generation)) {
-              // Retry the same user prompt once through the first configured fallback agent.
-              // The primary session has been fully torn down above, so this cannot overlap
-              // provider processes or reuse the stale persisted ACP session.
+            if (gate.action === 'fallback' && cleaned && (pending.automaticRetryCount ?? 0) < 1 && !this.fallbackUsers.has(session.userId) && this.isUserGenerationCurrent(session.userId, generation)) {
+              // A proven-clean, degradable, in-budget failure. Retry the SAME prompt
+              // once through the next candidate. The spread below keeps the pending's
+              // original absolute `deadlineAt`, so the retry runs on the REMAINING
+              // budget — never a fresh full grantDeadlineMs.
               this.fallbackUsers.add(session.userId);
-              const retry = { ...pending, automaticRetryCount: 1 };
+              const retry = { ...pending, automaticRetryCount: (pending.automaticRetryCount ?? 0) + 1 };
               pending.completion = undefined;
+              this.opts.log(`[${session.userId}] Switching to a fallback agent candidate (${gate.reason})`);
+              await this.notice(session, pending, '主 Agent 暂时不可用，已切换到备用候选继续这同一条任务；原截止时间不变。').catch(() => {});
               void this.enqueue(session.userId, retry).then(() => this.resumeRetained(session.userId)).catch((retryErr) => {
                 this.opts.log(`[${session.userId}] Fallback retry failed: ${String(retryErr)}`);
                 retry.completion?.reject(retryErr);
@@ -1412,7 +1485,7 @@ export class SessionManager {
             }
             try {
               const queueCount = this.retainedMessages.get(session.userId)?.messages.length ?? kept.length;
-              await this.notice(session, pending, `上一条处理超时，未能完成，不能算作已处理。${queueCount ? `你后发的 ${queueCount} 条消息已保留，会继续处理。` : '原文已保留；已可能执行过的操作不会自动重放。'}${cleaned ? '' : '连接清理尚未确认，暂不启动新的执行。'}`);
+              await this.notice(session, pending, `${err instanceof GrantDeadlineError ? '上一条任务已到 Grant 期限，未能完成' : '上一条任务未能完成，且不能安全换候选重放'}，不能算作已处理。${queueCount ? `你后发的 ${queueCount} 条消息已保留，会继续处理。` : '原文已保留；已可能执行过的操作不会自动重放。'}${cleaned ? '' : '连接清理尚未确认，暂不启动新的执行。'}`);
             } catch {
               // Best effort: the provider timeout must not leave the queue blocked.
             }
@@ -1611,11 +1684,28 @@ export class SessionManager {
     );
   }
 
+  /**
+   * Classify a turn failure for the fallback gate. Only a failure that provably
+   * never reached the provider (the prompt was not dispatched) is treated as a
+   * degradable `startup_error`; a deadline is the `timeout` kind; a mid-generation
+   * connection loss is uncertain side effects; anything else is unknown. Fail closed.
+   */
+  private classifyTurnFailure(err: unknown, session: UserSession): string {
+    if (err instanceof GrantDeadlineError) return "timeout";
+    if (err instanceof AgentConnectionClosedError) return "mid_generation_failure";
+    if (!session.promptDispatched) return "startup_error";
+    return "unknown";
+  }
+
   private async awaitAgentOperation<T>(
     session: UserSession,
     operation: Promise<T>,
     operationName: string,
-    timeoutMs?: number,
+    opts?: {
+      foregroundWaitMs?: number;
+      deadlineAt?: number;
+      onForegroundWaitExpired?: () => void | Promise<void>;
+    },
   ): Promise<T> {
     const process = session.agentInfo.process;
     let onExit: (() => void) | undefined;
@@ -1627,12 +1717,34 @@ export class SessionManager {
             process.once("exit", onExit);
           });
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    let operationTimeout: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = timeoutMs && timeoutMs > 0
+    let foregroundTimer: ReturnType<typeof setTimeout> | undefined;
+    let grantTimer: ReturnType<typeof setTimeout> | undefined;
+    // The foreground wait is informational only: on expiry we notify the caller
+    // (which surfaces the turn to the user as background work) but keep waiting
+    // on the same operation. It never terminates the turn.
+    if (opts?.foregroundWaitMs && opts.foregroundWaitMs > 0 && opts.onForegroundWaitExpired) {
+      foregroundTimer = setTimeout(() => {
+        foregroundTimer = undefined;
+        void Promise.resolve()
+          .then(() => opts.onForegroundWaitExpired!())
+          .catch(() => {});
+      }, opts.foregroundWaitMs);
+    }
+    // Absolute grant deadline. We wait at most until `opts.deadlineAt`; the
+    // remaining budget is the difference between that fixed instant and now. We
+    // NEVER start a fresh full grant timer here, so a retry / fallback / resume
+    // cannot silently extend the turn — an elapsed deadline rejects at once.
+    const deadlineAt = opts?.deadlineAt;
+    const deadlinePromise = typeof deadlineAt === "number" && Number.isFinite(deadlineAt)
       ? new Promise<never>((_resolve, reject) => {
-          operationTimeout = setTimeout(
-            () => reject(new PromptTimeoutError(operationName, timeoutMs)),
-            timeoutMs,
+          const remainingMs = deadlineAt - Date.now();
+          if (remainingMs <= 0) {
+            reject(new GrantDeadlineError(operationName, deadlineAt));
+            return;
+          }
+          grantTimer = setTimeout(
+            () => reject(new GrantDeadlineError(operationName, deadlineAt)),
+            remainingMs,
           );
         })
       : undefined;
@@ -1660,12 +1772,13 @@ export class SessionManager {
         operation,
         session.connectionClosedError,
         exitTimeout,
-        ...(timeoutPromise ? [timeoutPromise] : []),
+        ...(deadlinePromise ? [deadlinePromise] : []),
       ]);
     } finally {
       if (onExit) process.off("exit", onExit);
       if (timeout) clearTimeout(timeout);
-      if (operationTimeout) clearTimeout(operationTimeout);
+      if (foregroundTimer) clearTimeout(foregroundTimer);
+      if (grantTimer) clearTimeout(grantTimer);
     }
   }
 

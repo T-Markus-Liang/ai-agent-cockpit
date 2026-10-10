@@ -5,18 +5,29 @@ import { collectSecretValues, redactDeep, redactSecrets, REDACTED } from './secr
  * #427: credentials must never be persisted to a run's NDJSON transcript.
  * Value-based redaction scrubs the host's own secret env values; pattern-based
  * redaction catches well-known token shapes from anywhere.
+ *
+ * These are deliberately synthetic TESTONLY canaries, never credentials read
+ * from a user, an environment variable, or an account. Constructing the dummy
+ * body keeps production-format coverage without committing key-shaped literals.
  */
+function syntheticToken(prefix: string, bodyLength = 32): string {
+  const marker = 'TESTONLY';
+  return prefix + marker.repeat(Math.ceil(bodyLength / marker.length)).slice(0, bodyLength);
+}
+
 describe('collectSecretValues', () => {
   it('collects values of secret-named vars, skips short and non-secret names', () => {
+    const token = syntheticToken('gho_');
+    const awsSecret = 'TESTONLY-aws-secret-value';
     const values = collectSecretValues({
-      GITHUB_TOKEN: 'gho_averylongtokenvalue',
-      AWS_SECRET_ACCESS_KEY: 'wJalrXUtnFEMIabcdefghij',
+      GITHUB_TOKEN: token,
+      AWS_SECRET_ACCESS_KEY: awsSecret,
       PATH: '/usr/bin:/bin',
       SSH_AUTH_SOCK: '/tmp/ssh-abc/agent.1', // AUTH but allow-listed
       SHORT_TOKEN: 'abc', // too short
     });
-    expect(values).toContain('gho_averylongtokenvalue');
-    expect(values).toContain('wJalrXUtnFEMIabcdefghij');
+    expect(values).toContain(token);
+    expect(values).toContain(awsSecret);
     expect(values).not.toContain('/usr/bin:/bin');
     expect(values).not.toContain('/tmp/ssh-abc/agent.1');
     expect(values).not.toContain('abc');
@@ -26,17 +37,17 @@ describe('collectSecretValues', () => {
    *  child env is also collected for redaction — the two used to diverge. */
   it('collects the name shapes agent-env strips, so the lists cannot drift', () => {
     const values = collectSecretValues({
-      SIGNING_KEY: 'signingkeyvalue123',
-      MY_KEY_MATERIAL: 'keymaterialvalue123',
-      SESSION_SECRET: 'sessionsecretvalue123',
-      COOKIE_SIGNING: 'cookiesigningvalue123',
+      SIGNING_KEY: 'TESTONLY-signing-value',
+      MY_KEY_MATERIAL: 'TESTONLY-key-material',
+      SESSION_SECRET: 'TESTONLY-session-value',
+      COOKIE_SIGNING: 'TESTONLY-cookie-value',
     });
     expect(values).toEqual(
       expect.arrayContaining([
-        'signingkeyvalue123',
-        'keymaterialvalue123',
-        'sessionsecretvalue123',
-        'cookiesigningvalue123',
+        'TESTONLY-signing-value',
+        'TESTONLY-key-material',
+        'TESTONLY-session-value',
+        'TESTONLY-cookie-value',
       ]),
     );
   });
@@ -52,22 +63,46 @@ describe('collectSecretValues', () => {
 
 describe('redactSecrets', () => {
   it('scrubs concrete host secret values found in text', () => {
-    const secrets = collectSecretValues({ GITHUB_TOKEN: 'gho_myrealsecrettoken1234' });
-    const out = redactSecrets('run: gh auth uses gho_myrealsecrettoken1234 here', secrets);
-    expect(out).not.toContain('gho_myrealsecrettoken1234');
+    const token = syntheticToken('gho_');
+    const secrets = collectSecretValues({ GITHUB_TOKEN: token });
+    const out = redactSecrets('run: gh auth uses ' + token + ' here', secrets);
+    expect(out).not.toContain(token);
     expect(out).toContain(REDACTED);
   });
 
   it('scrubs well-known token shapes even without knowing the env', () => {
     const line = [
-      'gh: ghp_0123456789abcdefghijABCDEFGHIJ0123',
-      'anthropic: sk-ant-api03-abcdefghijklmnopqrstuvwxyz',
-      'aws: AKIAIOSFODNN7EXAMPLE',
-      'google: AIzaSyA0123456789abcdefghijklmnopqrstuv',
+      'gh: ' + syntheticToken('ghp_', 36),
+      'anthropic: ' + syntheticToken('sk-ant-'),
+      'aws: ' + syntheticToken('AKIA', 16),
+      'google: ' + syntheticToken('AIza', 35),
     ].join('\n');
     const out = redactSecrets(line, []);
     expect(out).not.toMatch(/ghp_|sk-ant|AKIA|AIza/);
     expect(out.match(new RegExp(REDACTED.replace(/[[\]]/g, '\\$&'), 'g'))?.length).toBe(4);
+  });
+
+  it.each([
+    ['GitHub PAT', 'ghp_', 36],
+    ['GitHub OAuth', 'gho_', 36],
+    ['GitHub server token', 'ghs_', 36],
+    ['GitHub user token', 'ghu_', 36],
+    ['GitHub refresh token', 'ghr_', 36],
+    ['GitHub fine-grained PAT', 'github_pat_', 32],
+    ['Anthropic', 'sk-ant-', 32],
+    ['OpenAI-compatible', 'sk-', 32],
+    ['AWS access key ID', 'AKIA', 16],
+    ['AWS temporary access key ID', 'ASIA', 16],
+    ['Google API key', 'AIza', 35],
+    ['Google OAuth', 'ya29.', 32],
+    ['Slack', 'xoxb-', 32],
+    ['GitLab', 'glpat-', 32],
+  ] as const)('redacts an explicitly synthetic %s canary', (_name, prefix, bodyLength) => {
+    const token = syntheticToken(prefix, bodyLength);
+    expect(token).toHaveLength(prefix.length + bodyLength);
+    expect(token.slice(prefix.length)).toMatch(/^(?:TESTONLY)+(?:T|TE|TES|TEST|TESTO|TESTON|TESTONL)?$/);
+    expect(redactSecrets('before ' + token + ' after', [])).toBe('before ' + REDACTED + ' after');
+    expect(redactSecrets(token + ' ' + token, [])).toBe(REDACTED + ' ' + REDACTED);
   });
 
   it('leaves non-secret text untouched', () => {
@@ -76,8 +111,8 @@ describe('redactSecrets', () => {
 
   /**
    * #427 review: the old 8-char floor mangled ordinary output — a dev box with
-   * `POSTGRES_PASSWORD=postgres` turned `apt install postgresql-16` into
-   * `apt install [REDACTED]ql-16`. Short dictionary words are not redactable.
+   * POSTGRES_PASSWORD=postgres turned apt install postgresql-16 into
+   * apt install [REDACTED]ql-16. Short dictionary words are not redactable.
    */
   it('does not redact short dictionary-word "secrets" out of ordinary output', () => {
     const secrets = collectSecretValues({ POSTGRES_PASSWORD: 'postgres', DB_PASSWORD: 'root' });
@@ -86,10 +121,11 @@ describe('redactSecrets', () => {
     expect(redactSecrets(line, secrets)).toBe(line);
   });
 
-  it('still redacts a real credential value at the raised floor', () => {
-    const secrets = collectSecretValues({ POSTGRES_PASSWORD: 'S3cr3t-Pr0d-Passw0rd' });
-    const out = redactSecrets('psql://app:S3cr3t-Pr0d-Passw0rd@db/prod', secrets);
-    expect(out).not.toContain('S3cr3t-Pr0d-Passw0rd');
+  it('still redacts a synthetic credential value at the raised floor', () => {
+    const password = 'TESTONLY-long-password';
+    const secrets = collectSecretValues({ POSTGRES_PASSWORD: password });
+    const out = redactSecrets('psql://app:' + password + '@db/prod', secrets);
+    expect(out).not.toContain(password);
     expect(out).toContain(REDACTED);
   });
 });
@@ -98,8 +134,8 @@ describe('redactDeep', () => {
   it('scrubs string leaves in nested event structures', () => {
     const event = {
       type: 'tool-result',
-      result: 'export GITHUB_TOKEN=ghp_0123456789abcdefghijABCDEFGHIJ0123',
-      item: { output: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz', nested: [{ text: 'safe' }] },
+      result: 'export GITHUB_TOKEN=' + syntheticToken('ghp_', 36),
+      item: { output: syntheticToken('sk-ant-'), nested: [{ text: 'safe' }] },
       seq: 3,
     };
     const out = redactDeep(event, []);
@@ -111,6 +147,8 @@ describe('redactDeep', () => {
 });
 
 it('redacts raw tracker key values from persisted task text', () => {
-  const secrets = collectSecretValues({ JIRA_API_TOKEN: 'jira-token-value', LINEAR_API_KEY: 'linear-key-value' });
-  expect(redactSecrets('jira-token-value linear-key-value', secrets)).toBe(REDACTED + ' ' + REDACTED);
+  const jira = 'TESTONLY-jira-value';
+  const linear = 'TESTONLY-linear-value';
+  const secrets = collectSecretValues({ JIRA_API_TOKEN: jira, LINEAR_API_KEY: linear });
+  expect(redactSecrets(jira + ' ' + linear, secrets)).toBe(REDACTED + ' ' + REDACTED);
 });

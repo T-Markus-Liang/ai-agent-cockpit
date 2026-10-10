@@ -1,0 +1,65 @@
+{
+  "m01": {
+    "source": "frozen-M01-r1",
+    "productionTouched": false,
+    "realModels": false,
+    "observations": [
+      {
+        "probe": "unknown-existing-db-and-created-at",
+        "acceptedUnknownDb": true,
+        "targetMutatedToPending": true,
+        "wrongTimestampRetained": true,
+        "conservationReportedTrue": true,
+        "sourceBytesUnchanged": true
+      },
+      {
+        "probe": "symlink-destination",
+        "acceptedOtherTargetSymlink": true,
+        "victimDbMutated": true
+      },
+      {
+        "probe": "forget-during-prepare",
+        "forgetCommitted": true,
+        "vectorEffectsAfterForget": 1,
+        "converterReportsValidated": 1,
+        "forgottenFlagRetained": true
+      },
+      {
+        "probe": "store-retry-reprepares",
+        "firstPassEvaluatorCalls": 2,
+        "secondPassAdditionalEvaluatorCalls": 2,
+        "secondPassValidated": 1
+      }
+    ]
+  },
+  "m02": {
+    "source": "frozen-M02-r1",
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "queued-background-after-foreground-stop",
+        "abortResult": "aborted",
+        "foreground": "unanswered",
+        "background": "queued",
+        "backgroundWaitTimedOut": true,
+        "modelCalls": 1
+      },
+      {
+        "probe": "mixed-run-foreground-stop",
+        "abortResult": "aborted",
+        "foregroundAfterAbort": "placed",
+        "foregroundEventually": "done",
+        "backgroundEventually": "done"
+      },
+      {
+        "probe": "background-without-execution-id",
+        "admitted": true,
+        "executionError": "unknown-execution",
+        "submissionAbort": "already_placed",
+        "conversationAbort": "aborted",
+        "stillRunning": "placed"
+      }
+    ]
+  }
+}

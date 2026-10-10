@@ -1,0 +1,14 @@
+{
+  "sourceSha256": "4b2a7abc99469d12e3f04475624c19d4ca5f87e05608f60d31de7469540541da",
+  "network": "none; fake SDK",
+  "filesystem": "fake only",
+  "defaultOff": true,
+  "rawExceptionMessageDropped": true,
+  "rawExceptionStackDropped": true,
+  "eventPropertyCanaryLeaked": true,
+  "eventTagCanaryLeaked": true,
+  "exceptionTagCanaryLeaked": true,
+  "commonPropertyCanaryLeaked": true,
+  "providedTelemetryTests": { "passed": 11, "failed": 0 },
+  "verdict": "CHANGES_REQUESTED SKEY-F003; default-off and raw-error scrubbing accepted as subitems only"
+}

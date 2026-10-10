@@ -166,6 +166,8 @@ Example:
   "session": {
     "idleTimeoutMs": 86400000,
     "maxConcurrentUsers": 10,
+    "foregroundWaitMs": 120000,
+    "grantDeadlineMs": 1800000,
     "resume": "auto",
     "turnEndMessage": "✅ Turn complete"
   }
@@ -196,6 +198,17 @@ boundary visible even when the agent streamed several earlier messages or was
 silent during a long-running tool call. The bridge generates this signal, so it
 does not depend on the model following a prompt instruction. The
 `--turn-end-message` CLI option overrides the config file value.
+
+`session.foregroundWaitMs` (default `120000`) is the foreground wait. When a
+turn runs longer than this, the bridge tells the user the task moved to
+background execution and marks its receipts as `background`, but the turn keeps
+running: a later result is still delivered normally. This wait never ends a
+turn.
+
+`session.grantDeadlineMs` (default `1800000`) is the grant deadline — the only
+hard cap on a single turn. When it elapses the session is reset (cancel +
+cleanup) and the user is told the grant deadline was reached, so a hung
+provider cannot block the per-user queue forever.
 
 You can also override or add agent presets:
 
@@ -539,15 +552,26 @@ npm run dev
 
 ## Telemetry
 
-`wechat-acp` collects anonymous usage telemetry via Azure Application Insights to help understand which agent presets are used and to detect crashes.
+`wechat-acp` supports anonymous usage telemetry via Azure Application Insights, used to understand which agent presets are used and to detect crashes.
 
-**To disable telemetry**, set the `WECHAT_ACP_TELEMETRY` environment variable to `0`, `false`, or `off` before running:
+**Telemetry is DISABLED by default.** With the environment unset, the bridge does not load the SDK, does not generate an install id, does not write any telemetry file, and does not send any event or exception anywhere.
+
+Enabling is **double opt-in** — both are required, and there is no hard-coded connection string:
+
+| Environment variable | Purpose |
+| --- | --- |
+| `WECHAT_ACP_TELEMETRY` | Set to `1` (also accepts `true` / `on`) to opt in. Anything else, including unset, `0`, `false`, `off`, keeps telemetry off. |
+| `WECHAT_ACP_TELEMETRY_CONNECTION_STRING` | Your own private Application Insights connection string. It is read from the environment only — never logged, never written to disk, and never sent as an event field. |
 
 ```bash
-WECHAT_ACP_TELEMETRY=0 npx wechat-acp --agent copilot
+WECHAT_ACP_TELEMETRY=1 \
+WECHAT_ACP_TELEMETRY_CONNECTION_STRING='InstrumentationKey=…;IngestionEndpoint=…;' \
+  npx wechat-acp --agent copilot
 ```
 
-**What is collected** (18 event types only):
+If only one of the two is set, telemetry stays completely silent.
+
+**What is collected** (18 event types only). Event names and per-event property keys are fixed; every value is a bounded enum, a bounded integer count/duration, a boolean, a per-install salted hash, or a bounded identifier — free text is dropped:
 
 - `app.start` / `app.stop` — process lifecycle, agent preset name, daemon flag, uptime
 - `login.success` / `login.failure` / `token.reused` — WeChat login outcomes (no token, no QR URL)
@@ -565,11 +589,11 @@ WECHAT_ACP_TELEMETRY=0 npx wechat-acp --agent copilot
 - `reply.audio.sent`: audio reply pushed back to WeChat as a file message; byte size, MIME type, duration
 - `reply.file.sent`: agent-generated file pushed back to WeChat; byte size, MIME type, duration
 
-Plus exception reports for `monitor`, `prompt`, `reply`, `reply.image`, `reply.audio`, `reply.file`, `artifact_mcp`, `auth`, `agent_spawn`, `enqueue`, `buffer`, `command`, and `state` failures.
+Exception reports carry only a bounded `category` (the allow-listed failure area: `monitor`, `prompt`, `reply`, `reply.image`, `reply.audio`, `reply.file`, `artifact_mcp`, `auth`, `agent_spawn`, `enqueue`, `buffer`, `command`, `state`, …) and a bounded machine-readable `code` (for example `E_TIMEOUT`, `E_ABORT`, `E_GENERIC`). An unrecognised area becomes `unclassified`; an unrecognised error kind becomes `E_UNKNOWN`.
 
-**What is never collected**: message bodies, filenames, voice transcripts, image URLs, login tokens, QR codes, raw agent command strings, environment variables, working directory paths, raw WeChat user IDs.
+**What is never collected**: exception `message` / `stack` / `cause` text, request bodies, HTTP headers, message bodies, filenames, voice transcripts, image URLs, login tokens, QR codes, raw agent command strings, environment variables, working directory paths, raw WeChat user IDs, or the connection string.
 
-User IDs are sha256-hashed with a per-install salt stored in `~/.wechat-acp/telemetry-id`. The salt is generated on first run and never leaves your machine. Delete the file to rotate it.
+User IDs are sha256-hashed with a per-install salt stored in `~/.wechat-acp/telemetry-id` (only written once telemetry is enabled). The salt is generated on first run and never leaves your machine. Delete the file to rotate it.
 
 ## License
 

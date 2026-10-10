@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
@@ -15,6 +16,8 @@ import { CezarAdapter } from '../adapters/engines/cezar.mjs'
 import { executeNativeSessionPrompt, nativePromptPlan, runNativeAcpPrompt } from '../control-plane/native-acp-executor.mjs'
 import { buildRoutePlan } from '../control-plane/router.mjs'
 import { createReviewerExecution } from '../control-plane/reviewer.mjs'
+import { verifyGrant } from '../control-plane/execution-grant.mjs'
+import { executionGrantFixture } from './helpers/execution-grant.mjs'
 
 test('contracts keep Task, SessionRef and Execution separate', () => {
   const task = createTask({ goal: '检查本机 agent 状态', acceptanceCriteria: ['输出可追溯证据'] })
@@ -25,11 +28,25 @@ test('contracts keep Task, SessionRef and Execution separate', () => {
   assert.equal(execution.type, 'Execution')
   assert.equal(execution.taskId, task.id)
   assert.equal(execution.sessionRefId, session.id)
+  // accountId is optional and never fabricated: absent by default, a non-empty
+  // string when a real account source supplies it, rejected when blank.
+  assert.equal('accountId' in session, false, 'accountId must be absent when no real account source exists')
+  assert.equal(createSessionRef({ source: 'test', nativeSessionId: 'n', cwd: '/tmp', accountId: 'acct-1' }).accountId, 'acct-1')
+  assert.throws(() => createSessionRef({ source: 'test', nativeSessionId: 'n', cwd: '/tmp', accountId: '' }), ContractError)
 })
 
 test('contracts reject empty goals and invalid approvals', () => {
   assert.throws(() => createTask({ goal: '' }), ContractError)
   assert.throws(() => createApproval({ action: 'send', target: 'wechat', parametersDigest: 'x', decision: 'maybe' }), ContractError)
+})
+
+test('Execution.role is an optional worker|reviewer enum and is never fabricated', () => {
+  const base = { taskId: 'task-1', workerId: 'w1' }
+  assert.equal('role' in createExecution(base), false, 'role is absent by default (worker semantics; no back-fill)')
+  assert.equal(createExecution({ ...base, role: 'worker' }).role, 'worker')
+  assert.equal(createExecution({ ...base, role: 'reviewer' }).role, 'reviewer')
+  assert.throws(() => createExecution({ ...base, role: 'chief' }), ContractError)
+  assert.throws(() => createExecution({ ...base, role: '' }), ContractError)
 })
 
 test('session index is read-only and returns normalized metadata', async () => {
@@ -171,7 +188,8 @@ test('Cezar adapter dispatch is approval-bound and reconciles done to verifying'
   try {
     const store = new ControlPlaneStore({ stateDir })
     const task = await store.createTask({ goal: 'Cezar adapter test' }, { idempotencyKey: 'cezar-task' })
-    const execution = await store.createExecution(task.task.id, { workerId: 'cezar:codex' }, { idempotencyKey: 'cezar-execution' })
+    const executionId = `execution_cezar_${crypto.randomUUID()}`
+    const execution = await store.createExecution(task.task.id, { id: executionId, workerId: 'cezar:codex', ...executionGrantFixture({ taskId: task.task.id, executionId, scope: ['cezar.dispatch'] }) }, { idempotencyKey: 'cezar-execution' })
     const dispatchParameters = { taskId: task.task.id, executionId: execution.execution.id, runner: 'codex', workflow: 'quick-task', worktree: true }
     const approval = await store.createApproval({ action: 'cezar.dispatch', target: execution.execution.id, parametersDigest: parametersDigest(dispatchParameters) }, { idempotencyKey: 'cezar-approval' })
     await store.decideApproval(approval.approval.id, { decision: 'approved', approvedBy: 'test' }, { idempotencyKey: 'cezar-decision' })
@@ -284,14 +302,18 @@ test('native ACP resume+prompt executor is approval-bound and ends in VERIFYING'
   try {
     const store = new ControlPlaneStore({ stateDir })
     const task = await store.createTask({ goal: '继续原生会话' }, { idempotencyKey: 'native-task' })
-    const execution = await store.createExecution(task.task.id, { workerId: 'codex:native', sessionRefId: 'session:codex:native-1' }, { idempotencyKey: 'native-execution' })
-    const plan = nativePromptPlan({ taskId: task.task.id, executionId: execution.execution.id, source: 'fake', nativeSessionId: 'native-1', cwd: '/tmp', prompt: '继续' })
+    const nativeExecutionId = `execution_native_${crypto.randomUUID()}`
+    const execution = await store.createExecution(task.task.id, { id: nativeExecutionId, workerId: 'codex:native', sessionRefId: 'session:codex:native-1', ...executionGrantFixture({ taskId: task.task.id, executionId: nativeExecutionId, scope: ['native.session.prompt'] }) }, { idempotencyKey: 'native-execution' })
+    const plan = nativePromptPlan({ taskId: task.task.id, executionId: execution.execution.id, source: 'codex', nativeSessionId: 'native-1', sessionRefId: 'session:codex:native-1', cwd: '/tmp', prompt: '继续' })
     const approval = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: 'native-approval' })
     await store.decideApproval(approval.approval.id, { decision: 'approved', approvedBy: 'test' }, { idempotencyKey: 'native-decision' })
-    const result = await executeNativeSessionPrompt({ store, taskId: task.task.id, executionId: execution.execution.id, approvalId: approval.approval.id, source: 'fake', nativeSessionId: 'native-1', cwd: '/tmp', prompt: '继续', command: process.execPath, args: ['-e', script], idempotencyKey: 'native-run' })
+    const result = await executeNativeSessionPrompt({ store, taskId: task.task.id, executionId: execution.execution.id, approvalId: approval.approval.id, source: 'codex', nativeSessionId: 'native-1', sessionRefId: 'session:codex:native-1', cwd: '/tmp', prompt: '继续', command: process.execPath, args: ['-e', script], idempotencyKey: 'native-run' })
     assert.equal(result.reply, '继续结果')
     assert.equal(result.execution.status, 'verifying')
-    assert.equal((await store.getTask(task.task.id)).evidence.length, 1)
+    const evidence = (await store.getTask(task.task.id)).evidence
+    const message = evidence.find((item) => item.kind === 'message')
+    assert.equal(message.summary, '继续结果', 'the prompt text is recorded as a message Evidence')
+    assert.ok(evidence.some((item) => item.kind === 'log' && item.summary.includes('外部占用探测')), 'the launch also records the occupancy observation (V41)')
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }
@@ -306,19 +328,20 @@ test('native ACP resume+prompt executor records non-empty evidence when the mode
   try {
     const store = new ControlPlaneStore({ stateDir })
     const task = await store.createTask({ goal: '继续原生会话（拒答）' }, { idempotencyKey: 'native-refusal-task' })
-    const execution = await store.createExecution(task.task.id, { workerId: 'workbuddy:native', sessionRefId: 'session:workbuddy:native-refusal' }, { idempotencyKey: 'native-refusal-execution' })
-    const plan = nativePromptPlan({ taskId: task.task.id, executionId: execution.execution.id, source: 'fake', nativeSessionId: 'native-refusal', cwd: '/tmp', prompt: '继续' })
+    const refusalExecutionId = `execution_refusal_${crypto.randomUUID()}`
+    const execution = await store.createExecution(task.task.id, { id: refusalExecutionId, workerId: 'workbuddy:native', sessionRefId: 'session:workbuddy:native-refusal', ...executionGrantFixture({ taskId: task.task.id, executionId: refusalExecutionId, scope: ['native.session.prompt'] }) }, { idempotencyKey: 'native-refusal-execution' })
+    const plan = nativePromptPlan({ taskId: task.task.id, executionId: execution.execution.id, source: 'workbuddy', nativeSessionId: 'native-refusal', sessionRefId: 'session:workbuddy:native-refusal', cwd: '/tmp', prompt: '继续' })
     const approval = await store.createApproval({ action: plan.action, target: plan.target, parametersDigest: plan.parametersDigest }, { idempotencyKey: 'native-refusal-approval' })
     await store.decideApproval(approval.approval.id, { decision: 'approved', approvedBy: 'test' }, { idempotencyKey: 'native-refusal-decision' })
-    const result = await executeNativeSessionPrompt({ store, taskId: task.task.id, executionId: execution.execution.id, approvalId: approval.approval.id, source: 'fake', nativeSessionId: 'native-refusal', cwd: '/tmp', prompt: '继续', command: process.execPath, args: ['-e', script], idempotencyKey: 'native-refusal-run' })
+    const result = await executeNativeSessionPrompt({ store, taskId: task.task.id, executionId: execution.execution.id, approvalId: approval.approval.id, source: 'workbuddy', nativeSessionId: 'native-refusal', sessionRefId: 'session:workbuddy:native-refusal', cwd: '/tmp', prompt: '继续', command: process.execPath, args: ['-e', script], idempotencyKey: 'native-refusal-run' })
     assert.equal(result.reply, '')
     assert.equal(result.stopReason, 'refusal')
     assert.equal(result.execution.status, 'verifying')
     const evidence = (await store.getTask(task.task.id)).evidence
-    assert.equal(evidence.length, 1)
-    assert.equal(typeof evidence[0].summary, 'string')
-    assert.ok(evidence[0].summary.trim().length > 0)
-    assert.equal(evidence[0].summary, 'native ACP prompt returned no text (stopReason=refusal)')
+    const message = evidence.find((item) => item.kind === 'message')
+    assert.equal(typeof message.summary, 'string')
+    assert.ok(message.summary.trim().length > 0)
+    assert.equal(message.summary, 'native ACP prompt returned no text (stopReason=refusal)')
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }
@@ -351,6 +374,32 @@ test('reviewer execution is an independent auditable child', async () => {
     assert.equal(review.reviewOf, source.execution.id)
     assert.equal(review.independent, true)
     assert.equal(review.execution.parentExecutionId, source.execution.id)
+    assert.equal(review.execution.role, 'reviewer', 'a reviewer child is marked with the reviewer role')
+    assert.equal('role' in source.execution, false, 'the source worker execution carries no role (worker is implicit)')
+    // (S03b) the reviewer entry issues the admission Grant at enqueue, owned by
+    // the reviewerId and scoped to the native prompt family
+    const reviewGrant = verifyGrant(review.execution.grant, { taskId: task.task.id, executionId: review.execution.id, parametersDigest: review.execution.parametersDigest, now: Date.now })
+    assert.equal(reviewGrant.owner, 'opencode-reviewer')
+    assert.deepEqual(reviewGrant.scope, ['native.session.prompt'])
+  } finally {
+    await fs.rm(stateDir, { recursive: true, force: true })
+  }
+})
+
+test('store.createExecution passes role through and rejects an illegal role', async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'personal-ai-os-role-'))
+  try {
+    const store = new ControlPlaneStore({ stateDir })
+    const task = await store.createTask({ goal: 'role passthrough' }, { idempotencyKey: 'role-task' })
+    const worker = await store.createExecution(task.task.id, { workerId: 'w1' }, { idempotencyKey: 'role-worker' })
+    assert.equal('role' in worker.execution, false, 'an execution without a role keeps worker semantics (no fabrication)')
+    const reviewer = await store.createExecution(task.task.id, { workerId: 'r1', role: 'reviewer' }, { idempotencyKey: 'role-reviewer' })
+    assert.equal(reviewer.execution.role, 'reviewer')
+    await assert.rejects(
+      () => store.createExecution(task.task.id, { workerId: 'x1', role: 'chief' }, { idempotencyKey: 'role-bad' }),
+      (error) => error instanceof ContractError,
+      'an illegal role is refused by the contract even through the store',
+    )
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }

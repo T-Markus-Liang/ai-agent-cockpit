@@ -1,102 +1,190 @@
 {
-  "controlPlaneUrl": "http://127.0.0.1:4324",
-  "controlPlaneAudit": true,
-  "inbound": {
-    "enabled": true,
-    "acknowledgeVoice": true
-  },
-  "recovery": {
-    "enabled": true,
-    "sweepMs": 5000,
-    "maxAttempts": 3,
-    "baseDelayMs": 15000,
-    "replyMaxAttempts": 96,
-    "replyMaxDelayMs": 900000
-  },
-  "goals": {
-    "url": "http://127.0.0.1:4326",
-    "tokenFile": "/Users/markus/.local/state/personal-ai-os/goals/api-token"
-  },
-  "memory": {
-    "enabled": true,
-    "maxTurns": 16,
-    "maxChars": 24000,
-    "summaryChars": 6000,
-    "personaFile": "/Users/markus/ai-agent-cockpit/AGENTS.md",
-    "mem0": {
-      "url": "http://127.0.0.1:4325",
-      "tokenFile": "/Users/markus/.local/state/personal-ai-os/mem0/api-token",
-      "timeoutMs": 1500,
-      "topK": 5
-    }
-  },
-  "commandAliases": {
-    "/acp-cancel": ["/取消", "取消"],
-    "/acp-config": ["/设置", "设置"],
-    "/acp-new": ["/新会话", "新会话"],
-    "/approve": ["/批准", "批准"],
-    "/reject": ["/拒绝", "拒绝"]
-  },
   "agent": {
-    "preset": "kimi-primary",
     "cwd": "/Users/markus/ai-agent-cockpit",
-    "showThoughts": false,
-    "showDiffs": true,
     "mcpServers": [
       {
-        "type": "http",
+        "headers": [],
         "name": "personal-ai-os-control-plane",
-        "url": "http://127.0.0.1:4324/mcp",
-        "headers": []
+        "type": "http",
+        "url": "http://127.0.0.1:4324/mcp"
       }
-    ]
+    ],
+    "preset": "kimi-primary",
+    "showDiffs": true,
+    "showThoughts": false
   },
   "agents": {
     "codex-official": {
-      "label": "Codex CLI (official ACP)",
-      "description": "Official Agent Client Protocol adapter for Codex",
+      "args": [
+        "@agentclientprotocol/codex-acp"
+      ],
       "command": "/usr/local/bin/npx",
-      "args": ["@agentclientprotocol/codex-acp"],
+      "description": "Official Agent Client Protocol adapter for Codex",
       "env": {
-        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
-        "HOME": "/Users/markus"
-      }
-    },
-    "kimi-primary": {
-      "label": "Kimi CLI (primary)",
-      "description": "Kimi Code ACP primary WeChat agent",
-      "command": "/Users/markus/.kimi-code/bin/kimi",
-      "args": ["acp"],
-      "env": {
-        "PATH": "/Users/markus/.kimi-code/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
-        "HOME": "/Users/markus"
-      }
+        "HOME": "/Users/markus",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      },
+      "label": "Codex CLI (official ACP)"
     },
     "devin": {
-      "label": "Devin (ACP)",
-      "description": "Devin CLI ACP server over stdio",
+      "args": [
+        "acp"
+      ],
       "command": "/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin",
-      "args": ["acp"],
+      "description": "Devin CLI ACP server over stdio",
       "env": {
-        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
-        "HOME": "/Users/markus"
-      }
+        "HOME": "/Users/markus",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      },
+      "label": "Devin (ACP)"
+    },
+    "kimi-primary": {
+      "args": [
+        "acp"
+      ],
+      "command": "/Users/markus/.kimi-code/bin/kimi",
+      "description": "Kimi Code ACP primary WeChat agent",
+      "env": {
+        "HOME": "/Users/markus",
+        "PATH": "/Users/markus/.kimi-code/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      },
+      "label": "Kimi CLI (primary)"
     }
   },
+  "commandAliases": {
+    "/acp-cancel": [
+      "/取消",
+      "取消"
+    ],
+    "/acp-config": [
+      "/设置",
+      "设置"
+    ],
+    "/acp-new": [
+      "/新会话",
+      "新会话"
+    ],
+    "/approve": [
+      "/批准",
+      "批准"
+    ],
+    "/reject": [
+      "/拒绝",
+      "拒绝"
+    ]
+  },
+  "controlPlaneAudit": true,
+  "controlPlaneUrl": "http://127.0.0.1:4324",
   "fallbackAgents": [
-    { "command": "/Users/markus/.opencode/bin/opencode", "args": ["acp"], "env": { "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-deepseek.json", "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
-    { "command": "/Users/markus/.kimi-code/bin/kimi", "args": ["acp"], "env": { "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
-    { "command": "/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy", "args": ["--acp"], "env": { "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
-    { "command": "/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin", "args": ["acp"], "env": { "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
-    { "command": "/Users/markus/.opencode/bin/opencode", "args": ["acp"], "env": { "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-kimi.json", "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
-    { "command": "/Users/markus/.opencode/bin/opencode", "args": ["acp"], "env": { "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-glm.json", "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } },
-    { "command": "/Users/markus/.opencode/bin/opencode", "args": ["acp"], "env": { "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-antigravity.json", "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/Users/markus" } }
+    {
+      "args": [
+        "acp"
+      ],
+      "command": "/Users/markus/.opencode/bin/opencode",
+      "env": {
+        "HOME": "/Users/markus",
+        "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-deepseek.json",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      }
+    },
+    {
+      "args": [
+        "acp"
+      ],
+      "command": "/Users/markus/.kimi-code/bin/kimi",
+      "env": {
+        "HOME": "/Users/markus",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      }
+    },
+    {
+      "args": [
+        "--acp"
+      ],
+      "command": "/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+      "env": {
+        "HOME": "/Users/markus",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      }
+    },
+    {
+      "args": [
+        "acp"
+      ],
+      "command": "/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin",
+      "env": {
+        "HOME": "/Users/markus",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      }
+    },
+    {
+      "args": [
+        "acp"
+      ],
+      "command": "/Users/markus/.opencode/bin/opencode",
+      "env": {
+        "HOME": "/Users/markus",
+        "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-kimi.json",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      }
+    },
+    {
+      "args": [
+        "acp"
+      ],
+      "command": "/Users/markus/.opencode/bin/opencode",
+      "env": {
+        "HOME": "/Users/markus",
+        "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-glm.json",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      }
+    },
+    {
+      "args": [
+        "acp"
+      ],
+      "command": "/Users/markus/.opencode/bin/opencode",
+      "env": {
+        "HOME": "/Users/markus",
+        "OPENCODE_CONFIG": "/Users/markus/ai-agent-cockpit/config/opencode-fallback-antigravity.json",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      }
+    }
   ],
+  "goals": {
+    "tokenFile": "/Users/markus/.local/state/personal-ai-os/goals/api-token",
+    "url": "http://127.0.0.1:4326"
+  },
+  "inbound": {
+    "acknowledgeVoice": true,
+    "enabled": true
+  },
+  "memory": {
+    "enabled": true,
+    "maxChars": 24000,
+    "maxTurns": 16,
+    "mem0": {
+      "timeoutMs": 1500,
+      "tokenFile": "/Users/markus/.local/state/personal-ai-os/mem0/api-token",
+      "topK": 5,
+      "url": "http://127.0.0.1:4325"
+    },
+    "personaFile": "/Users/markus/ai-agent-cockpit/AGENTS.md",
+    "summaryChars": 6000
+  },
+  "recovery": {
+    "baseDelayMs": 15000,
+    "enabled": true,
+    "maxAttempts": 3,
+    "replyMaxAttempts": 96,
+    "replyMaxDelayMs": 900000,
+    "sweepMs": 5000
+  },
   "session": {
-    "resume": "auto",
+    "grantDeadlineMs": 300000,
     "idleTimeoutMs": 86400000,
     "maxConcurrentUsers": 1,
-    "promptTimeoutMs": 300000,
+    "resume": "auto",
     "startupTimeoutMs": 60000,
     "turnEndMessage": ""
   }

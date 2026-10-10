@@ -1,0 +1,12 @@
+1f82eb8f0f0fbceb6b2fd2de8947a7fba47ed8795917e4064c494131dfe98a2a  gateway/wechat-control.mjs
+10db5698c0889b76203e4a8feac214ca2ed51c514536ec794173026c5fbe9963  tests/wechat-control.test.mjs
+aed64f9fa442203bd263ab635b8a7980f2d53be23766abe90fcf43cc67ea6bc7  vendor/cezar/packages/cezar/src/server/personal-ai-os.ts
+05ba36714b353b6f59361a10c87ba20e1eef8919f78b0e85578185a3de28c17c  vendor/cezar/packages/cezar/src/server/personal-ai-os.test.ts
+a19cee0b7e2fa01bbd1b6878ac190f6e8511e950ee290ee55e69517497f9fc36  vendor/cezar/packages/web/src/routes/dashboard/control-plane-approvals.tsx
+c5756fa30eb7150d7292a22fabb17511749f0c10cfe1071343d2e5847685ab57  vendor/cezar/packages/web/src/routes/dashboard/continuous-goals.tsx
+a827ce843b36c86dd3203b8e02e880a768b2ecba0202c0e1ae247ffa356368a3  vendor/cezar/packages/web/src/routes/dashboard/continuous-goals.test.tsx
+efaf929ba1002d83afde781bb22e28ba38d2740359c3a7721c70acaeb314318d  vendor/cezar/packages/web/src/routes/settings/wechat-section.tsx
+22a1a7cc2436d1793c795cbc9b54b475864fe1fdb57433066b65e81a1ea0ec17  vendor/cezar/packages/web/src/routes/settings/wechat-section.test.tsx
+e6fa74fe1030ebf0f5fa7d78eb7bdf9bd87d7317e9ee2b4ad5b63e37a6202521  vendor/cezar/packages/web/src/routes/dashboard/control-plane-dashboard.test.tsx
+cf4731b732f201429dddd3708f76db256e4a7fc1c2f00176a2ab978ac90764a3  vendor/cezar/packages/web/src/components/locale-provider.tsx
+03c713b0c53c99b57866dff9364eb6ad76d0c1cc2d7311cd744a36bb0636c81d  vendor/cezar/BACKWARD_COMPATIBILITY.md

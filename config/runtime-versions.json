@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "phase": "P0/P1/P2",
+  "defaultRuntime": "legacy",
+  "productionVersion": "0.2.2",
+  "automaticInstallation": false,
+  "pi": {
+    "sourceCommit": "2db5e359bf84c1c0be51d2c5c5c5c7cf27072c2b",
+    "nodeRequirement": ">=22.19.0",
+    "packages": {
+      "@earendil-works/pi-durable": {
+        "version": "1.0.4",
+        "integrity": "sha512-i22unyhavxrTF/KS/JcBOKprQRgepufOIztnqBKZXJCWbEHsXDzcINtjmmBSbFB/3S+4FWIl3eJ5FMbRe33Ybg=="
+      },
+      "@earendil-works/pi-ai": {
+        "version": "1.0.4",
+        "integrity": "sha512-/Eu5R0gfor6wcmRcVyOmulUiZmsHJ0bKu5wXXnpCoSHF3y4FnW4fgnjRlLjNza8NJWXdvW5Uew90Zukx7Sh2rw=="
+      },
+      "@earendil-works/chord": {
+        "version": "1.0.4",
+        "integrity": "sha512-d2JZw2utoa/reoSmL07O71wsXiMDhIlnnxTb4LCNV+Oq8Evj2rGLvjVuYrlXZGbXUr0IDNfvd1RT/utCY1UhkQ=="
+      },
+      "@earendil-works/pi-telemetry": {
+        "version": "1.0.4",
+        "integrity": "sha512-DL2eXXtnL5/VQkuQd97fL57GXTG1/zKHtMmDsrv8tGeJ5EgYYTWvzy44dqbYL0lD0Z22v/NOwqU3PHO75HVrqA=="
+      }
+    },
+    "runtimeCanary": "passed-basic-fake-reopen-and-live-kimi-shim",
+    "installedVersion": "1.0.4",
+    "storageCandidate": "explicit-sqlite-wal-synchronous-full",
+    "ownerFenceVerified": true,
+    "ownerFenceVerificationScope": "14 isolated storage/lease/process tests; not full RuntimePort or external-effect fencing",
+    "adapterContractTests": 14,
+    "adapterSettingsTests": 27,
+    "adapterCanary": "passed-isolated-faux-and-live-kimi-http200-45tokens-saved-answer-duplicate-and-reopen-zero-extra-calls",
+    "adapterVerificationScope": "default no tools; optional issued task-bound query/queued-child/planning suite; no native dispatch, approval, shell or file tools; legacy/goal-grant/os-sandbox/background/outbox integration incomplete; G2 not passed",
+    "controlledToolTests": 19,
+    "interruptedReplayTests": 4,
+    "interruptedReplayScope": "actual SIGKILL plus raw public Harness and synthetic idempotent product rows; safe+safe only; not production native-effect recovery",
+    "readonlyToolCanary": "passed-live-existing-and-isolated-source-kimi-http200-two-rounds-536-to-539tokens-one-saved-query-no-product-change-duplicate-and-reopen-zero-extra-calls",
+    "kimiShimTests": 9,
+    "kimiShimSourceDeployed": false,
+    "policyComponentTests": 27,
+    "productionStrictAuthorizationEnabled": false,
+    "goalAccessBrokerTests": 11,
+    "goalRegressionTests": 60,
+    "goalBrokerScope": "prepared Goal-copy file I/O and exact read-only Node checks; integrated source but not production; native CLI/App/Pi-tool/SessionManager wiring pending",
+    "transitiveAudit": "install-scripts-disabled-and-inventoried; broader-security-audit-pending",
+    "productionEnabled": false
+  },
+  "paseo": {
+    "stableVersion": "0.10.3",
+    "stableCommit": "b4af508e2a9e5a34a8b0ffb8dfaff6fd679da6c7",
+    "researchVersion": "0.11.0-beta.5",
+    "researchCommit": "28f7528588bc4ea74d4b9394560191bc16c20b84",
+    "role": "candidate-native-worker-transport-and-mobile-client",
+    "installedClientSdkVersion": "0.10.3",
+    "daemonInstalledByUpgrade": false,
+    "publicSdkImportVerified": true,
+    "runtimeCanary": "pending",
+    "productionEnabled": false
+  },
+  "pocket": {
+    "optional": true,
+    "sourceCommit": "2b6ec48f1b34f2955adb1cf88d361142b6bb8974",
+    "appVersion": "0.10.0",
+    "piDependencyVersion": "1.0.2",
+    "productionEnabled": false
+  }
+}

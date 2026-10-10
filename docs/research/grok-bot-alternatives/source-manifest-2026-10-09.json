@@ -1,0 +1,287 @@
+{
+  "capturedAt": "2026-10-09",
+  "scope": "selected architecture source files; not whole-repository audit",
+  "repositories": [
+    {
+      "repository": "leepokai/Codync",
+      "commit": "9de648192320eabea121ba8a24e44937cdaa24f7",
+      "dirty": "",
+      "files": [
+        {
+          "path": "host/Cargo.toml",
+          "bytes": 3047,
+          "sha256": "200e7dd425e41e038a621e821f683ca7e7f1041432dd9e465a3ee69d2b6c4ad5"
+        },
+        {
+          "path": "host/src/store/mod.rs",
+          "bytes": 3165,
+          "sha256": "c9ecd93e7ff34ab2fb9a5cac7d9f0615b322db4688d3a2fe3cb34fa329ed3ea4"
+        },
+        {
+          "path": "host/src/store/schema.rs",
+          "bytes": 4628,
+          "sha256": "76bf650a0b397ed61141babeacdaf8d79e1816f5b59c28379646ccaa23eb67b3"
+        },
+        {
+          "path": "host/src/api/events.rs",
+          "bytes": 3281,
+          "sha256": "fd6cb02f0c3903aa05b4d79f360fdabe3688c2ddf2e134e0e4450755f86cffa1"
+        },
+        {
+          "path": "host/src/agent/registry.rs",
+          "bytes": 15827,
+          "sha256": "3d820e679ac37bd8891ee54449b97a6dcc88e8e7390f4686216f042baec05f08"
+        },
+        {
+          "path": "host/src/agent/acp.rs",
+          "bytes": 12372,
+          "sha256": "d016d60a871ad5ca46c341ff42eeac910c8d2990287cab34dcc641a5ebae3f56"
+        },
+        {
+          "path": "host/src/agent/bot/session.rs",
+          "bytes": 16265,
+          "sha256": "40691cb1a818975c1b084c9833be23f225ebc13b9c8d60e77d469544eec3e47b"
+        },
+        {
+          "path": "host/src/agent/bot/turn.rs",
+          "bytes": 13881,
+          "sha256": "f0b6708772db14721b2b1c64795956c75f30a7861e8ed242902c73b671e48de4"
+        },
+        {
+          "path": "host/src/agent/bot/queue.rs",
+          "bytes": 15260,
+          "sha256": "0aeee9370ed9745ae38912c8a4b623b446c0ca15e9b56e3ffe66666dba8d42f6"
+        },
+        {
+          "path": "host/src/agent/bot/updates.rs",
+          "bytes": 15318,
+          "sha256": "a4c60cf4a4b44ba88dd9d10f3912074c7aeb201371259493af7a9a413c03f119"
+        },
+        {
+          "path": "host/src/routines/mod.rs",
+          "bytes": 25407,
+          "sha256": "bb7a57e25637170662b83694fe649de78023fff1ac789a7c1b324d169597fc49"
+        },
+        {
+          "path": "host/src/routines/runner.rs",
+          "bytes": 13307,
+          "sha256": "d10c877e2d16de54292d44b1a26d8bec38fd10787ed34cf7f4158ef62f89cc9d"
+        },
+        {
+          "path": "host/src/chat/context.rs",
+          "bytes": 10929,
+          "sha256": "8777c2540fbdb6478c0b426cb74a7f6ce6d05af35c4b4f327caef92d2e44ebd4"
+        },
+        {
+          "path": "host/src/chat/team/requests.rs",
+          "bytes": 8086,
+          "sha256": "dfb4173b7a552a7fcab24269f6786f3445cfa62177fae3e5919c1a38c83cfe3e"
+        },
+        {
+          "path": "host/src/remote/crypto.rs",
+          "bytes": 20188,
+          "sha256": "8ecacdf0a6043c215e8928e445f8f4729be17bd76d65e86ea50fa15c8d68a29e"
+        },
+        {
+          "path": "NOTICE",
+          "bytes": 587,
+          "sha256": "dbfe8b17f7ec51e56c7a190cf66205ad756786920d52a42d390af2ece8a85ce5"
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "path": "apps/ios/Kit/Sources/CodyncKit/Client/HostClient.swift",
+          "bytes": 15821,
+          "sha256": "aa6f6c1f52c1f30a73a10f65dec082fb07c67ed92c799df9857eefac1f0f6a27"
+        }
+      ]
+    },
+    {
+      "repository": "milind-soni/OpenMausBot",
+      "commit": "3e9e42b3a05e0b7c4edbaedba2e667b851296e27",
+      "dirty": "",
+      "files": [
+        {
+          "path": "package.json",
+          "bytes": 6766,
+          "sha256": "d7597d808a52f0574284455c5f74a3a4ca662ba49ab1902d4d47bb660704e787"
+        },
+        {
+          "path": "server/index.ts",
+          "bytes": 1404274,
+          "sha256": "d444f71e01398db68bc1541f84036caf097393b653c30ca9a961f28624c19be2"
+        },
+        {
+          "path": "server/contracts.ts",
+          "bytes": 28868,
+          "sha256": "21871b8f35d5460fd3cc80c59a89d72afd1cbc0b6d61e6819fde1ca726a9a39d"
+        },
+        {
+          "path": "server/harness/registry.ts",
+          "bytes": 14995,
+          "sha256": "54d475ee2e9069904d90d1dc9ec7e7f7497ccb2976d6dbd4826b07e044f3c1c2"
+        },
+        {
+          "path": "server/harness/bus.ts",
+          "bytes": 6539,
+          "sha256": "cbbf6ca2bf246a2d49af1353165b84305b658b3e5166327b1252e3078658cc22"
+        },
+        {
+          "path": "server/drivers/claude.ts",
+          "bytes": 139303,
+          "sha256": "3f2c409d55646689bfe90245284dbdb13c664f7766d459a2eaa24f466203fee3"
+        },
+        {
+          "path": "server/drivers/codex.ts",
+          "bytes": 114155,
+          "sha256": "46066f2e0682fb9c17537e47053ac07d411cfc9d001a5b2026d09cf941138351"
+        },
+        {
+          "path": "server/drivers/acp/core.ts",
+          "bytes": 121320,
+          "sha256": "9ad6acf89789638f080ed5206d3f7742ddffdf7ef543444433df0633a4e2a0b5"
+        },
+        {
+          "path": "server/permission-proxy.ts",
+          "bytes": 10798,
+          "sha256": "598d3f6da4c255edd415af11d07d9354cda38bcac691dbed6ceac083915145c4"
+        },
+        {
+          "path": "server/memory-store.ts",
+          "bytes": 15333,
+          "sha256": "7c68e8911cfeffdf34a8ef47bd74069b1cc8b7768317154342e47e3523759528"
+        },
+        {
+          "path": "server/routines.ts",
+          "bytes": 82469,
+          "sha256": "3f365df0e2bc262dab469162da320b3077d1de8ec0995654f58d3d80359ff65a"
+        },
+        {
+          "path": "server/thread-events.ts",
+          "bytes": 12536,
+          "sha256": "86a48280642f38e5f40c65ed97f08c634d8f27313bb33a5d4afd362ba16e2ea7"
+        },
+        {
+          "path": "electron/routine-wake.mjs",
+          "bytes": 4489,
+          "sha256": "b801010708c8c4ff400d4ab296aac9020d8e144e79b8bcfdca38a3b911db72a0"
+        },
+        {
+          "path": "electron/routine-wake.node-test.mjs",
+          "bytes": 3640,
+          "sha256": "8053ba6c7a5120409966889fc452460cd37fc1afc6c7c52f17997d88240ea2e7"
+        },
+        {
+          "path": "NOTICE",
+          "bytes": 2253,
+          "sha256": "213df2eadc33b98132d5f5be7cdb055eab69a4dfeb6da34eda54670a8259c64d"
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "path": "src/lib/session.ts",
+          "bytes": 11164,
+          "sha256": "05bab06563a511bc56982fabf6754e42443ac1c55e19d3fe3290a16e6935cd26"
+        },
+        {
+          "path": "src/lib/live-events.ts",
+          "bytes": 13353,
+          "sha256": "55cb2c3473d23d380055a80ebaf384af72f9ee6f04d8b1afa2ecd3bb53f50797"
+        },
+        {
+          "path": "src/state/store.tsx",
+          "bytes": 189740,
+          "sha256": "28ad4101460855f037766b42b0bbe9f556ba6bd8a99b3a3086e57f172f7ca6c3"
+        }
+      ]
+    },
+    {
+      "repository": "elie222/rakazo",
+      "commit": "8d3fedb63725ac1f896a8009484bf75fcd1ba7ac",
+      "dirty": "",
+      "files": [
+        {
+          "path": "package.json",
+          "bytes": 2477,
+          "sha256": "5678213f71f988e19cfbb8072fc0b83d3ae5787c2a37aef81adad7960394b094"
+        },
+        {
+          "path": "apps/worker/src/index.ts",
+          "bytes": 11690,
+          "sha256": "52bfa0967d3465b6703977bfde35792ac479828882b382562d92a4e6346b07cf"
+        },
+        {
+          "path": "packages/core/src/run-state.ts",
+          "bytes": 1882,
+          "sha256": "93751d321a3a53d99a6438c3cfe39d77dcb7dfa4f2f2b333cc069ddf04c324e6"
+        },
+        {
+          "path": "packages/db/prisma/schema.prisma",
+          "bytes": 49125,
+          "sha256": "c4055fb4cfdd4fa06af16febc8d74802c436896db8fd246530236d6cdb05e75e"
+        },
+        {
+          "path": "packages/adapters/src/pi-runtime.ts",
+          "bytes": 112044,
+          "sha256": "a2f683ba12aefdd22c8b337b61798bbce7007bf8c688f400b7a9f82d69ef0390"
+        },
+        {
+          "path": "packages/adapters/src/executor.ts",
+          "bytes": 340946,
+          "sha256": "74cafc1379e096bed957cb16c7aa30434180bf0da2f9d7f4b068d4f9cbd64a71"
+        },
+        {
+          "path": "packages/adapters/src/approval-effect.ts",
+          "bytes": 16200,
+          "sha256": "46060d0e366ce4c8d8db97456de97f7ddcf7e725bb2558f19668883745ea0b95"
+        },
+        {
+          "path": "packages/adapters/src/job-reconciler.ts",
+          "bytes": 15060,
+          "sha256": "c57dc0e6acc83cb0971cc8100062ae888d7a62076bc055ded7c86a94f074e938"
+        },
+        {
+          "path": "packages/adapters/src/wakeup.ts",
+          "bytes": 12553,
+          "sha256": "f1fbc2c3b83b074cf97eee4db120e39b8736164a138075d11efd99ba3b78d107"
+        },
+        {
+          "path": "packages/adapter-kit/src/interfaces.ts",
+          "bytes": 18319,
+          "sha256": "3f7040e731edc52fab426359e42823f326cd91eb7efad05409b89271f0db8b39"
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 9717,
+          "sha256": "b9738182c46747cb7cd36cad62d55c8922ca8d0029df280d3d73bb3c95d34935"
+        },
+        {
+          "path": "packages/adapters/src/pi-session.ts",
+          "bytes": 7516,
+          "sha256": "c8267964d7c37ef2f3d2622135821570a8dda8c52008e00ed58f38fb0beebdf1"
+        },
+        {
+          "path": "packages/adapter-kit/src/background-jobs.ts",
+          "bytes": 4788,
+          "sha256": "ad8db9446e458be4c3a9fa899d61a3ea80ed0a15c6548d97057ac13337282b14"
+        },
+        {
+          "path": "packages/memory/src/index.ts",
+          "bytes": 5169,
+          "sha256": "a766494b92c3f62b8f48353a096cfdf7716bfffdc292d0e1d08ab628bcf3b240"
+        },
+        {
+          "path": "apps/web/src/lib/thread-events.ts",
+          "bytes": 22366,
+          "sha256": "c5ed48172cbf00f6a252f18f1ec239f4add338333fa5d9bca2a9765e102928f3"
+        }
+      ]
+    }
+  ]
+}

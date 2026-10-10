@@ -3,6 +3,8 @@
 这里部署的是 **Mem0 SDK 2.2.1**，不是 Mem0 云服务，也不是其 Docker 全栈 Dashboard。
 自有 FastAPI 适配层把 SDK 作为轻量的单机 Memory Service 提供给微信桥。
 
+运行/源码区分（0.3.0实施中）：现役服务仍使用0.2.2的Kimi提炼路径，尚未重启切换。当前源码默认已经改为extraction-v2原文句子选择：代码分隔完整句子，Jev只判断资格/完整性，Mem0以infer=False保存原文及来源坐标；不生成改写。59项隔离测试与连续三批次各3/3真实样例通过，不代表更正/忘记/迁移/生产链路全部通过。
+
 - API：`http://127.0.0.1:4325`，只绑定回环地址；写入与检索需本机 Bearer token。
 - 状态：`~/.local/state/personal-ai-os/mem0/`，0700；token 和入库 SQLite 为 0600，不提交 Git。
 - 存储：本地 Qdrant 向量 + SQLite history/持久待处理队列。
@@ -47,6 +49,14 @@ npm run doctor             # 联合服务健康检查，不等同于模型行为
 可选 spaCy/BM25 的启动警告不代表多语言语义检索失败；本轮验证的是语义检索，没有把完整 NLP/hybrid 检索宣称为已部署能力。服务由单个进程持有本地 Qdrant，不要对同一状态目录启动多个 worker。
 
 对话服务停止后运行 `node scripts/migrate-wechat-memory.mjs` 回填可用历史；先生成私有备份，不删除原生 Agent 历史。
-重试语义是 at-least-once：请求 receipt 幂等、Mem0 自身负责事实更新去重；不宣称断电发生在 SDK 写入与 receipt 更新之间时可以 exactly-once。
+现役0.2.2重试语义是at-least-once，不宣称exactly-once。0.3候选源码先保存版本化plan，再按user/event/source span查询复用向量；只允许final done+validated且原文绑定一致的回执进入可信检索。超时、格式错误和模糊判断按预算重试，最多3次失败后needs_review，原文仍在。旧done记录保留为legacy_unverified，需要后续验证迁移，不能直接当新版事实。
+
+候选源码的原文选择会把不含明显秘密的用户原文送给本机`jev-eval`配置的远程Jev服务；不是全离线。Key由既有wrapper加载，不进入参数、提示、日志或仓库。Kimi仍负责微信主对话，未被Jev替代。固定阈值只是初始政策，不保证所有语义判断都正确。
+
+新增接口：鉴权`POST /v1/status`输入`{event_id,user_id}`，返回处理、质量、版本和安全错误类型，不返回原文；`/health`增加quality/needs_review统计。更正/冲突、忘记/永久删除、前端状态、旧事实验证及实际桥接上下文仍待后续工作。
+
+后续隔离实现已补服务端软忘记/v1/forget和/v1/controls：请求ID/用户/事件绑定、原子tombstone、source/quote hash和memory_epoch；新旧ID重复源码及提炼/写入/查询竞态不会恢复可信结果。当前83项服务测试通过。微信本地pending屏障/稳定目标摘要/代际上下文/上传抑制21项通过，真实编译MemoryStore与隔离Mem0联合验证通过。Raw archive仍保留，不称为永久擦除；活跃ACP原生上下文仍要求上层重置，UI和更正/永久删除尚未完整实现。
+
+新增验证：`npm run test:memory-quality-live`对独立私有命名空间执行三组真实Jev+Mem0检查，不发送微信、不恢复原生会话；默认准备路径生成式提炼调用为0。运行时可用`HF_HUB_OFFLINE=1 MEM0_TELEMETRY=false`保持embedding离线和关闭SDK遥测，不以可选spaCy/BM25警告替代语义失败判定。
 
 上游：[mem0ai/mem0](https://github.com/mem0ai/mem0)，Apache-2.0。依赖通过 `requirements.lock` 固定，不把上游服务包装成自有实现。

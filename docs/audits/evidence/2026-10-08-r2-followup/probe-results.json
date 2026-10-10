@@ -1,0 +1,65 @@
+{
+  "memory": {
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "M01-F001-r2-unknown-target-chmod",
+        "error": "unknown_existing_db",
+        "beforeMode": "0755",
+        "afterMode": "0700",
+        "unknownTargetChangedBeforeRefusal": true
+      },
+      {
+        "probe": "M01-F001-r2-empty-subset-admitted",
+        "acceptedManifestlessIndependentTarget": true,
+        "sourceRows": 1,
+        "targetRows": 0
+      },
+      {
+        "probe": "RC-F001-r2",
+        "successorEdges": {
+          "c": null,
+          "a": "b",
+          "b": "c"
+        },
+        "cycleRemoved": true
+      },
+      {
+        "probe": "PG-F001-r2",
+        "residualContentRejected": true,
+        "error": "verify-failed"
+      },
+      {
+        "probe": "PG-F002-r2-between-preflight-and-effect",
+        "error": "verify-failed",
+        "effects": [
+          "delete:v1",
+          "scrub:e1",
+          "delete:v2",
+          "scrub:e2"
+        ],
+        "driftedNewContentErased": true
+      }
+    ]
+  },
+  "session": {
+    "realModels": false,
+    "productionTouched": false,
+    "observations": [
+      {
+        "probe": "SP-F001-r2-resolver-window",
+        "outcome": "denied",
+        "reason": "session-closed",
+        "approvalUnconsumed": true
+      },
+      {
+        "probe": "SP-F002-r2",
+        "secondReason": "conflict",
+        "allowResponses": 1,
+        "resolverCalls": 1,
+        "unusedSecondApproval": true
+      }
+    ]
+  }
+}
